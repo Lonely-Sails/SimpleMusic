@@ -26,7 +26,8 @@ cargo run                         # 真实 GUI 启动（需要显示环境）
   **macOS/Windows 用系统原生托盘（NSStatusItem / Shell_NotifyIcon），无需 GTK、无额外线程**，
   图标由 `MusicApp::new` 在主线程创建（macOS 要求事件循环运行中创建）。
 - 内嵌字体 `assets/NotoSansSC-Regular.otf`（约 16MB）编译期 `include_bytes!` 进二进制。
-- 无 git 仓库（当前目录没有 .git），改动请以「读代码 + 增量编辑」为准。
+- 已有 git 仓库（分支 `main`）：改动用增量编辑，提交信息用中文、说明动机；`SimpleMusic.zip`
+  手动备份包与 `.toolchain/`、`.sysroot/`、`target/` 均已在 `.gitignore` 中排除。
 
 ---
 
