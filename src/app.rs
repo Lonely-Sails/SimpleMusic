@@ -212,12 +212,23 @@ impl MusicApp {
         let bili = BiliClient::with_session().unwrap_or_else(|_| {
             BiliClient::new().expect("初始化 BiliClient 失败")
         });
+        let mid = bili.mid();
+        // 后台补齐 buvid3/buvid4 设备指纹（阻塞网络，不能放 UI 线程）：
+        // 部分接口缺 buvid 易被 B 站风控 412；失败静默（smoke 之外这是唯一调用点）。
+        let bili = Arc::new(Mutex::new(bili));
+        {
+            let bili = Arc::clone(&bili);
+            std::thread::spawn(move || {
+                if let Ok(mut c) = bili.lock() {
+                    let _ = c.ensure_buvid();
+                }
+            });
+        }
         let (tx, rx) = mpsc::channel();
         let mut audio = AudioEngine::new();
         // 启动时应用已保存的音量。
         audio.set_volume(settings.volume);
         let playlists = storage::load_playlists();
-        let mid = bili.mid();
         let mut covers = CoverCache::new(cc.egui_ctx.clone());
         let mut state = PlaybackState::default();
         state.volume = settings.volume;
@@ -231,7 +242,7 @@ impl MusicApp {
         }
         let mut app = Self {
             audio,
-            bili: Arc::new(Mutex::new(bili)),
+            bili,
             covers,
             state,
             settings,
@@ -1069,10 +1080,12 @@ impl MusicApp {
 
                 ui.horizontal(|ui| {
                     ui.add_space(10.0);
-                    // 应用名（拖动把手）
+                    // 应用名（拖动把手）。显式关掉文本选中：主题全局 selectable_labels
+                    // 会给 Label 额外叠加 drag 选中手势，和窗口拖动冲突、还会出现选区高亮，手感很差。
                     let title = egui::Label::new(
                         RichText::new("♪ SimpleMusic").strong().color(theme::TEXT_PRIMARY),
                     )
+                    .selectable(false)
                     .sense(Sense::drag());
                     let tr = ui.add(title);
                     if tr.drag_started() {
@@ -2530,25 +2543,25 @@ impl MusicApp {
                 let (rect, response) =
                     ui.allocate_exact_size(ui.available_size(), Sense::drag());
 
-                let bg = if response.hovered() && !locked {
-                    Color32::from_rgba_premultiplied(0x1A, 0x20, 0x28, 245)
-                } else {
-                    theme::LYRIC_BG
-                };
-                for (expand, alpha) in [(6.0, 26), (3.0, 40)] {
-                    ui.painter().rect_filled(
-                        rect.expand(expand),
+                // 默认全透明：只有「解锁 + 鼠标悬浮」时才绘制背景卡片（含外圈柔光与描边），
+                // 让歌词无边框地浮在桌面上；锁定（鼠标穿透）时不会触发 hover，永远透明。
+                let show_bg = response.hovered() && !locked;
+                if show_bg {
+                    for (expand, alpha) in [(6.0, 26), (3.0, 40)] {
+                        ui.painter().rect_filled(
+                            rect.expand(expand),
+                            theme::CORNER,
+                            Color32::from_black_alpha(alpha),
+                        );
+                    }
+                    ui.painter().rect_filled(rect, theme::CORNER, theme::LYRIC_BG);
+                    ui.painter().rect_stroke(
+                        rect,
                         theme::CORNER,
-                        Color32::from_black_alpha(alpha),
+                        Stroke::new(1.0, Color32::from_rgba_premultiplied(0x8F, 0xB8, 0xD0, 26)),
+                        StrokeKind::Inside,
                     );
                 }
-                ui.painter().rect_filled(rect, theme::CORNER, bg);
-                ui.painter().rect_stroke(
-                    rect,
-                    theme::CORNER,
-                    Stroke::new(1.0, Color32::from_rgba_premultiplied(0x8F, 0xB8, 0xD0, 26)),
-                    StrokeKind::Inside,
-                );
 
                 if !locked && response.drag_started() {
                     ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);

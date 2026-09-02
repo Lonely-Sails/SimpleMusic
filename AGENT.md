@@ -113,6 +113,18 @@ modules/
 
 ## 6. 近期改动（本轮已实现）
 
+本轮（桌面歌词全透明 + 收藏夹接口修复）：
+
+- **桌面歌词全透明**：`show_lyrics_viewport` 默认不再绘制任何背景/描边/外圈柔光，
+  仅「未锁定 + 鼠标悬浮」时绘制背景卡片（`LYRIC_BG`）与描边（关闭按钮/拖动仍随 hover 出现）。
+  锁定（鼠标穿透）时永远透明。
+- **收藏夹接口修复（B 站已下线 `fav/folder/owned/list`，HTTP 404）**：
+  `list_favorite_folders` 改用 `fav/folder/created/list` + `fav/folder/collected/list`
+  两个分页接口合并（按 id 去重，`dedup_folders`）；`data:null` 按空页处理；
+  `fav/resource/list` 增加 `platform=web` 参数。新增单测：分页响应解析 + 去重。
+- **启动补 buvid**：GUI 启动时后台线程调 `BiliClient::ensure_buvid`
+  （之前只有 `--smoke` 才调用），降低风控 412 概率。
+
 上一轮在 `src/app.rs` 新增/改动（均有单测或 smoke 验证，81+ 测试通过）：
 
 - `MusicApp` 新字段：`search_text`、`playlist_mgmt_open`、`renaming_idx`、`rename_text`、`last_notice`。

@@ -502,10 +502,14 @@ struct WbiImg {
     sub_url: String,
 }
 
-#[derive(Debug, Deserialize)]
+/// 收藏夹分页响应（created/list 与 collected/list 同构）。
+#[derive(Debug, Default, Deserialize)]
 struct FolderListResp {
     #[serde(default)]
     list: Vec<FolderEntry>,
+    /// 是否还有下一页（没有该字段时按 false 处理，单页即止）。
+    #[serde(default)]
+    has_more: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -888,28 +892,64 @@ impl BiliClient {
     // ---- 收藏夹（需 SESSDATA） ----
 
     /// 列出当前登录用户自己的收藏夹（未登录返回 -101）。
+    ///
+    /// 旧接口 `fav/folder/owned/list` 已被 B 站下线（HTTP 404，返回 HTML 错误页），
+    /// 改用官方前端在用的两个分页接口合并：
+    /// - `fav/folder/created/list`：用户**创建**的收藏夹（核心，失败直接报错）；
+    /// - `fav/folder/collected/list`：用户**收藏**的收藏夹（best-effort，失败不阻断）。
+    /// 两路结果按 id 去重；空收藏夹时 `data` 可能为 null，按空页处理。
     pub fn list_favorite_folders(&self) -> BiliResult<Vec<FavFolder>> {
         let mid = self.mid().ok_or_else(|| BiliError::Api {
             code: -101,
             message: "未登录（缺少 DedeUserID）".into(),
         })?;
-        let url = format!("https://api.bilibili.com/x/v3/fav/folder/owned/list?up_mid={mid}&pn=1&ps=20");
-        let data: FolderListResp = self.get_data(&url, "fav/folder/owned/list")?;
-        Ok(data
-            .list
-            .into_iter()
-            .map(|f| FavFolder {
+        let mut folders = self.list_folder_pages("created", mid)?;
+        folders.extend(self.list_folder_pages("collected", mid).unwrap_or_default());
+        Ok(dedup_folders(folders))
+    }
+
+    /// 分页拉取一类收藏夹（`api` = created / collected），ps 上限 20，最多翻 50 页。
+    fn list_folder_pages(&self, api: &str, mid: u64) -> BiliResult<Vec<FavFolder>> {
+        let mut folders = Vec::new();
+        let mut pn: u32 = 1;
+        loop {
+            let url = format!(
+                "https://api.bilibili.com/x/v3/fav/folder/{api}/list?up_mid={mid}&pn={pn}&ps=20"
+            );
+            let (http, env) = self.get_json::<FolderListResp>(&url, &[])?;
+            let page = if http >= 400 {
+                return Err(BiliError::Api {
+                    code: http as i64,
+                    message: format!("fav/folder/{api}/list HTTP {http}"),
+                });
+            } else if env.code != 0 {
+                return Err(BiliError::Api {
+                    code: env.code,
+                    message: env.message,
+                });
+            } else {
+                // data 为 null（如无收藏的收藏夹）按空页处理，不当作错误。
+                env.data.unwrap_or_default()
+            };
+            let has_more = page.has_more;
+            folders.extend(page.list.into_iter().map(|f| FavFolder {
                 id: f.id,
                 title: f.title,
                 media_count: f.media_count,
-            })
-            .collect())
+            }));
+            if !has_more || pn >= 50 {
+                break;
+            }
+            pn += 1;
+        }
+        Ok(folders)
     }
 
     /// 列出收藏夹资源（type=2 仅视频），返回 `(条目, 收藏夹总数)`。
     pub fn list_favorite_resources(&self, media_id: i64, pn: u32) -> BiliResult<(Vec<FavItem>, i64)> {
+        // platform=web 为官方文档标注参数（影响内容列表类型），与 web 前端一致。
         let url = format!(
-            "https://api.bilibili.com/x/v3/fav/resource/list?media_id={media_id}&pn={pn}&ps=20&order=mtime&type=2"
+            "https://api.bilibili.com/x/v3/fav/resource/list?media_id={media_id}&pn={pn}&ps=20&order=mtime&type=2&platform=web"
         );
         let data: ResourceListResp = self.get_data(&url, "fav/resource/list")?;
         let items = data
@@ -1222,6 +1262,15 @@ fn parse_set_cookie(set_cookie: &str) -> Option<(String, String)> {
     Some((k.to_string(), v.trim().to_string()))
 }
 
+/// 按 id 去重收藏夹（保留首个出现者）：created/collected 两路合并时的防御性去重。
+fn dedup_folders(folders: Vec<FavFolder>) -> Vec<FavFolder> {
+    let mut seen = std::collections::HashSet::new();
+    folders
+        .into_iter()
+        .filter(|f| seen.insert(f.id))
+        .collect()
+}
+
 /// 解析 URL query 片段（仅 path 后的 k=v&...；value 不解码，B 站登录 url 里
 /// SESSDATA 已是可直接入 Cookie 的编码值）。
 fn parse_query_params(url: &str) -> Vec<(String, String)> {
@@ -1455,6 +1504,49 @@ mod tests {
         assert_eq!(d.info.media_count, 42);
         assert_eq!(d.medias[0].bvid, "BV1xx411c7mD");
         assert_eq!(d.medias[0].upper.name, "碧诗");
+    }
+
+    #[test]
+    fn test_deserialize_folder_list_has_more_and_null_data() {
+        // created/list 分页响应：list + has_more。
+        let body = r#"{"code":0,"message":"0","ttl":1,"data":{"count":22,"list":[
+            {"id":939227072,"title":"学习","media_count":22},
+            {"id":75020272,"title":"MAD/AMV","media_count":16}
+        ],"has_more":true}}"#;
+        let env: ApiEnvelope<FolderListResp> = serde_json::from_str(body).unwrap();
+        let d = env.data.unwrap();
+        assert!(d.has_more);
+        assert_eq!(d.list.len(), 2);
+        assert_eq!(d.list[1].title, "MAD/AMV");
+
+        // 响应缺 has_more 字段时按 false（单页即止）。
+        let body = r#"{"code":0,"message":"0","ttl":1,"data":{"count":2,"list":[
+            {"id":1,"title":"默认收藏夹","media_count":1}
+        ]}}"#;
+        let env: ApiEnvelope<FolderListResp> = serde_json::from_str(body).unwrap();
+        let d = env.data.unwrap();
+        assert!(!d.has_more);
+
+        // data 为 null（无收藏的收藏夹）：按空页处理而非解析失败。
+        let body = r#"{"code":0,"message":"OK","ttl":1,"data":null}"#;
+        let env: ApiEnvelope<FolderListResp> = serde_json::from_str(body).unwrap();
+        let d = env.data.unwrap_or_default();
+        assert!(d.list.is_empty());
+        assert!(!d.has_more);
+    }
+
+    #[test]
+    fn test_dedup_folders_keeps_first() {
+        let folders = vec![
+            FavFolder { id: 555, title: "a".into(), media_count: 1 },
+            FavFolder { id: 666, title: "b".into(), media_count: 2 },
+            FavFolder { id: 555, title: "a2".into(), media_count: 9 },
+        ];
+        let out = dedup_folders(folders);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].id, 555);
+        assert_eq!(out[0].title, "a", "应保留首个出现者");
+        assert_eq!(out[1].id, 666);
     }
 
     #[test]
