@@ -1,0 +1,35 @@
+[package]
+name = "simple-music"
+version = "0.1.0"
+edition = "2024"
+description = "SimpleMusic - 桌面音乐播放器（Rust + egui，无 WebView）"
+license = "MIT"
+
+[[bin]]
+name = "simple-music"
+path = "src/main.rs"
+
+[features]
+default = ["tray"]
+# 系统托盘。Linux 需 GTK3（libappindicator 后端）；macOS/Windows 用系统原生托盘，无需 GTK。
+tray = ["dep:tray-icon", "dep:gtk"]
+
+[dependencies]
+eframe = { version = "0.36.1", default-features = false, features = ["glow", "x11", "wayland"] }
+md5 = "0.7"
+qrcode = { version = "0.14.1", default-features = false }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.145"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+rodio = { version = "0.17", default-features = false }
+symphonia = { version = "0.5.4", default-features = false, features = ["aac", "isomp4", "mp3", "wav", "pcm"] }
+tray-icon = { version = "0.24.2", optional = true }
+
+# GTK 仅 Linux 需要（tray-icon 的 Linux 后端要求 GTK 事件循环；macOS/Windows 无此依赖）。
+# 参考 muda 的做法：feature 里 `dep:gtk` 在非 Linux 目标上是 no-op。
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = { version = "0.18", optional = true }
+
+[profile.release]
+lto = "thin"

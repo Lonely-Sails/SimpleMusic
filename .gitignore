@@ -1,0 +1,25 @@
+# Rust / Cargo
+/target
+# Cargo.lock：二进制应用应提交，不忽略
+
+# 沙箱本地工具链与依赖（无 root 容器专用；真实机器不需要，也不应提交）
+/.toolchain
+/.sysroot
+
+# 运行时产物（仅当落在项目目录内时）
+*.part
+*.tmp
+/local-config
+
+# 手动备份包（git 本身就是版本历史，无需重复存档）
+/SimpleMusic.zip
+
+# 编辑器 / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 系统
+.DS_Store
+Thumbs.db
