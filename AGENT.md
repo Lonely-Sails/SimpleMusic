@@ -14,7 +14,7 @@
 cd /data/dsh/home/SimpleMusic
 source .toolchain/env.sh          # 设置 RUSTUP_HOME / CARGO_HOME / PATH / CC / 链接器 等
 cargo check                       # 编译检查
-cargo test                        # 单测（当前 81+ 个，全部离线）
+cargo test                        # 单测（当前 88 个，全部离线）
 cargo run -- --smoke              # 无窗口模块自检，打印 SMOKE_OK 退出（会走少量网络，失败不阻断）
 cargo run                         # 真实 GUI 启动（需要显示环境）
 ```
@@ -33,24 +33,53 @@ cargo run                         # 真实 GUI 启动（需要显示环境）
 
 ## 2. 架构总览
 
+代码按「分层 + 按职责拆文件」组织：`app/` 是应用层（UI + 状态 + 异步调度），
+`modules/` 是领域模块（B 站客户端 / 音频引擎 / 歌词 / 持久化，无 UI 依赖），
+`util/` 是纯函数工具（无 egui 依赖，可独立单测），顶层文件是主题/图标/字体/封面/托盘等基础能力。
+
 ```
-main.rs       启动入口：解析 --width/--height/--smoke；注册字体、主题；创建 MusicApp
-app.rs        ★核心：主窗口 UI + 桌面歌词悬浮窗 + 异步任务调度（约 2700+ 行）
-tray.rs       系统托盘（feature=tray）：Linux=独立 GTK 线程+libappindicator；macOS/Win=主线程原生托盘；无 feature 时是 no-op 桩
-              托盘点击约定：左键单击=显示/聚焦主窗口；右键=托盘菜单（显示/隐藏、退出）。
-              Linux/libappindicator 不上报图标点击事件（点击由系统面板打开菜单），属平台限制；
-              macOS/Windows 用 `with_menu_on_left_click(false)` 关掉左键弹菜单后监听 `TrayIconEvent::Click`。
-state.rs      数据模型：PlaybackState / QueueItem / Playlist / PlayMode / AudioQuality / Settings
-theme.rs      主题色板 + 按钮/样式辅助（BG_*/TEXT_*/ACCENT 等语义常量）
-icons.rs      界面图标：内嵌 Phosphor 图标字体（PUA 码点，画到 rect 中心），不依赖 emoji/系统字形
-cover.rs      封面缩略图：后台线程下载 + image 解码（不在主线程解码）→ egui 纹理缓存（LRU，失败 30 分钟冷却）
-fonts.rs      字体：内嵌 Noto Sans SC（CJK）+ Phosphor（图标，MIT），均编译期 include_bytes!
-modules/
-  bilibili.rs B 站客户端：扫码登录/收藏夹/BV 解析/playurl DASH 音频流（含 WBI 签名）
-  audio.rs    音频引擎：下载缓存(md5 键控) + symphonia 解码 + rodio 输出（专用线程）
-  lyrics.rs   LRCLIB 搜索/清洗/打分 + LRC 解析 + 时间轴同步
-  storage.rs  配置/会话/歌单 JSON 持久化（BiliSession Debug 已脱敏）
+src/
+├── main.rs       启动入口：解析 --width/--height/--smoke；注册字体、主题；创建 MusicApp
+├── app/          应用层（原 app.rs 按职责拆分，均为 `impl MusicApp` 块）
+│   ├── mod.rs    MusicApp 结构 + new() + 跨模块小工具 + eframe::App 实现（ui/logic/on_exit）
+│   ├── messages.rs 后台线程消息 AsyncMsg + spawn_* 派发 + handle_msg
+│   ├── player.rs 播放控制（上下曲/seek/音量/移除）+ 快捷键 handle_shortcuts + clamp_seek/enqueue_dedup
+│   ├── playlists.rs 歌单管理（切换/删除/重命名/添加到歌单/在线歌单定位）
+│   ├── lyrics.rs 歌词同步（update_lyrics_line + pick_plain_line_index）
+│   ├── window.rs 窗口关闭/隐藏（request_close）+ 系统托盘事件轮询 poll_tray_events
+│   └── ui/       主界面组件，按区域一文件
+│       ├── mod.rs            show_main 主窗口组装
+│       ├── widgets.rs        跨区域复用的 egui 小组件（transport_button/icon_button/spinner_arc/
+│       │                      封面占位/二维码/文本截断）
+│       ├── title_bar.rs      自定义标题栏 + 窗口控制按钮 + 缩放把手
+│       ├── status_bar.rs     状态栏（当前曲目/登录态/设置按钮）
+│       ├── playlist_bar.rs   歌单选择栏 + 收藏夹选择弹窗 + 歌单管理窗口
+│       ├── song_list.rs      本地/在线歌曲列表（含右键菜单、搜索过滤）
+│       ├── import.rs         导入 B 站歌曲输入栏
+│       ├── player_bar.rs     底部播放条（控制/进度/音量/切歌模式/桌面歌词开关）
+│       ├── settings.rs       设置窗口
+│       ├── login.rs          扫码登录弹窗
+│       └── lyrics_viewport.rs 桌面歌词悬浮窗（独立 viewport）
+├── util/         纯函数工具（无 egui 依赖，全部带单测）
+│   ├── fmt.rs    format_secs / format_bytes
+│   ├── rand.rs   rand_idx（Xorshift）
+│   └── filter.rs song_matches_query
+├── modules/
+│   ├── bilibili.rs B 站客户端：扫码登录/收藏夹/BV 解析/playurl DASH 音频流（含 WBI 签名）
+│   ├── audio.rs    音频引擎：下载缓存(md5 键控) + symphonia 解码 + rodio 输出（专用线程）
+│   ├── lyrics.rs   LRCLIB 搜索/清洗/打分 + LRC 解析 + 时间轴同步
+│   └── storage.rs  配置/会话/歌单 JSON 持久化（BiliSession Debug 已脱敏）
+├── state.rs      数据模型：PlaybackState / QueueItem / Playlist / PlayMode / AudioQuality / Settings
+├── theme.rs      主题色板 + 按钮/样式辅助（BG_*/TEXT_*/ACCENT 等语义常量）
+├── icons.rs      界面图标：内嵌 Phosphor 图标字体（PUA 码点，画到 rect 中心），不依赖 emoji/系统字形
+├── cover.rs      封面缩略图：后台线程下载 + image 解码（不在主线程解码）→ egui 纹理缓存（LRU，失败 30 分钟冷却）
+├── fonts.rs      字体：内嵌 Noto Sans SC（CJK）+ Phosphor（图标，MIT），均编译期 include_bytes!
+└── tray.rs       系统托盘（feature=tray）：Linux=独立 GTK 线程+libappindicator；macOS/Win=主线程原生托盘；无 feature 时是 no-op 桩
 ```
+
+> **重构说明（2025-09）**：原 3000+ 行的 `app.rs` 已按「消息调度 / 播放控制 / 歌单 / 歌词 /
+> 窗口 / UI 组件」拆成 `app/` 目录。`MusicApp` 仍是单一结构体，各文件是它的 `impl` 块，
+> 跨文件调用的方法标 `pub(crate)`；逻辑与测试未改动，仅物理拆分 + 清理未用导入。
 
 ### 线程模型（最重要的一条约定）
 - **所有阻塞网络/IO 都放后台 `std::thread`**，结果经**单个 `mpsc` 通道** `AsyncMsg` 发回主线程；`MusicApp::logic` 每帧 `try_recv` 排空并更新状态。
@@ -82,10 +111,10 @@ modules/
 
 ## 4. 核心约定 / 改代码前必看
 
-1. **借用手法**：`app.rs` 里大量「先 clone 数据（`rows`/`fav_items`/`snapshot`），再进闭包操作 `self`」来绕开借用检查。新增 UI 逻辑时沿用此模式，不要在闭包内同时 hold 两个 `&mut self` 借用。
+1. **借用手法**：`app/` 下各 UI 文件里大量「先 clone 数据（`rows`/`fav_items`/`snapshot`），再进闭包操作 `self`」来绕开借用检查。新增 UI 逻辑时沿用此模式，不要在闭包内同时 hold 两个 `&mut self` 借用。
 2. **窗口/弹窗开关**：用 `let mut open = self.xxx; ... .open(&mut open).show(...); self.xxx = open;` 模式。注意：**闭包内不能改 `open`**（会与 `.open(&mut open)` 冲突）——需要「操作后关窗」用外部 `let mut close_after = false;` 捕获进闭包，`show` 之后再改 `open`。
-3. **借用手法细节**：`egui::Popup`/`Response::context_menu` 的闭包是 `FnOnce`，但每帧新建，所以闭包内可以直接 `self.method()`（参考 `show_playlist_selector` 的 + 按钮 popup）。
-4. **键盘快捷键**在 `handle_shortcuts`（`logic` 里调用），用 `ctx.memory(|m| m.focused().is_none())` 判断无输入焦点才生效，避免抢空格/方向键。新增快捷键加在这里，别散落到 UI 闭包里。
+3. **借用手法细节**：`egui::Popup`/`Response::context_menu` 的闭包是 `FnOnce`，但每帧新建，所以闭包内可以直接 `self.method()`（参考 `ui/playlist_bar.rs` 的 + 按钮 popup）。
+4. **键盘快捷键**在 `app/player.rs::handle_shortcuts`（`logic` 里调用），用 `ctx.memory(|m| m.focused().is_none())` 判断无输入焦点才生效，避免抢空格/方向键。新增快捷键加在这里，别散落到 UI 闭包里。
 5. **文本输入框**（导入/搜索/重命名）：聚焦时 `focused()` 返回 Some，快捷键自动停用，这是预期行为。
 6. **主题**：一律用 `theme::` 语义色常量（`BG_CARD`/`TEXT_PRIMARY`/`ACCENT`/`GOLD`…），不要写魔法色值；按钮样式用 `theme::primary_button`/`theme::small_button`。
 7. **图标**：所有界面图标用 `icons::*`（内嵌 Phosphor 图标字体，PUA 码点渲染到 rect 中心），不要依赖 emoji 或媒体控制码点（跨平台字形缺失会显示 "?"）。
@@ -117,7 +146,20 @@ modules/
 
 ## 6. 近期改动（本轮已实现）
 
-本轮（桌面歌词全透明 + 收藏夹接口修复）：
+本轮（结构重构：`app.rs` 拆分 + 目录分层）：
+
+- **重构：`src/app.rs`（约 3000 行）按职责拆分为 `src/app/` 目录**：
+  `mod.rs`（结构/生命周期）、`messages.rs`（AsyncMsg + spawn_* + handle_msg）、
+  `player.rs`（播放控制 + 快捷键）、`playlists.rs`（歌单管理）、`lyrics.rs`（歌词同步）、
+  `window.rs`（托盘/窗口）、`ui/`（按区域拆 11 个 UI 文件）。
+  纯函数抽到新 `src/util/`（fmt/rand/filter，全部带单测）。
+  行为零改动：88 个单测全绿，`cargo check`（含默认 tray feature）通过。
+- **重构细节**：`MusicApp` 仍是单一结构体，各文件是其 `impl` 块；跨文件调用的方法
+  标 `pub(crate)`（如 `current_item`/`spawn_*`/`show_*`）；闭包借用模式、`AsyncMsg`
+  消息协议、持久化格式、快捷键与 UI 布局均未改变。
+- **新增单测**：`util::rand` 边界测试（`max=0` / `max=1` / 界内）3 个。
+
+上一轮（桌面歌词全透明 + 收藏夹接口修复）：
 
 - **桌面歌词全透明**：`show_lyrics_viewport` 默认不再绘制任何背景/描边/外圈柔光，
   仅「未锁定 + 鼠标悬浮」时绘制背景卡片（`LYRIC_BG`）与描边（关闭按钮/拖动仍随 hover 出现）。
@@ -129,7 +171,7 @@ modules/
 - **启动补 buvid**：GUI 启动时后台线程调 `BiliClient::ensure_buvid`
   （之前只有 `--smoke` 才调用），降低风控 412 概率。
 
-上一轮在 `src/app.rs` 新增/改动（均有单测或 smoke 验证，81+ 测试通过）：
+上一轮在 `app/` 目录新增/改动（均有单测或 smoke 验证，88+ 测试通过）：
 
 - `MusicApp` 新字段：`search_text`、`playlist_mgmt_open`、`renaming_idx`、`rename_text`、`last_notice`。
 - 新辅助方法：`notice` / `switch_active_playlist`（切歌单重置 `current_track` 并清搜索） / `stop_current` / `add_song_to_local_playlist` / `delete_playlist` / `rename_playlist` / `change_volume` / `handle_shortcuts`。
@@ -158,7 +200,7 @@ modules/
 - 本地播放列表项不可拖拽排序；歌单内歌曲不可移动/复制到其他歌单（目前只有右键「添加到其他歌单」= 复制式）。
 - 无播放历史/最近播放记录。
 - 在线歌单分页加载，搜索只过滤已加载页。
-- 若要加功能，优先在 `app.rs` 对应 `show_*` 方法内做增量；涉及跨线程新数据用 `AsyncMsg` 变体 + `handle_msg` 分支。
+- 若要加功能，优先在 `app/ui/` 对应 `show_*` 方法所在文件内做增量；涉及跨线程新数据用 `AsyncMsg` 变体 + `messages.rs::handle_msg` 分支；新增纯逻辑放 `util/` 或对应文件内 `#[cfg(test)]`。
 
 ---
 
@@ -166,19 +208,27 @@ modules/
 
 | 想改什么 | 去哪个文件/函数 |
 |---|---|
-| 主界面布局/顶部栏 | `app.rs::show_main` |
-| 自定义标题栏/窗口控制 | `app.rs::show_custom_title_bar` / `show_resize_grip` |
-| 系统托盘 | `tray.rs` + `app.rs::poll_tray_events` |
-| 播放条（进度/音量/切歌模式） | `app.rs::show_player_bar` |
-| 歌单选择 + 管理 | `app.rs::show_playlist_selector` / `show_playlist_manage_window` |
-| 本地歌曲列表 | `app.rs::show_local_songs` |
-| 在线收藏夹列表 | `app.rs::show_online_songs` |
-| 设置窗口 | `app.rs::show_settings_window` |
-| 桌面歌词悬浮窗 | `app.rs::show_lyrics_viewport` |
-| 快捷键 | `app.rs::handle_shortcuts` |
-| 异步消息类型 | `app.rs::AsyncMsg` + `handle_msg` |
+| 主界面布局/顶部栏 | `app/ui/mod.rs::show_main` |
+| 自定义标题栏/窗口控制 | `app/ui/title_bar.rs::show_custom_title_bar` / `show_resize_grip` |
+| 窗口关闭/隐藏、托盘事件 | `app/window.rs::request_close` / `poll_tray_events`；`tray.rs` |
+| 播放条（进度/音量/切歌模式） | `app/ui/player_bar.rs::show_player_bar` |
+| 歌单选择 + 管理 | `app/ui/playlist_bar.rs::show_playlist_selector` / `show_playlist_manage_window` |
+| 本地歌曲列表 | `app/ui/song_list.rs::show_local_songs` |
+| 在线收藏夹列表 | `app/ui/song_list.rs::show_online_songs` |
+| 设置窗口 | `app/ui/settings.rs::show_settings_window` |
+| 桌面歌词悬浮窗 | `app/ui/lyrics_viewport.rs::show_lyrics_viewport` |
+| 扫码登录弹窗 | `app/ui/login.rs::show_login_window` |
+| 快捷键 | `app/player.rs::handle_shortcuts` |
+| 播放控制（上下曲/seek/移除） | `app/player.rs` |
+| 歌单增删改/切换 | `app/playlists.rs` |
+| 歌词同步（当前句/下一句） | `app/lyrics.rs` |
+| 异步消息类型与分发 | `app/messages.rs::AsyncMsg` + `handle_msg` |
 | B 站接口/取流 | `modules/bilibili.rs` |
 | 音频/缓存 | `modules/audio.rs` |
 | 歌词/LRC | `modules/lyrics.rs` |
 | 持久化 | `modules/storage.rs` |
 | 数据模型/设置 | `state.rs` |
+| 格式化/随机数/搜索过滤 | `util/fmt.rs` / `util/rand.rs` / `util/filter.rs` |
+| 主题色板/按钮样式 | `theme.rs` |
+| 图标（Phosphor） | `icons.rs` |
+| 封面下载/缓存 | `cover.rs` |

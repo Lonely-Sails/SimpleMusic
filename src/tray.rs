@@ -9,7 +9,7 @@
 //!   [`Tray::init_on_main_thread`] 真正创建。
 //! - 未启用 `tray` feature：no-op 桩（`Tray::is_enabled` 恒为 `false`），主程序照常运行。
 //!
-//! 点击交互约定（见 `app.rs::poll_tray_events`）：
+//! 点击交互约定（见 `app/window.rs::poll_tray_events`）：
 //! - **左键单击**：直接显示/聚焦主窗口（macOS/Windows 上报 `TrayIconEvent`；Linux 上
 //!   libappindicator 不上报点击事件，点击由系统面板打开菜单——平台限制）。
 //! - **右键**：弹出托盘菜单（显示/隐藏主窗口、退出）。

@@ -8,7 +8,7 @@
 //!
 //! 后续扩展点：
 //! - TODO: 保存收藏列表 / 播放历史 / 播放队列（可另存 playlist.json，避免与设置互相覆盖）。
-//! - TODO: 写入改为防抖/事件驱动（当前 app.rs 每 5 秒兜底保存一次）。
+//! - TODO: 写入改为防抖/事件驱动（当前 app/mod.rs 每 5 秒兜底保存一次）。
 
 use crate::state::{Playlist, QueueItem, Settings};
 use std::collections::BTreeMap;

@@ -4,6 +4,7 @@
 #![allow(dead_code)]
 
 mod app;
+mod util;
 mod cover;
 mod fonts;
 mod icons;

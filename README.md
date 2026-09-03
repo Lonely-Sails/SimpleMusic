@@ -61,9 +61,21 @@ sudo apt install build-essential pkg-config libasound2-dev libxkbcommon-dev libw
 ```
 src/
 ├── main.rs            启动入口（--width/--height/--smoke）
-├── app.rs             MusicApp：主窗口 + 桌面歌词悬浮窗 + 异步任务调度
+├── app/               应用层：MusicApp 结构 + 主界面 + 异步调度（按职责拆文件）
+│   ├── mod.rs         结构定义 + eframe 生命周期（ui/logic/on_exit）
+│   ├── messages.rs    后台线程消息（AsyncMsg + spawn_* + handle_msg）
+│   ├── player.rs      播放控制 + 键盘快捷键
+│   ├── playlists.rs   歌单管理
+│   ├── lyrics.rs      歌词同步
+│   ├── window.rs      窗口控制 + 系统托盘事件
+│   └── ui/            界面组件（标题栏/状态栏/歌单/歌曲列表/播放条/设置/登录/桌面歌词…）
+├── util/              纯函数工具（格式化/随机数/搜索过滤，带单测）
 ├── fonts.rs           CJK 字体加载（内嵌 Noto Sans SC + 系统字体兜底）
-├── state.rs           PlaybackState / Settings
+├── state.rs           PlaybackState / Settings / 歌单模型
+├── cover.rs           封面异步下载 + 缩略图缓存
+├── theme.rs           主题色板与按钮样式
+├── icons.rs           Phosphor 图标
+├── tray.rs            系统托盘（feature=tray，可选 GTK）
 └── modules/
     ├── bilibili.rs    B 站客户端：扫码登录/收藏夹/BV 解析/playurl DASH 音流（含 WBI 支持）
     ├── audio.rs       音频引擎：下载缓存 + symphonia 解码 + rodio 输出（专用线程 + 命令通道）
