@@ -1,6 +1,6 @@
 # AGENT.md — SimpleMusic 开发指南（给后续 AI/开发者）
 
-本项目是 **SimpleMusic**：一个极简桌面音乐播放器（Rust 2024 + eframe/egui 0.36，纯原生 GUI 无 WebView）。音源来自 B 站视频，歌词来自 LRCLIB 在线搜索，带桌面歌词悬浮窗。
+本项目是 **SimpleMusic**：一个极简桌面音乐播放器（Rust 2024 + eframe/egui 0.36，纯原生 GUI 无 WebView）。音源来自 B 站视频，歌词来自 vkeys.cn 聚合源（QQ 音乐/网易云）在线搜索（LRCLIB 兜底），带桌面歌词悬浮窗。
 
 > 目标：让接手的人/Agent 用最少的时间搞清楚「项目怎么跑、代码怎么组织、哪些约定必须遵守、改哪里能加什么功能」。
 
@@ -67,7 +67,7 @@ src/
 ├── modules/
 │   ├── bilibili.rs B 站客户端：扫码登录/收藏夹/BV 解析/playurl DASH 音频流（含 WBI 签名）
 │   ├── audio.rs    音频引擎：下载缓存(md5 键控) + symphonia 解码 + rodio 输出（专用线程）
-│   ├── lyrics.rs   LRCLIB 搜索/清洗/打分 + LRC 解析 + 时间轴同步
+│   ├── lyrics.rs   vkeys.cn 聚合（QQ 音乐/网易云，中文覆盖高）+ LRCLIB 搜索/清洗/打分 + LRC 解析 + 时间轴同步
 │   └── storage.rs  配置/会话/歌单 JSON 持久化（BiliSession Debug 已脱敏）
 ├── state.rs      数据模型：PlaybackState / QueueItem / Playlist / PlayMode / AudioQuality / Settings
 ├── theme.rs      主题色板 + 按钮/样式辅助（BG_*/TEXT_*/ACCENT 等语义常量）
@@ -91,7 +91,7 @@ src/
 `resolve_stream`（DASH 音频流，未签名被风控自动补 WBI 重试）→ 带 `required_headers`(UA/Referer/Cookie) 流式下载到缓存 `~/.cache/simple-music/audio/<md5(bvid)>.m4s`（二次秒开）→ symphonia(AAC/MP4) 解码 → rodio 输出；CDN 403 自动换备用地址；无输出设备绝不 panic，进错误状态。
 
 ### 歌词链路
-切歌 → 后台 `LyricsProvider::fetch(title, uploader)` → LRCLIB 多候选查询 + 相似度打分(阈值 40) → `Lyrics{lrc, plain}` 按 bvid 回主线程；同步歌词用二分定位当前句，无同步时按进度近似取纯文本行。
+切歌 → 后台 `LyricsProvider::fetch(title, uploader)` → 按候选查询依次尝试 **vkeys.cn 聚合源**（QQ 音乐 `mid` 优先 → 网易云 `id`，取回 LRC 原文，翻译 `trans`/`tlyric` 按时间戳并入同行）→ 全部未命中再回退 **LRCLIB**（搜索 + 精确 GET + 相似度打分阈值 40）→ `Lyrics{lrc, plain}` 按 bvid 回主线程；同步歌词用二分定位当前句，无同步时按进度近似取纯文本行。
 
 ---
 
@@ -136,7 +136,7 @@ src/
 - **播放**：播放/暂停、上下曲、进度条 seek、音量、曲终自动下一首、加载进度、三种切歌模式（顺序循环/单曲循环/随机）、音质偏好（64/128/320k/无损）。
 - **封面**：列表/播放条圆角缩略图，异步 + 内存缓存 + 占位图。
 - **桌面歌词**：透明置顶无边框悬浮窗，当前句+下一句预览，可拖动/锁定(鼠标穿透)/调字号，位置持久化（仅 X11）。
-- **歌词**：LRCLIB 自动搜索 + LRC 时间轴同步。
+- **歌词**：vkeys.cn 聚合源（QQ 音乐/网易云）自动搜索 + LRC 时间轴同步，翻译歌词并入；LRCLIB 兜底。
 - **歌单**：本地歌单增删改（管理窗口：重命名/删除，至少留一个）；在线歌单（B 站收藏夹引用，可删）。
 - **歌单内搜索**：标题/UP 主实时过滤（本地与在线列表都有）。
 - **键盘快捷键**：`空格` 播放/暂停，`←/→` 快退/快进 5s，`↑/↓` 音量 ±5%，`N/P` 上下曲。
