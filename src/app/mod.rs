@@ -94,6 +94,8 @@ pub struct MusicApp {
     // 桌面歌词
     lyrics_pos: Option<Pos2>,
     last_pass_through_applied: Option<bool>,
+    /// 上次推送给浮窗的内容指纹（当前句/下一句/字号/锁定），用于按需重绘浮窗。
+    last_lyrics_frame: Option<(String, String, f32, bool)>,
     // 异步通道
     tx: Sender<AsyncMsg>,
     rx: Receiver<AsyncMsg>,
@@ -200,6 +202,7 @@ impl MusicApp {
             lyrics_next_line: String::new(),
             lyrics_pos: None,
             last_pass_through_applied: None,
+            last_lyrics_frame: None,
             tx,
             rx,
             last_save: None,
@@ -342,6 +345,22 @@ impl eframe::App for MusicApp {
 
         self.covers.poll();
         self.update_lyrics_line();
+
+        // 桌面歌词：内容变化时才唤醒浮窗重绘（deferred 模式不与主窗口互拖）。
+        if self.settings.desktop_lyrics_enabled {
+            let key = (
+                self.state.current_lrc_line.clone(),
+                self.lyrics_next_line.clone(),
+                self.settings.font_scale,
+                self.settings.lyrics_locked,
+            );
+            if self.last_lyrics_frame.as_ref() != Some(&key) {
+                self.last_lyrics_frame = Some(key);
+                self.request_lyrics_repaint(ctx);
+            }
+        } else {
+            self.last_lyrics_frame = None;
+        }
 
         // 持久化
         let now = Instant::now();

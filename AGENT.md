@@ -84,6 +84,7 @@ src/
 ### 线程模型（最重要的一条约定）
 - **所有阻塞网络/IO 都放后台 `std::thread`**，结果经**单个 `mpsc` 通道** `AsyncMsg` 发回主线程；`MusicApp::logic` 每帧 `try_recv` 排空并更新状态。
 - `BiliClient` 以 `Arc<Mutex<..>>` 跨线程共享（有锁中毒保护）；`AudioEngine` 仅在 UI 线程持有，命令经 mpsc 发往专用播放线程，状态经 `Arc<Mutex<PlaybackStatus>>` 轮询。
+- **桌面歌词浮窗**通过 `egui::Context::show_viewport_deferred`（延迟模式）渲染，**不与主窗口共享重绘节奏**：浮窗只在歌词文本变化或被 `request_repaint_of` 显式唤醒时才重绘，主窗口播放动画时不会连带浮窗——彻底解决多 viewport 卡顿。
 - UI 闭包里禁止直接做网络请求；需要结果就 `spawn_*` 一个后台线程 + 发消息。
 
 ### 播放链路
@@ -146,7 +147,22 @@ src/
 
 ## 6. 近期改动（本轮已实现）
 
-本轮（结构重构：`app.rs` 拆分 + 目录分层）：
+本轮（性能修复：桌面歌词浮窗改为延迟 viewport + 按需重绘，消除主界面卡顿）：
+
+- **根因**：浮窗原来用 `show_viewport_immediate`（立即模式），egui 文档明确说明该模式
+  「父子窗口任一需要重绘，双方都重绘」= 双倍工作量。主窗口播放时每帧重绘（进度条动画），
+  把透明置顶浮窗也拖进每帧渲染，导致主界面卡顿。
+- **修复**：改为 `show_viewport_deferred`（延迟模式），浮窗只在自身需要重绘时执行 UI 闭包：
+  - `logic()` 比较浮窗内容指纹（当前句/下一句/字号/锁定），变化才
+    `request_lyrics_repaint`（`ctx.request_repaint_of`）唤醒浮窗；
+  - 浮窗收到输入事件（hover/拖动/点击）由 egui 自动重绘；
+  - 其余时间浮窗完全静止，与主窗口互不拖累。
+- **通信**：deferred 闭包是 `Fn + 'static`，不能借用 `&mut self`，浮窗交互（关闭按钮、
+  首次位置捕获）通过共享 `ctx` 的 data 槽（`IdTypeMap`：`CLOSE_SLOT`/`POS_SLOT`）回传
+  主线程消费；窗口拖动由系统处理，`ViewportBuilder::patch` 只在值变化时发命令，不会拉回。
+- 行为零改动：88 个单测全绿，两种 feature 配置均编译通过。
+
+上一轮（结构重构：`app.rs` 拆分 + 目录分层）：
 
 - **重构：`src/app.rs`（约 3000 行）按职责拆分为 `src/app/` 目录**：
   `mod.rs`（结构/生命周期）、`messages.rs`（AsyncMsg + spawn_* + handle_msg）、
