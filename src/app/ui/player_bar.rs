@@ -41,6 +41,8 @@ impl MusicApp {
             .show(ui, |ui| {
                 // ── 第一行：进度条（左：当前播放进度，右：歌曲总时长，进度条占满容器宽度） ──
                 let dur = self.state.duration_secs;
+                // 是否有已加载/可播放的曲目：无音频时禁用进度条互动（灰色、不可拖动）。
+                let has_audio = dur > 0.0;
                 let max = if dur > 0.0 { dur } else { 1.0 };
                 // 拖动中用预览值；否则用实际播放位置。显示值钳到 [0, max]，
                 // 避免时长未知(max=1)时出现「全满/全空」的异常态。
@@ -69,7 +71,10 @@ impl MusicApp {
                     // 先量出左右标签宽度，进度条精确填充剩余空间。
                     let slider_w =
                         (ui.available_width() - left_w - right_w - 2.0 * 6.0).max(40.0);
-                    // 时间标签显式用 12px，与上面测量字号一致，避免测宽偏差。
+                    // egui::Slider 会忽略 add_sized 的尺寸提示（只认 spacing().slider_width），
+                    // 必须显式设置 slider_width 才能让进度条真正占满整行，否则只画 ~100px、
+                    // 整行无法铺满（宽度不对、进度条也不居中）。
+                    ui.spacing_mut().slider_width = slider_w;
                     ui.label(
                         RichText::new(left)
                             .color(theme::TEXT_SECONDARY)
@@ -77,8 +82,8 @@ impl MusicApp {
                             .size(12.0),
                     );
                     ui.add_space(6.0);
-                    let resp = ui.add_sized(
-                        [slider_w, 18.0],
+                    let resp = ui.add_enabled(
+                        has_audio,
                         egui::Slider::new(&mut val, 0.0..=max)
                             .show_value(false)
                             .min_decimals(0)
@@ -426,5 +431,95 @@ mod tests {
             (center - 400.0).abs() < 2.0,
             "图标区应在 800px 宽容器内水平居中，实际中心 {center:.1}"
         );
+    }
+
+    /// 进度条行应精确铺满整行并把滑块居中。
+    ///
+    /// 回归：`egui::Slider` 会忽略 `add_sized` 的尺寸提示（只认 `spacing().slider_width`），
+    /// 之前用 `ui.add_sized([slider_w, 18.0], Slider)` 时滑块只画 ~100px、整行无法铺满，
+    /// 进度条既不占满宽度也不居中。必须显式设置 `slider_width`。
+    #[test]
+    fn progress_row_fills_and_centers_slider() {
+        let ctx = egui::Context::default();
+        crate::fonts::install_fonts(&ctx);
+        let screen = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1000.0, 200.0));
+        let mut input = egui::RawInput::default();
+        input.screen_rect = Some(screen);
+
+        let mut slider_w = 0.0;
+        let mut want_w = 0.0;
+        let mut slider_center = 0.0;
+        let mut row_end = 0.0;
+        let mut full = ctx.run_ui(input, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                let left = "00:31";
+                let right = "03:45";
+                let time_font = egui::FontId::monospace(12.0);
+                let width_of = |s: &str| {
+                    ui.ctx()
+                        .fonts_mut(|f| f.layout_no_wrap(s.to_owned(), time_font.clone(), Color32::WHITE))
+                        .size()
+                        .x
+                };
+                let left_w = width_of(left);
+                let right_w = width_of(right);
+                want_w = (ui.available_width() - left_w - right_w - 2.0 * 6.0).max(40.0);
+                ui.spacing_mut().slider_width = want_w;
+                ui.label(RichText::new(left).monospace().size(12.0));
+                ui.add_space(6.0);
+                let mut v = 0.3;
+                let resp = ui.add(
+                    egui::Slider::new(&mut v, 0.0..=1.0)
+                        .show_value(false)
+                        .trailing_fill(true),
+                );
+                ui.add_space(6.0);
+                let right_resp = ui.label(RichText::new(right).monospace().size(12.0));
+                slider_w = resp.rect.width();
+                slider_center = resp.rect.center().x;
+                row_end = right_resp.rect.max.x;
+            });
+        });
+        full.textures_delta.clear();
+
+        // 滑块应占满计算宽度（而不是退回 ~100px）。
+        assert!(
+            (slider_w - want_w).abs() < 1.0,
+            "滑块宽度 {slider_w:.1} 应等于计算宽度 {want_w:.1}，实际退回默认 100px 则说明 add_sized/slider_width 处理有误"
+        );
+        // 整行应铺满 1000px 宽的容器。
+        assert!(
+            (row_end - 1000.0).abs() < 1.0,
+            "进度条行应铺满整行宽度，实际右端到 {row_end:.1}"
+        );
+        // 滑块应水平居中（容器中心 = 500）。
+        assert!(
+            (slider_center - 500.0).abs() < 1.0,
+            "进度条应水平居中，实际滑块中心 {slider_center:.1}"
+        );
+    }
+
+    /// 无音频（duration<=0）时滑块应禁用、不可互动。
+    #[test]
+    fn progress_slider_disabled_without_audio() {
+        let ctx = egui::Context::default();
+        crate::fonts::install_fonts(&ctx);
+        let screen = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1000.0, 200.0));
+        let mut input = egui::RawInput::default();
+        input.screen_rect = Some(screen);
+
+        let mut enabled = true;
+        let mut full = ctx.run_ui(input, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                ui.spacing_mut().slider_width = 500.0;
+                let mut v = 0.0;
+                let resp = ui.add_enabled(false, egui::Slider::new(&mut v, 0.0..=1.0).show_value(false));
+                enabled = resp.enabled();
+            });
+        });
+        full.textures_delta.clear();
+        assert!(!enabled, "无音频时进度条应被禁用");
     }
 }
