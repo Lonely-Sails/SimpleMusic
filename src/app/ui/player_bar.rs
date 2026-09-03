@@ -30,7 +30,7 @@ impl MusicApp {
                     }),
             )
             .show(ui, |ui| {
-                // ── 第一行：进度条（左：当前播放进度，右：歌曲总时长） ──
+                // ── 第一行：进度条（左：当前播放进度，右：歌曲总时长，进度条占满剩余宽度） ──
                 let dur = self.state.duration_secs;
                 let max = if dur > 0.0 { dur } else { 1.0 };
                 let mut val = if self.seek_dragging {
@@ -40,24 +40,23 @@ impl MusicApp {
                 };
                 let left = format_secs(if self.seek_dragging { self.seek_preview } else { self.state.position_secs });
                 let right = format_secs(dur);
-                let font = egui::FontId::monospace(12.0);
-                let w_of = |s: &str| {
-                    ui.ctx()
-                        .fonts_mut(|f| f.layout_no_wrap(s.to_owned(), font.clone(), Color32::WHITE))
-                        .size()
-                        .x
-                };
-                let left_w = w_of(&left);
-                let right_w = w_of(&right);
-                let slider_w = (ui.available_width() - left_w - right_w - 12.0).max(40.0);
 
                 ui.horizontal(|ui| {
+                    // 关闭自动间距，由 add_space 手动控制，保证进度条精确占满整行。
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    let font = egui::FontId::monospace(12.0);
+                    let right_w = ui
+                        .ctx()
+                        .fonts_mut(|f| f.layout_no_wrap(right.clone(), font.clone(), Color32::WHITE))
+                        .size()
+                        .x;
                     ui.label(
                         RichText::new(left)
                             .color(theme::TEXT_SECONDARY)
                             .monospace(),
                     );
                     ui.add_space(6.0);
+                    let slider_w = (ui.available_width() - right_w - 6.0).max(40.0);
                     let resp = ui.add_sized(
                         [slider_w, 18.0],
                         egui::Slider::new(&mut val, 0.0..=max)
@@ -87,8 +86,8 @@ impl MusicApp {
 
                 ui.add_space(10.0);
 
-                // ── 第二行：图标区（从左到右） ──
-                ui.horizontal(|ui| {
+                // ── 第二行：图标区（居中排列） ──
+                ui.horizontal_centered(|ui| {
                     // 1. 桌面歌词开关
                     let on = self.settings.desktop_lyrics_enabled;
                     let color = if on { theme::ACCENT } else { theme::TEXT_SECONDARY };
