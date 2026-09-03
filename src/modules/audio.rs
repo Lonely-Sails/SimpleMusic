@@ -839,8 +839,11 @@ fn worker_loop(
     set_status(&status, |s| s.volume = volume);
 
     // HTTP 客户端只建一次；失败则所有下载报错（不影响本地文件播放）。
+    // 总超时兜底：连接后若长期无数据（CDN 挂起/网络黑洞），blocking read 会永久阻塞，
+    // 导致 st.loading 永远为 true、UI 一直转圈。给整个请求设上限，超时即报错退出。
     let http = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(180))
         .redirect(reqwest::redirect::Policy::limited(5))
         .build()
         .ok();

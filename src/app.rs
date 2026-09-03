@@ -1033,7 +1033,7 @@ impl MusicApp {
         // ── 歌单选择栏 ──
         self.show_playlist_selector(ui);
 
-        // ── 歌单内容 + 导入输入框 ──
+        // ---- 歌单内容 + 导入输入框 ----
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(Color32::TRANSPARENT).inner_margin(egui::Margin::same(18)))
             .show(ui, |ui| {
@@ -1080,18 +1080,20 @@ impl MusicApp {
 
                 ui.horizontal(|ui| {
                     ui.add_space(10.0);
-                    // 应用名（拖动把手）。显式关掉文本选中：主题全局 selectable_labels
-                    // 会给 Label 额外叠加 drag 选中手势，和窗口拖动冲突、还会出现选区高亮，手感很差。
+                    // 音符图标 + 应用名（拖动把手）。
+                    let (note_rect, note_resp) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::drag());
+                    icons::note(ui.painter(), note_rect, theme::ACCENT);
+                    ui.add_space(4.0);
                     let title = egui::Label::new(
-                        RichText::new("♪ SimpleMusic").strong().color(theme::TEXT_PRIMARY),
+                        RichText::new("SimpleMusic").strong().color(theme::TEXT_PRIMARY),
                     )
                     .selectable(false)
                     .sense(Sense::drag());
                     let tr = ui.add(title);
-                    if tr.drag_started() {
+                    if tr.drag_started() || note_resp.drag_started() {
                         ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
                     }
-                    if tr.hovered() {
+                    if tr.hovered() || note_resp.hovered() {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
                     }
                     tr.on_hover_text("拖动移动窗口");
@@ -1150,19 +1152,18 @@ impl MusicApp {
                 ui.horizontal(|ui| {
                     // 左：当前播放曲目（简洁）
                     if let Some(item) = self.current_item() {
-                        ui.label(RichText::new("🎵").color(theme::ACCENT).size(14.0));
+                        let (note_rect, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+                        icons::note(ui.painter(), note_rect, theme::ACCENT);
+                        ui.add_space(2.0);
                         let label = truncate_label(ui, &item.title, 200.0);
-                        ui.label(RichText::new(label).color(theme::TEXT_PRIMARY).size(13.0));
+                        ui.label(RichText::new(label).color(theme::TEXT_PRIMARY).size(12.0));
                     }
 
                     // 右：登录 + 设置
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(4.0);
                         // 设置按钮
-                        if ui
-                            .add(theme::small_button("⚙"))
-                            .on_hover_text("设置")
-                            .clicked()
+                        if icon_button(ui, 26.0, icons::gear, "设置").clicked()
                         {
                             self.settings_window_open = true;
                         }
@@ -1300,11 +1301,7 @@ impl MusicApp {
             .iter()
             .enumerate()
             .map(|(i, pl)| {
-                let label = if pl.is_online() {
-                    format!("📁 {}", pl.name)
-                } else {
-                    pl.name.clone()
-                };
+                let label = pl.name.clone();
                 let media_id = match pl.kind {
                     PlaylistKind::Online { media_id, .. } => Some(media_id),
                     _ => None,
@@ -1341,14 +1338,24 @@ impl MusicApp {
                         .show_ui(ui, |ui| {
                             for (i, label, is_online, media_id) in &playlist_options {
                                 let label = label.as_str();
-                                if ui
-                                    .selectable_value(
-                                        &mut self.active_playlist,
-                                        *i,
-                                        RichText::new(label).color(theme::TEXT_PRIMARY),
-                                    )
-                                    .changed()
-                                {
+                                // 在线歌单行：文件夹图标 + 名称
+                                let mut picked = false;
+                                ui.horizontal(|ui| {
+                                    if *is_online {
+                                        let (r, _) =
+                                            ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+                                        icons::folder(ui.painter(), r, theme::TEXT_SECONDARY);
+                                        ui.add_space(4.0);
+                                    }
+                                    picked |= ui
+                                        .selectable_value(
+                                            &mut self.active_playlist,
+                                            *i,
+                                            RichText::new(label).color(theme::TEXT_PRIMARY),
+                                        )
+                                        .changed();
+                                });
+                                if picked {
                                     // 切换歌单：当前曲目下标（属于原歌单）不再有效。
                                     self.current_track = None;
                                     if *is_online {
@@ -1467,16 +1474,23 @@ impl MusicApp {
                 ui.label(RichText::new("选择一个收藏夹作为歌单：").color(theme::TEXT_SECONDARY));
                 ui.add_space(6.0);
                 for f in folders {
-                    if ui
-                        .add(
-                            egui::Button::new(RichText::new(format!(
-                                "📁 {} ({})",
-                                f.title, f.media_count
-                            )))
-                            .fill(theme::BG_CARD)
-                            .corner_radius(theme::CORNER),
-                        )
-                        .clicked()
+                    let mut clicked = false;
+                    ui.horizontal(|ui| {
+                        let (r, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+                        icons::folder(ui.painter(), r, theme::TEXT_SECONDARY);
+                        ui.add_space(4.0);
+                        clicked = ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new(format!("{} ({})", f.title, f.media_count))
+                                        .color(theme::TEXT_PRIMARY),
+                                )
+                                .fill(theme::BG_CARD)
+                                .corner_radius(theme::CORNER),
+                            )
+                            .clicked();
+                    });
+                    if clicked
                     {
                         // 检查是否已添加
                         if self.online_playlist_index(f.id).is_none() {
@@ -1538,7 +1552,7 @@ impl MusicApp {
             .open(&mut open)
             .show(ctx, |ui| {
                 ui.label(
-                    RichText::new("本地歌单可重命名；📁 在线歌单可删除（B 站收藏夹不受影响）")
+                    RichText::new("本地歌单可重命名；在线歌单可删除（B 站收藏夹不受影响）")
                         .color(theme::TEXT_WEAK)
                         .small(),
                 );
@@ -1547,15 +1561,15 @@ impl MusicApp {
                 ui.add_space(6.0);
 
                 for (i, name, is_online, count) in &snapshot {
-                    let label = if *is_online {
-                        format!("📁 {name} ({count})")
-                    } else {
-                        format!("{name} ({count})")
-                    };
                     let mut do_delete = false;
                     let mut do_rename = false;
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(label).color(theme::TEXT_PRIMARY));
+                        if *is_online {
+                            let (r, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+                            icons::folder(ui.painter(), r, theme::TEXT_SECONDARY);
+                            ui.add_space(2.0);
+                        }
+                        ui.label(RichText::new(format!("{name} ({count})")).color(theme::TEXT_PRIMARY));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui
                                 .add(
@@ -1667,7 +1681,7 @@ impl MusicApp {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if !query.is_empty() {
-                    if ui.add(theme::small_button("✕")).clicked() {
+                    if icon_button(ui, 24.0, icons::cross, "清空搜索").clicked() {
                         self.search_text.clear();
                     }
                 }
@@ -1687,9 +1701,8 @@ impl MusicApp {
                     ui.add_space(40.0);
                     ui.vertical_centered(|ui| {
                         if total == 0 {
-                            ui.label(
-                                RichText::new("♪").color(theme::TEXT_WEAK).size(34.0),
-                            );
+                            let (r, _) = ui.allocate_exact_size(Vec2::splat(36.0), Sense::hover());
+                            icons::note(ui.painter(), r, theme::TEXT_WEAK);
                             ui.add_space(8.0);
                             ui.label(
                                 RichText::new("歌单为空\n从下方链接导入歌曲")
@@ -1753,7 +1766,7 @@ impl MusicApp {
                         Pos2::new(text_x, rect.top() + 10.0),
                         Align2::LEFT_TOP,
                         title,
-                        FontId::proportional(14.0),
+                        FontId::proportional(13.0),
                         if selected {
                             theme::ACCENT_HOVER
                         } else {
@@ -1866,7 +1879,8 @@ impl MusicApp {
         if !self.logged_in() {
             ui.add_space(10.0);
             ui.vertical_centered(|ui| {
-                ui.label(RichText::new("♫").color(theme::TEXT_WEAK).size(22.0));
+                let (r, _) = ui.allocate_exact_size(Vec2::splat(24.0), Sense::hover());
+                icons::note_double(ui.painter(), r, theme::TEXT_WEAK);
                 ui.label(
                     RichText::new("登录后可查看 B 站收藏夹").color(theme::TEXT_WEAK),
                 );
@@ -1908,7 +1922,7 @@ impl MusicApp {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if !query.is_empty() {
-                    if ui.add(theme::small_button("✕")).clicked() {
+                    if icon_button(ui, 24.0, icons::cross, "清空搜索").clicked() {
                         self.search_text.clear();
                     }
                 }
@@ -1988,7 +2002,7 @@ impl MusicApp {
                         Pos2::new(text_x, rect.top() + 10.0),
                         Align2::LEFT_TOP,
                         title,
-                        FontId::proportional(14.0),
+                        FontId::proportional(13.0),
                         if selected {
                             theme::ACCENT_HOVER
                         } else {
@@ -2102,7 +2116,7 @@ impl MusicApp {
                 let raw = self.import_text.trim().to_string();
                 self.spawn_import(raw);
             }
-            if self.pending_import || self.fav_loading {
+            if self.pending_import {
                 ui.spinner();
             }
         });
@@ -2840,14 +2854,14 @@ fn truncate_label(ui: &egui::Ui, text: &str, max_width: f32) -> String {
     }
     if ui
         .ctx()
-        .fonts_mut(|f| f.layout_no_wrap(text.to_owned(), FontId::proportional(14.0), Color32::WHITE))
+        .fonts_mut(|f| f.layout_no_wrap(text.to_owned(), FontId::proportional(13.0), Color32::WHITE))
         .size()
         .x
         <= max_width
     {
         return text.to_owned();
     }
-    fit_text(ui.ctx(), text, &FontId::proportional(14.0), max_width)
+    fit_text(ui.ctx(), text, &FontId::proportional(13.0), max_width)
 }
 
 fn format_secs(secs: f64) -> String {
@@ -2909,6 +2923,27 @@ fn transport_button(
     let icon_rect = rect.shrink(size * 0.30);
     icon(&painter, icon_rect, theme::TEXT_PRIMARY);
     resp.clicked()
+}
+
+/// 通用图标小按钮（卡片底、圆角、hover 仅变色不加描边）。
+fn icon_button(
+    ui: &mut egui::Ui,
+    size: f32,
+    icon: fn(&egui::Painter, egui::Rect, egui::Color32),
+    tooltip: &str,
+) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
+    let bg = if resp.is_pointer_button_down_on() {
+        theme::BG_ACTIVE
+    } else if resp.hovered() {
+        theme::BG_HOVER
+    } else {
+        theme::BG_CARD
+    };
+    let painter = ui.painter();
+    painter.rect_filled(rect, theme::CORNER, bg);
+    icon(&painter, rect.shrink(size * 0.24), theme::TEXT_SECONDARY);
+    resp.on_hover_text(tooltip)
 }
 
 fn spinner_arc(painter: &egui::Painter, center: Pos2, radius: f32, color: Color32) {

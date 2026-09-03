@@ -111,13 +111,13 @@ fn visuals() -> egui::Visuals {
     // Widgets
     v.widgets.noninteractive.weak_bg_fill = Color32::TRANSPARENT;
     v.widgets.noninteractive.bg_fill = BG_PANEL;
-    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, BORDER_SOFT);
+    v.widgets.noninteractive.bg_stroke = Stroke::NONE;
     v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, TEXT_PRIMARY);
     v.widgets.noninteractive.corner_radius = CornerRadius::same(CORNER);
 
     v.widgets.inactive.weak_bg_fill = BG_CARD;
     v.widgets.inactive.bg_fill = BG_TRACK;
-    v.widgets.inactive.bg_stroke = Stroke::new(1.0, BORDER_SOFT);
+    v.widgets.inactive.bg_stroke = Stroke::NONE;
     v.widgets.inactive.fg_stroke = Stroke::new(1.0, TEXT_PRIMARY);
     v.widgets.inactive.corner_radius = CornerRadius::same(CORNER);
 
@@ -142,7 +142,7 @@ fn visuals() -> egui::Visuals {
     // Selection
     v.selection = Selection {
         bg_fill: ACCENT,
-        stroke: Stroke::new(1.0, TEXT_PRIMARY),
+        stroke: Stroke::NONE,
     };
 
     v.hyperlink_color = ACCENT_HOVER;
@@ -202,13 +202,13 @@ fn visuals() -> egui::Visuals {
 /// 构建 Spacing。
 fn spacing() -> egui::style::Spacing {
     let mut s = egui::style::Spacing::default();
-    // 宽松布局：元素间、控件内留白都比默认更大，视觉更透气。
-    s.item_spacing = Vec2::new(14.0, 12.0);
-    s.window_margin = Margin::same(20);
-    s.button_padding = Vec2::new(18.0, 8.0);
-    s.menu_margin = Margin::same(12);
+    // 紧凑布局：元素间、控件内留白比默认略小，视觉更紧凑。
+    s.item_spacing = Vec2::new(10.0, 8.0);
+    s.window_margin = Margin::same(16);
+    s.button_padding = Vec2::new(14.0, 7.0);
+    s.menu_margin = Margin::same(10);
     s.indent = 24.0;
-    s.interact_size = Vec2::new(34.0, 30.0);
+    s.interact_size = Vec2::new(32.0, 28.0);
     s.slider_width = 140.0;
     s.slider_rail_height = 6.0;
     s.text_edit_width = 240.0;
@@ -252,12 +252,12 @@ fn style_build() -> Style {
     style.visuals = visuals();
 
     let mut text_styles = std::collections::BTreeMap::new();
-    let body = FontId::new(15.0, FontFamily::Proportional);
+    let body = FontId::new(13.0, FontFamily::Proportional);
     text_styles.insert(TextStyle::Body, body.clone());
-    text_styles.insert(TextStyle::Button, FontId::new(15.0, FontFamily::Proportional));
-    text_styles.insert(TextStyle::Heading, FontId::new(18.0, FontFamily::Proportional));
-    text_styles.insert(TextStyle::Small, FontId::new(12.0, FontFamily::Proportional));
-    text_styles.insert(TextStyle::Monospace, FontId::new(13.0, FontFamily::Monospace));
+    text_styles.insert(TextStyle::Button, FontId::new(13.0, FontFamily::Proportional));
+    text_styles.insert(TextStyle::Heading, FontId::new(16.0, FontFamily::Proportional));
+    text_styles.insert(TextStyle::Small, FontId::new(11.0, FontFamily::Proportional));
+    text_styles.insert(TextStyle::Monospace, FontId::new(12.0, FontFamily::Monospace));
     style.text_styles = text_styles;
 
     style.spacing = spacing();
