@@ -9,7 +9,7 @@ use crate::{icons, theme};
 use eframe::egui::{self, Color32, RichText, Sense, Stroke, Vec2};
 
 use super::MusicApp;
-use super::widgets::{spinner_arc, transport_button, truncate_label};
+use super::widgets::{spinner_arc, transport_button, truncate_label, volume_hover_popup};
 
 /// 播放条：播放/暂停圆形按钮直径。
 const PLAY_BTN_SIZE: f32 = 36.0;
@@ -255,11 +255,10 @@ impl MusicApp {
                     ui.add_space(ICON_ROW_GAP);
 
                     // 7. 音量：悬浮弹出可拖动的音量滑条。
-                    // 注意：不能用 egui tooltip（on_hover_ui）承载滑块——egui 的 tooltip
-                    // 要求指针静止满 tooltip_delay（本应用 0.4s）才出现，且首次出现帧
-                    // 因弹层内还没有交互控件而被标记为不可交互，鼠标一移向滑块即关闭，
-                    // 体感就是「悬浮没反应 / 一闪而过」。这里自绘悬浮弹层：
-                    // hover 立即显示，指针在按钮上或弹层上就保持打开，可直接拖动。
+                    // 不能用 egui tooltip（on_hover_ui）承载滑块——tooltip 要求指针静止满
+                    // tooltip_delay（本应用 0.4s）才出现，且首次出现帧因弹层内还没有交互控件
+                    // 而被标记为不可交互，鼠标一移向滑块即关闭，体感就是「悬浮没反应 / 拖不动」。
+                    // 改为自绘悬浮弹层（见 widgets::volume_hover_popup）。
                     let vol = self.state.volume;
                     let vol_icon = if vol <= 0.001 {
                         icons::volume_mute
@@ -267,56 +266,8 @@ impl MusicApp {
                         icons::volume
                     };
                     let resp = self.icon_btn(ui, ICON_BTN_SIZE, vol_icon, theme::TEXT_PRIMARY, "");
-                    let popup_id = ui.id().with("vol_slider_popup");
-                    let ctx = ui.ctx().clone();
-                    // 上一帧弹层矩形（Some = 弹层处于打开状态，用于「鼠标还在弹层上则保持打开」）。
-                    let last_popup = ctx.data(|d| d.get_temp::<egui::Rect>(popup_id));
-                    let on_button = resp.hovered();
-                    let on_popup = match (ctx.pointer_hover_pos(), last_popup) {
-                        (Some(p), Some(r)) => r.expand(4.0).contains(p),
-                        _ => false,
-                    };
-                    if on_button || on_popup {
-                        // 弹层底部中心对齐按钮顶部中心，整体浮在按钮正上方。
-                        let anchor = resp.rect;
-                        let area_resp = egui::Area::new(popup_id)
-                            .order(egui::Order::Tooltip)
-                            .movable(false)
-                            .pivot(egui::Align2::CENTER_BOTTOM)
-                            .fixed_pos(egui::pos2(
-                                anchor.center().x,
-                                anchor.top() - 4.0,
-                            ))
-                            .constrain(true)
-                            .show(&ctx, |ui| {
-                                egui::Frame::popup(ui.style()).show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        let mut v = self.state.volume;
-                                        let slider = ui.add(
-                                            egui::Slider::new(&mut v, 0.0..=1.0)
-                                                .show_value(false)
-                                                .trailing_fill(true)
-                                                .fixed_decimals(0),
-                                        );
-                                        if slider.changed() {
-                                            self.change_volume(v);
-                                        }
-                                        ui.label(
-                                            RichText::new(format!(
-                                                "{:>3.0}%",
-                                                self.state.volume * 100.0
-                                            ))
-                                            .color(theme::TEXT_SECONDARY)
-                                            .monospace()
-                                            .size(11.0),
-                                        );
-                                    });
-                                });
-                            });
-                        // 记录本帧弹层矩形，供下一帧「鼠标在弹层上保持打开」判断。
-                        ctx.data_mut(|d| d.insert_temp(popup_id, area_resp.response.rect));
-                    } else {
-                        ctx.data_mut(|d| d.remove::<egui::Rect>(popup_id));
+                    if let Some(v) = volume_hover_popup(ui, resp.rect, resp.hovered(), vol) {
+                        self.change_volume(v);
                     }
                 });
                 // 错误/轻提示改为顶部 toast（见 toast.rs），不再内联显示在此处。

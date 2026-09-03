@@ -58,6 +58,115 @@ pub fn icon_button(
 }
 
 // ---------------------------------------------------------------------------
+// 音量悬浮弹层
+// ---------------------------------------------------------------------------
+
+/// 弹层与按钮之间的间距（px）。
+const VOL_POPUP_GAP: f32 = 4.0;
+/// 「指针在弹层上」判定的外扩余量（px），覆盖按钮与弹层之间的间距缝隙。
+const VOL_POPUP_PAD: f32 = 6.0;
+
+/// 音量弹层的跨帧状态。
+#[derive(Clone, Copy)]
+struct VolPopupState {
+    /// 上一帧弹层的实际矩形（用于「指针还在弹层上则保持打开」）。
+    rect: Rect,
+    /// 本次按住是否发生在弹层内（锁存，松开鼠标复位）。
+    ///
+    /// 按住拖动期间必须保持弹层打开：滑块只有 ~18px 高，横向拖动时指针难免有
+    /// 垂直漂移，一旦超出弹层矩形，弹层会连滑块一起消失、拖拽被中断——体感就是
+    /// 「音量滑块拖不动」。
+    ///
+    /// 这里不能用 `Response::dragged()`：egui 的拖拽捕获要到按下后的**下一帧**才
+    /// 生效（按下帧 `dragged()` 仍为 false），据此保持打开会慢一帧、弹层先关后拖。
+    press_in_popup: bool,
+}
+
+/// 音量悬浮弹层：hover 音量按钮即在按钮正上方弹出可拖动滑块。
+///
+/// 不能用 egui 的 tooltip（`on_hover_ui`）承载滑块：tooltip 要求指针静止满
+/// `tooltip_delay` 才出现，且首次出现的那一帧弹层内还没有交互控件，会被标记为
+/// 不可交互，鼠标一移向滑块就关闭——体感就是「悬浮没反应 / 滑块拖不动」。
+///
+/// 这里自绘 [`egui::Area`]，打开条件为：按钮被悬浮、指针落在上一帧弹层矩形内，
+/// 或本次按住起于弹层内（拖动期间保持打开）。返回本帧拖动后的新音量（`None` 未改变）。
+pub fn volume_hover_popup(
+    ui: &mut egui::Ui,
+    btn_rect: Rect,
+    on_button: bool,
+    volume: f32,
+) -> Option<f32> {
+    let ctx = ui.ctx().clone();
+    // 固定 id：整个应用只有一个音量弹层，避免依赖父 Ui 的自增 id 稳定性。
+    let popup_id = egui::Id::new("sm_vol_hover_popup");
+
+    let last = ctx.data(|d| d.get_temp::<VolPopupState>(popup_id));
+    // 用 interact_pos 兜底：按住拖动时 hover_pos 可能为 None。
+    let pointer = ctx.input(|i| i.pointer.interact_pos().or_else(|| i.pointer.hover_pos()));
+    let held = ctx.input(|i| i.pointer.any_down());
+    let in_rect =
+        pointer.is_some_and(|p| last.is_some_and(|s| s.rect.expand(VOL_POPUP_PAD).contains(p)));
+    // 按住且（本次按住起于弹层内 或 指针当前就在弹层内）→ 锁存保持打开。
+    let latched = held && last.is_some_and(|s| s.press_in_popup || in_rect);
+
+    if !(on_button || in_rect || latched) {
+        if last.is_some() {
+            ctx.data_mut(|d| d.remove::<VolPopupState>(popup_id));
+        }
+        return None;
+    }
+
+    // Area 首次显示会走 egui 的 sizing pass：该帧内容不可见，且矩形按估算尺寸计算，
+    // 与下一帧的真实位置差很多（实测错位 100+px）。这一帧不能缓存矩形，否则会在播放条
+    // 上留下一个错误的「保持打开」区域。
+    let first_show = egui::AreaState::load(&ctx, popup_id).is_none();
+
+    let mut changed: Option<f32> = None;
+    let area = egui::Area::new(popup_id)
+        .order(egui::Order::Tooltip)
+        .pivot(Align2::CENTER_BOTTOM)
+        // fixed_pos 每帧强制重定位（并隐含 movable=false），按钮位置变化时弹层跟随。
+        .fixed_pos(Pos2::new(
+            btn_rect.center().x,
+            btn_rect.top() - VOL_POPUP_GAP,
+        ))
+        .constrain(true)
+        .show(&ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let mut v = volume;
+                    let slider = ui.add(
+                        egui::Slider::new(&mut v, 0.0..=1.0)
+                            .show_value(false)
+                            .trailing_fill(true),
+                    );
+                    if slider.changed() {
+                        changed = Some(v);
+                    }
+                    ui.label(
+                        egui::RichText::new(format!("{:>3.0}%", volume * 100.0))
+                            .color(theme::TEXT_SECONDARY)
+                            .monospace()
+                            .size(11.0),
+                    );
+                });
+            });
+        });
+    if !first_show {
+        ctx.data_mut(|d| {
+            d.insert_temp(
+                popup_id,
+                VolPopupState {
+                    rect: area.response.rect,
+                    press_in_popup: latched,
+                },
+            )
+        });
+    }
+    changed
+}
+
+// ---------------------------------------------------------------------------
 // 加载转圈
 // ---------------------------------------------------------------------------
 
@@ -228,6 +337,173 @@ pub fn truncate_label(ui: &egui::Ui, text: &str, max_width: f32) -> String {
         return text.to_owned();
     }
     fit_text(ui.ctx(), text, &FontId::proportional(13.0), max_width)
+}
+
+#[cfg(test)]
+mod vol_popup_tests {
+    use super::*;
+    use eframe::egui::{Event, Modifiers, PointerButton};
+
+    /// 多帧 egui 输入模拟器：驱动 `volume_hover_popup` 并跟踪指针状态。
+    struct Sim {
+        ctx: egui::Context,
+        btn: Rect,
+        vol: f32,
+        t: f64,
+        pointer: Option<Pos2>,
+        popup_id: egui::Id,
+    }
+
+    impl Sim {
+        fn new() -> Self {
+            let ctx = egui::Context::default();
+            Self {
+                ctx,
+                btn: Rect::from_min_size(Pos2::new(480.0, 300.0), Vec2::splat(28.0)),
+                vol: 0.5,
+                t: 0.0,
+                pointer: None,
+                popup_id: egui::Id::new("sm_vol_hover_popup"),
+            }
+        }
+
+        fn frame(&mut self, events: Vec<Event>) -> Option<Rect> {
+            let mut input = egui::RawInput::default();
+            input.screen_rect = Some(Rect::from_min_size(
+                Pos2::ZERO,
+                egui::vec2(1000.0, 400.0),
+            ));
+            self.t += 0.016;
+            input.time = Some(self.t);
+            input.events = events;
+            let btn = self.btn;
+            let on_button = self.pointer.is_some_and(|p| btn.contains(p));
+            let vol = &mut self.vol;
+            let mut full = self.ctx.run_ui(input, move |ui| {
+                if let Some(v) = volume_hover_popup(ui, btn, on_button, *vol) {
+                    *vol = v;
+                }
+            });
+            // 无头测试不处理纹理，显式丢弃以免 epaint 断言未应用的 delta。
+            full.textures_delta.clear();
+            let id = self.popup_id;
+            self.ctx
+                .data(|d| d.get_temp::<VolPopupState>(id))
+                .map(|s| s.rect)
+        }
+
+        fn hover(&mut self, p: Pos2) -> Option<Rect> {
+            self.pointer = Some(p);
+            self.frame(vec![Event::PointerMoved(p)])
+        }
+
+        fn press(&mut self, p: Pos2) -> Option<Rect> {
+            self.pointer = Some(p);
+            self.frame(vec![
+                Event::PointerMoved(p),
+                Event::PointerButton {
+                    pos: p,
+                    button: PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Modifiers::default(),
+                },
+            ])
+        }
+
+        fn release(&mut self, p: Pos2) -> Option<Rect> {
+            self.pointer = Some(p);
+            self.frame(vec![Event::PointerButton {
+                pos: p,
+                button: PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::default(),
+            }])
+        }
+    }
+
+    /// 让弹层稳定：Area 首帧走 sizing pass（内容不可见、矩形按估算尺寸算），
+    /// 需在按钮上多停一帧，之后矩形才是真实位置。
+    fn settle(sim: &mut Sim) -> Rect {
+        sim.hover(sim.btn.center());
+        sim.hover(sim.btn.center());
+        sim.hover(sim.btn.center())
+            .expect("悬浮音量按钮应立即弹出滑块弹层")
+    }
+
+    /// 回归：音量弹层 hover 立即出现、鼠标移到弹层上保持打开、滑块可按住拖动。
+    #[test]
+    fn volume_popup_hovers_open_and_slider_is_draggable() {
+        let mut sim = Sim::new();
+
+        // 1) 悬浮音量按钮 → 弹层立即出现（无静止延迟），并稳定下来。
+        let rect = settle(&mut sim);
+        assert!(rect.width() > 40.0, "弹层应包含完整滑块，实际 {rect:?}");
+
+        // 2) 鼠标从按钮移到弹层上 → 弹层保持打开（不能中途关闭）。
+        let center = rect.center();
+        let rect2 = sim
+            .hover(center)
+            .expect("鼠标移到弹层上时弹层应保持打开");
+        assert!(
+            rect2.contains(center),
+            "稳定后的弹层矩形应覆盖其自身中心，实际 {rect2:?} / {center:?}"
+        );
+
+        // 3) 在滑块上按下并横向拖动 → 音量必须随之改变。
+        let before = sim.vol;
+        sim.press(Pos2::new(rect2.min.x + rect2.width() * 0.2, center.y));
+        sim.hover(Pos2::new(rect2.min.x + rect2.width() * 0.45, center.y));
+        sim.hover(Pos2::new(rect2.min.x + rect2.width() * 0.6, center.y));
+        sim.release(Pos2::new(rect2.min.x + rect2.width() * 0.6, center.y));
+        assert!(
+            sim.vol > before,
+            "拖动滑块应改变音量（{before} -> {}），拖不动即为回归",
+            sim.vol
+        );
+
+        // 4) 鼠标离开按钮与弹层 → 弹层关闭。
+        assert!(
+            sim.hover(Pos2::new(20.0, 20.0)).is_none(),
+            "鼠标离开后弹层应关闭"
+        );
+    }
+
+    /// 回归：拖动滑块时指针带垂直漂移（真实用户必然如此，滑块仅 ~18px 高）。
+    /// 修复前弹层会在指针漂出弹层矩形的那一帧连滑块一起消失，拖拽被中断——
+    /// 用户体感就是「音量滑块拖不动」。
+    ///
+    /// 断言必须落在「拖动是否跟随到最终位置」上：egui 滑块按下即定位，
+    /// 只断言音量变过是无效测试（按下那一帧就已满足）。
+    #[test]
+    fn volume_slider_drag_survives_vertical_pointer_drift() {
+        let mut sim = Sim::new();
+        let rect = settle(&mut sim);
+        let y = rect.center().y;
+
+        // 在滑块左侧按下（按下即把音量设到该处，作为拖动起点）。
+        let x0 = rect.min.x + rect.width() * 0.2;
+        sim.press(Pos2::new(x0, y));
+        let after_press = sim.vol;
+
+        // 向右拖动，同时 y 持续漂到弹层矩形上方之外。
+        let mut drift_y = y;
+        for i in 1..=8 {
+            let dx = rect.width() * 0.06 * i as f32;
+            drift_y = y - 30.0 - i as f32;
+            assert!(
+                sim.hover(Pos2::new(x0 + dx, drift_y)).is_some(),
+                "第 {i} 帧指针已漂到 y={drift_y}（弹层 {rect:?}）之外，弹层仍须保持打开"
+            );
+        }
+        sim.release(Pos2::new(x0 + rect.width() * 0.48, drift_y));
+
+        assert!(
+            sim.vol > after_press + 0.15,
+            "拖动必须跟随指针到最终位置（按下 {after_press} -> 最终 {}），\
+             否则说明垂直漂移中断了拖拽 = 音量滑块拖不动",
+            sim.vol
+        );
+    }
 }
 
 #[cfg(test)]
