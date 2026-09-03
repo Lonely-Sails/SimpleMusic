@@ -20,12 +20,6 @@ const ICON_ROW_GAP: f32 = 8.0;
 /// 进度条行左右两侧的留白。
 const PROGRESS_PAD: f32 = 16.0;
 
-/// 进度条手柄（圆球）缩小：egui 的手柄半径 = 滑块矩形高度 / 2.5（球径 ≈ 0.8 × 矩形高），
-/// 而矩形高度固定取 `max(正文字号行高, spacing().interact_size.y)`，跟外层行高无关，
-/// 也没有直接调手柄尺寸的 API。`seek_slider` 在滑块作用域内把 `interact_size.y`
-/// 压到该值，厚度落到正文字号行高，球径从 ~22px 缩到 ~14px。
-const SLIDER_HANDLE_DIAMETER: f32 = 14.0;
-
 /// 图标区自然宽度：6 个 `ICON_BTN_SIZE` 图标 + 1 个 `PLAY_BTN_SIZE` 播放键 + 6 个间距，
 /// 用于在整行宽度内把图标区水平居中。此值与 `show_player_bar` 第二行的实际按钮摆放一致，
 /// 新增/删除按钮时需同步更新。
@@ -35,43 +29,49 @@ fn icon_row_width() -> f32 {
 
 /// 进度条滑块（手柄缩小版）。
 ///
-/// egui 手柄球径 = 0.8 × 滑块矩形高，矩形高 = `max(正文字号行高, interact_size.y)`。
-/// 这里把行高固定为改动前的矩形高（正文字号行高与 `interact_size.y` 取大），
-/// 只在子 Ui 作用域内压小 `interact_size.y`：球变小并保持行内垂直居中，
-/// 整行高度与播放条其余间距完全不变。
+/// egui 手柄球径 = 0.8 × 滑块矩形高，矩形高 = `max(正文字号行高, interact_size.y)`
+/// = 28 → 球径 ~22px，太大了。做法：先按旧行高占位（整行布局不变），再把
+/// 「厚度 = 正文字号行高」的薄滑块条在行内**垂直居中**放置（球径 ~15px）。
+///
+/// 两个 egui 布局坑（都实测过）：
+/// 1. 滑块默认贴着光标顶部放置——直接压小 `interact_size.y` 球会偏下，
+///    必须手动算 band 定位；
+/// 2. 滑块相对其可用区还会偏移 `|interact_size.y - thickness| / 2`，
+///    把作用域内 `interact_size.y` 设成条厚本身即可零偏移。
 fn seek_slider(
     ui: &mut egui::Ui,
     val: &mut f64,
     range: std::ops::RangeInclusive<f64>,
     enabled: bool,
 ) -> egui::Response {
-    let old_thickness = ui
-        .text_style_height(&egui::TextStyle::Body)
-        .at_least(ui.spacing().interact_size.y);
+    let text_h = ui.text_style_height(&egui::TextStyle::Body);
+    // 旧行高（手柄缩小前滑块矩形的高）。
+    let old_thickness = text_h.at_least(ui.spacing().interact_size.y);
+    // 滑块宽度（调用方已设置 `slider_width`）。
+    let slider_w = ui.spacing().slider_width;
     ui.scope(|ui| {
         ui.set_height(old_thickness);
-        ui.spacing_mut().interact_size.y = SLIDER_HANDLE_DIAMETER;
-        let slider = egui::Slider::new(val, range)
-            .show_value(false)
-            .min_decimals(0)
-            .max_decimals(0)
-            .trailing_fill(true);
-        let r = if enabled {
-            ui.add(slider)
-        } else {
-            ui.add_enabled(false, slider)
-        };
-        panic!(
-            "DBG old={old_thickness} text_h={:?} interact={} scope_max={:?} slider={:?}",
-            ui.text_style_height(&egui::TextStyle::Body),
-            ui.spacing().interact_size.y,
-            ui.max_rect(),
-            r.rect
-        );
-        #[allow(unreachable_code)]
-        {
-            r
-        }
+        // 以行高为准垂直居中放一条薄滑块带（egui 默认贴顶，会偏下）。
+        let row =
+            egui::Rect::from_min_size(ui.cursor().min, egui::vec2(slider_w, old_thickness));
+        let band =
+            egui::Align2::LEFT_CENTER.align_size_within_rect(egui::vec2(slider_w, text_h), row);
+        ui.scope_builder(egui::UiBuilder::new().max_rect(band), |ui| {
+            // interact_size.y 取条厚本身：egui 内部会把滑块相对可用区偏移
+            // |interact_size.y - thickness| / 2，两者相等则零偏移，滑块精确落在 band。
+            ui.spacing_mut().interact_size.y = text_h;
+            let slider = egui::Slider::new(val, range)
+                .show_value(false)
+                .min_decimals(0)
+                .max_decimals(0)
+                .trailing_fill(true);
+            if enabled {
+                ui.add(slider)
+            } else {
+                ui.add_enabled(false, slider)
+            }
+        })
+        .inner
     })
     .inner
 }
@@ -618,45 +618,11 @@ mod tests {
             slider_rect.center().y,
             row_center
         );
-        // 球径应落在 SLIDER_HANDLE_DIAMETER 附近（厚度=正文字号行高 → 球径≈0.8×行高）。
+        // 球径应明显小于原来的 ~22px（厚度=正文字号行高 → 球径≈0.8×行高≈15px）。
         assert!(
             handle_d < 18.0,
-            "球径 {handle_d:.1} 应明显小于原来的 ~22px（SLIDER_HANDLE_DIAMETER={SLIDER_HANDLE_DIAMETER}）"
+            "球径 {handle_d:.1} 应明显小于原来的 ~22px"
         );
     }
 }
 
-#[cfg(test)]
-mod dbg_tmp {
-    use super::*;
-    #[test]
-    fn dbg_numbers() {
-        let ctx = egui::Context::default();
-        crate::fonts::install_fonts(&ctx);
-        crate::theme::apply(&ctx);
-        let mut input = egui::RawInput::default();
-        input.screen_rect = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1000.0, 200.0)));
-        let cell = std::rc::Rc::new(std::cell::RefCell::new(String::new()));
-        let c2 = cell.clone();
-        let mut full = ctx.run_ui(input, move |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                ui.spacing_mut().slider_width = 500.0;
-                let outer = ui.text_style_height(&egui::TextStyle::Body).at_least(ui.spacing().interact_size.y);
-                let r = ui.scope(|ui| {
-                    ui.set_height(outer);
-                    ui.spacing_mut().interact_size.y = SLIDER_HANDLE_DIAMETER;
-                    let mut v = 0.3f64;
-                    ui.add(egui::Slider::new(&mut v, 0.0..=1.0).show_value(false).trailing_fill(true))
-                });
-                *c2.borrow_mut() = format!(
-                    "outer_thickness={outer} scope_rect={:?} slider_rect={:?} scope_h={}",
-                    r.response.rect,
-                    r.inner.rect,
-                    r.response.rect.height()
-                );
-            });
-        });
-        full.textures_delta.clear();
-        panic!("DBG {}", cell.borrow());    }
-}
