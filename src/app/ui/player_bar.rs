@@ -255,23 +255,7 @@ impl MusicApp {
                         }
                     });
                 });
-
-                // ── 错误信息 / 轻提示 ──
-                let mut err = self.ui_error.clone();
-                if let Some(e) = &st.error {
-                    err = Some(e.clone());
-                }
-                if let Some(e) = err {
-                    ui.label(RichText::new(e).color(theme::TEXT_ERROR).small());
-                }
-                let notice = self.last_notice.clone();
-                if let Some((msg, at)) = notice {
-                    if at.elapsed() < std::time::Duration::from_secs(4) {
-                        ui.label(RichText::new(msg).color(theme::GOLD).small());
-                    } else {
-                        self.last_notice = None;
-                    }
-                }
+                // 错误/轻提示改为顶部 toast（见 toast.rs），不再内联显示在此处。
             });
     }
 

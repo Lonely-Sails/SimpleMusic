@@ -26,6 +26,7 @@ pub mod settings;
 pub mod song_list;
 pub mod status_bar;
 pub mod title_bar;
+pub mod toast;
 pub mod widgets;
 
 use crate::theme;

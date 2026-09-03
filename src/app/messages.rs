@@ -296,7 +296,7 @@ impl MusicApp {
                 self.login_running = false;
                 self.login_visible = false;
                 self.login_stop.store(true, AtomicOrdering::Relaxed);
-                self.ui_error = Some(format!("登录失败: {msg}"));
+                self.error(format!("登录失败: {msg}"));
             }
             AsyncMsg::UserInfo { uname } => {
                 // 退出登录后线程结果才回来时：logged_in 已为 false，丢弃。
@@ -346,7 +346,7 @@ impl MusicApp {
                             }
                         }
                     }
-                    Err(e) => self.ui_error = Some(format!("收藏夹加载失败: {e}")),
+                    Err(e) => self.error(format!("收藏夹加载失败: {e}")),
                 }
             }
             AsyncMsg::FavResources {
@@ -374,7 +374,7 @@ impl MusicApp {
                         self.fav_total = total;
                         self.fav_has_more = (self.fav_items.len() as i64) < total;
                     }
-                    Err(e) => self.ui_error = Some(format!("收藏夹资源加载失败: {e}")),
+                    Err(e) => self.error(format!("收藏夹资源加载失败: {e}")),
                 }
             }
             AsyncMsg::PlayReady { seq, result } => {
@@ -395,7 +395,7 @@ impl MusicApp {
                             self.import_seq = None;
                             self.pending_import = false;
                         }
-                        self.ui_error = Some(format!("无法播放: {e}"));
+                        self.error(format!("无法播放: {e}"));
                     }
                 }
             }

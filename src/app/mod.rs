@@ -32,6 +32,7 @@ use crate::modules::lyrics::{LrcLine, Lyrics};
 use crate::modules::storage;
 use crate::state::{PlaybackState, Playlist, Settings};
 use crate::tray;
+use crate::app::ui::toast::{show_toasts, Toast, ToastKind};
 use eframe::egui::{self, Pos2};
 use messages::AsyncMsg;
 use std::sync::atomic::AtomicBool;
@@ -104,16 +105,16 @@ pub struct MusicApp {
     last_save: Option<Instant>,
     last_queue_save: Option<Instant>,
     queue_dirty: bool,
-    // 状态栏（红色错误）
-    ui_error: Option<String>,
     // 搜索过滤
     search_text: String,
     // 歌单管理
     playlist_mgmt_open: bool,
     renaming_idx: Option<usize>,
     rename_text: String,
-    // 轻提示（金色）
-    last_notice: Option<(String, Instant)>,
+    // 顶部 toast（错误/轻提示浮层）
+    toasts: Vec<Toast>,
+    /// 上次已提示过的音频错误（去重，避免同一错误每帧重复弹 toast）。
+    last_err_shown: Option<String>,
     // 系统托盘（独立 GTK 线程）
     tray: tray::Tray,
     /// 窗口是否因「最小化到托盘」而隐藏（用于托盘菜单切换）。
@@ -210,12 +211,12 @@ impl MusicApp {
             last_save: None,
             last_queue_save: None,
             queue_dirty: false,
-            ui_error: None,
             search_text: String::new(),
             playlist_mgmt_open: false,
             renaming_idx: None,
             rename_text: String::new(),
-            last_notice: None,
+            toasts: Vec::new(),
+            last_err_shown: None,
             tray,
             window_hidden: false,
             force_quit: false,
@@ -258,9 +259,14 @@ impl MusicApp {
             .unwrap_or(false)
     }
 
-    /// 设置轻提示（金色，显示约 4 秒）。
+    /// 轻提示：顶部弹金色 toast（成功/信息类）。
     pub(crate) fn notice(&mut self, msg: impl Into<String>) {
-        self.last_notice = Some((msg.into(), Instant::now()));
+        self.toasts.push(Toast::new(msg, ToastKind::Notice));
+    }
+
+    /// 错误提示：顶部弹暖红色 toast。
+    pub(crate) fn error(&mut self, msg: impl Into<String>) {
+        self.toasts.push(Toast::new(msg, ToastKind::Error));
     }
 
     // ---- 每帧同步 ----
@@ -311,6 +317,16 @@ impl eframe::App for MusicApp {
         if self.settings_window_open {
             self.show_settings_window(ui.ctx());
         }
+
+        // 顶部 toast：音频错误按内容去重，避免同一错误每帧重复弹。
+        let cur_err = self.audio.status().error.clone();
+        if cur_err != self.last_err_shown {
+            self.last_err_shown = cur_err.clone();
+            if let Some(e) = cur_err {
+                self.error(e);
+            }
+        }
+        show_toasts(ui.ctx(), &mut self.toasts);
     }
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
