@@ -317,16 +317,33 @@ impl MusicApp {
             }
             AsyncMsg::FavFolders(result) => {
                 self.fav_folders_loading = false;
+                // 先记住当前选中（用户点开的在线歌单），避免刷新文件夹列表时
+                // 被重置成第一个——否则重启/重复同步后收藏夹会「变了」。
+                let prev_selected = self.fav_selected;
                 match result {
                     Ok(folders) => {
                         self.fav_folders = folders;
-                        if let Some(f) = self.fav_folders.first().cloned() {
-                            self.fav_selected = Some(f.id);
-                            self.fav_items.clear();
-                            self.fav_page = 0;
-                            self.fav_total = 0;
-                            self.fav_has_more = false;
-                            self.spawn_fav_resources(f.id, 1);
+                        // 之前已选中且该收藏夹仍存在：保留用户选择；若资源还没加载
+                        // （例如刚从本地歌单切过来）则补拉一次，但绝不清空当前列表。
+                        let keep = prev_selected
+                            .filter(|id| self.fav_folders.iter().any(|f| f.id == *id));
+                        match keep {
+                            Some(id) => {
+                                if self.fav_items.is_empty() && !self.fav_loading {
+                                    self.spawn_fav_resources(id, 1);
+                                }
+                            }
+                            // 无选中或选中已失效：回退到列表中的第一个收藏夹。
+                            None => {
+                                if let Some(f) = self.fav_folders.first().cloned() {
+                                    self.fav_selected = Some(f.id);
+                                    self.fav_items.clear();
+                                    self.fav_page = 0;
+                                    self.fav_total = 0;
+                                    self.fav_has_more = false;
+                                    self.spawn_fav_resources(f.id, 1);
+                                }
+                            }
                         }
                     }
                     Err(e) => self.ui_error = Some(format!("收藏夹加载失败: {e}")),
@@ -419,4 +436,37 @@ fn resolve_playable(
         detail.info.cover_url.clone().unwrap_or_default(),
     );
     Ok((item, stream))
+}
+
+/// 收藏夹列表刷新后应保留的选中 id：之前选中的收藏夹仍存在则保留，
+/// 否则返回 None（由调用方回退到列表第一个）。防止刷新/重启后收藏夹被「换掉」。
+fn preserved_folder_id(folders: &[FavFolder], prev_selected: Option<i64>) -> Option<i64> {
+    prev_selected.filter(|id| folders.iter().any(|f| f.id == *id))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn folder(id: i64) -> FavFolder {
+        FavFolder {
+            id,
+            title: format!("收藏夹{id}"),
+            media_count: 3,
+        }
+    }
+
+    #[test]
+    fn preserved_folder_id_keeps_existing_selection() {
+        let folders = vec![folder(1), folder(2), folder(3)];
+        assert_eq!(preserved_folder_id(&folders, Some(2)), Some(2));
+        assert_eq!(preserved_folder_id(&folders, Some(1)), Some(1));
+    }
+
+    #[test]
+    fn preserved_folder_id_falls_back_when_selection_vanished() {
+        let folders = vec![folder(1), folder(2)];
+        assert_eq!(preserved_folder_id(&folders, Some(99)), None);
+        assert_eq!(preserved_folder_id(&folders, None), None);
+    }
 }

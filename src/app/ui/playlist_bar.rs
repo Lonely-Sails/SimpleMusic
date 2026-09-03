@@ -203,7 +203,8 @@ impl MusicApp {
                             .clicked();
                     });
                     if clicked {
-                        // 检查是否已添加
+                        // 检查是否已添加；新导入的收藏夹必须落盘，否则重启后丢失。
+                        let mut newly_added = false;
                         if self.online_playlist_index(f.id).is_none() {
                             self.playlists.push(Playlist {
                                 name: f.title.clone(),
@@ -213,6 +214,10 @@ impl MusicApp {
                                     folder_title: f.title.clone(),
                                 },
                             });
+                            newly_added = true;
+                        }
+                        if newly_added {
+                            self.queue_dirty = true;
                         }
                         // 切换到该歌单
                         if let Some(idx) = self.online_playlist_index(f.id) {
