@@ -103,13 +103,14 @@ impl MusicApp {
                             .trailing_fill(true),
                     );
                     // 未加载音频时滑块被禁用（整体透明度被拉低），手柄会变透明。
-                    // 这里在值 0（最左端）补画一个清晰的圆形手柄，避免「空进度条只剩一条线」。
+                    // 这里在值 0（最左端）补画一个清晰的灰色圆形手柄，避免「空进度条只剩一条线」。
                     if !has_audio {
                         let rect = resp.rect;
                         let radius = rect.height() / 2.5;
                         let center = egui::Pos2::new(rect.left() + radius, rect.center().y);
-                        ui.painter().circle_filled(center, radius, theme::ACCENT);
-                        ui.painter().circle_stroke(center, radius, Stroke::new(1.0, theme::ACCENT_HOVER));
+                        ui.painter().circle_filled(center, radius, theme::TEXT_SECONDARY);
+                        ui.painter()
+                            .circle_stroke(center, radius, Stroke::new(1.0, theme::TEXT_WEAK));
                     }
                     ui.add_space(6.0);
                     ui.label(
