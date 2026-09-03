@@ -95,6 +95,24 @@ pub fn paint_placeholder_cover(painter: &Painter, rect: Rect) {
     );
 }
 
+/// 用 painter 直接画圆角封面图（纯绘制，不创建 widget）。
+///
+/// 若走 `ui.put(... egui::Image ...)` 会创建一个子 `Ui`，从而改变列表行与行之间的
+/// 间距（实测行顶从 59px 变为 53px，整列内容依次上移 6px），导致封面下载完成后
+/// 布局「跳位」抖动。这里改用形状绘制，与 [`paint_placeholder_cover`] 一致不参与
+/// 布局，行间距在占位符↔图片之间保持不变。
+pub fn paint_cover_image(painter: &Painter, rect: Rect, texture_id: egui::TextureId) {
+    let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+    painter.add(
+        egui::epaint::RectShape::filled(
+            rect,
+            egui::CornerRadius::same(theme::CORNER),
+            Color32::WHITE,
+        )
+        .with_texture(texture_id, uv),
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 二维码绘制
 // ---------------------------------------------------------------------------
@@ -172,4 +190,65 @@ pub fn truncate_label(ui: &egui::Ui, text: &str, max_width: f32) -> String {
         return text.to_owned();
     }
     fit_text(ui.ctx(), text, &FontId::proportional(13.0), max_width)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 封面从占位符切换到图片时，歌曲行的垂直布局必须保持不变。
+    ///
+    /// 回归：之前用 `ui.put(cover_rect, egui::Image)` 绘制封面，`put` 会创建子 Ui
+    /// 并改变行间距（行顶从 59px 变 53px），封面加载完成后整列内容依次上移产生抖动。
+    #[test]
+    fn cover_image_paint_does_not_shift_rows() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(egui::FontDefinitions::default());
+        let screen = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(400.0, 700.0));
+        let img = egui::ColorImage::filled([96, 96], Color32::from_rgb(200, 60, 60));
+        let tex = ctx
+            .load_texture("simple-music-cover:test", img, egui::TextureOptions::LINEAR)
+            .id();
+
+        let mut placeholder_tops = Vec::new();
+        let mut image_tops = Vec::new();
+        for use_image in [false, true] {
+            let mut input = egui::RawInput::default();
+            input.screen_rect = Some(screen);
+            let mut full = ctx.run_ui(input, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for _ in 0..4 {
+                            let (rect, _) = ui.allocate_exact_size(
+                                Vec2::new(ui.available_width(), 56.0),
+                                Sense::click(),
+                            );
+                            let cover = Rect::from_min_size(
+                                Pos2::new(rect.left() + 10.0, rect.center().y - 22.0),
+                                Vec2::splat(44.0),
+                            );
+                            if use_image {
+                                paint_cover_image(ui.painter(), cover, tex);
+                            } else {
+                                paint_placeholder_cover(ui.painter(), cover);
+                            }
+                            let tops = if use_image {
+                                &mut image_tops
+                            } else {
+                                &mut placeholder_tops
+                            };
+                            tops.push(rect.min.y);
+                        }
+                    });
+            });
+            full.textures_delta.clear();
+        }
+
+        assert_eq!(
+            placeholder_tops,
+            image_tops,
+            "封面加载后不应改变歌曲行布局（防止整列内容跳位抖动）"
+        );
+    }
 }

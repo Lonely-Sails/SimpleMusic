@@ -9,10 +9,10 @@ use crate::util::filter::song_matches_query;
 use crate::util::fmt::format_secs;
 use crate::{icons, theme};
 use eframe::egui::{
-    self, load::SizedTexture, Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Vec2,
+    self, Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Vec2,
 };
 use super::MusicApp;
-use super::widgets::{icon_button, paint_placeholder_cover, truncate_label};
+use super::widgets::{icon_button, paint_cover_image, paint_placeholder_cover, truncate_label};
 
 impl MusicApp {
     // ---- 本地歌单歌曲列表 ----
@@ -467,11 +467,8 @@ impl MusicApp {
     pub(crate) fn draw_cover_row(&mut self, ui: &mut egui::Ui, cover_rect: Rect, key: &str, url: &str) {
         if !url.is_empty() {
             if let Some(tex) = self.covers.texture(key) {
-                ui.put(
-                    cover_rect,
-                    egui::Image::new(SizedTexture::new(tex, cover_rect.size()))
-                        .corner_radius(egui::CornerRadius::same(theme::CORNER)),
-                );
+                // 纯绘制圆角图片：不创建 widget，避免改变行间距导致封面加载后整列跳位。
+                paint_cover_image(ui.painter(), cover_rect, tex);
                 return;
             }
         }
