@@ -6,7 +6,7 @@ use crate::modules::lyrics::Lyrics;
 use crate::state::PlayMode;
 use crate::util::fmt::format_secs;
 use crate::{icons, theme};
-use eframe::egui::{self, Color32, RichText, Sense, Stroke, Vec2};
+use eframe::egui::{self, Color32, NumExt, RichText, Sense, Stroke, Vec2};
 
 use super::MusicApp;
 use super::widgets::{spinner_arc, transport_button, truncate_label, volume_hover_popup};
@@ -20,11 +20,60 @@ const ICON_ROW_GAP: f32 = 8.0;
 /// 进度条行左右两侧的留白。
 const PROGRESS_PAD: f32 = 16.0;
 
+/// 进度条手柄（圆球）缩小：egui 的手柄半径 = 滑块矩形高度 / 2.5（球径 ≈ 0.8 × 矩形高），
+/// 而矩形高度固定取 `max(正文字号行高, spacing().interact_size.y)`，跟外层行高无关，
+/// 也没有直接调手柄尺寸的 API。`seek_slider` 在滑块作用域内把 `interact_size.y`
+/// 压到该值，厚度落到正文字号行高，球径从 ~22px 缩到 ~14px。
+const SLIDER_HANDLE_DIAMETER: f32 = 14.0;
+
 /// 图标区自然宽度：6 个 `ICON_BTN_SIZE` 图标 + 1 个 `PLAY_BTN_SIZE` 播放键 + 6 个间距，
 /// 用于在整行宽度内把图标区水平居中。此值与 `show_player_bar` 第二行的实际按钮摆放一致，
 /// 新增/删除按钮时需同步更新。
 fn icon_row_width() -> f32 {
     6.0 * ICON_BTN_SIZE + PLAY_BTN_SIZE + 6.0 * ICON_ROW_GAP
+}
+
+/// 进度条滑块（手柄缩小版）。
+///
+/// egui 手柄球径 = 0.8 × 滑块矩形高，矩形高 = `max(正文字号行高, interact_size.y)`。
+/// 这里把行高固定为改动前的矩形高（正文字号行高与 `interact_size.y` 取大），
+/// 只在子 Ui 作用域内压小 `interact_size.y`：球变小并保持行内垂直居中，
+/// 整行高度与播放条其余间距完全不变。
+fn seek_slider(
+    ui: &mut egui::Ui,
+    val: &mut f64,
+    range: std::ops::RangeInclusive<f64>,
+    enabled: bool,
+) -> egui::Response {
+    let old_thickness = ui
+        .text_style_height(&egui::TextStyle::Body)
+        .at_least(ui.spacing().interact_size.y);
+    ui.scope(|ui| {
+        ui.set_height(old_thickness);
+        ui.spacing_mut().interact_size.y = SLIDER_HANDLE_DIAMETER;
+        let slider = egui::Slider::new(val, range)
+            .show_value(false)
+            .min_decimals(0)
+            .max_decimals(0)
+            .trailing_fill(true);
+        let r = if enabled {
+            ui.add(slider)
+        } else {
+            ui.add_enabled(false, slider)
+        };
+        panic!(
+            "DBG old={old_thickness} text_h={:?} interact={} scope_max={:?} slider={:?}",
+            ui.text_style_height(&egui::TextStyle::Body),
+            ui.spacing().interact_size.y,
+            ui.max_rect(),
+            r.rect
+        );
+        #[allow(unreachable_code)]
+        {
+            r
+        }
+    })
+    .inner
 }
 
 impl MusicApp {
@@ -94,14 +143,7 @@ impl MusicApp {
                             .size(12.0),
                     );
                     ui.add_space(6.0);
-                    let resp = ui.add_enabled(
-                        has_audio,
-                        egui::Slider::new(&mut val, 0.0..=max)
-                            .show_value(false)
-                            .min_decimals(0)
-                            .max_decimals(0)
-                            .trailing_fill(true),
-                    );
+                    let resp = seek_slider(ui, &mut val, 0.0..=max, has_audio);
                     // 未加载音频时滑块被禁用（整体透明度被拉低），手柄会变透明。
                     // 这里在值 0（最左端）补画一个清晰的灰色圆形手柄，避免「空进度条只剩一条线」。
                     if !has_audio {
@@ -469,11 +511,7 @@ mod tests {
                 ui.label(RichText::new(left).monospace().size(12.0));
                 ui.add_space(6.0);
                 let mut v = 0.3;
-                let resp = ui.add(
-                    egui::Slider::new(&mut v, 0.0..=1.0)
-                        .show_value(false)
-                        .trailing_fill(true),
-                );
+                let resp = seek_slider(ui, &mut v, 0.0..=1.0, true);
                 ui.add_space(6.0);
                 let right_resp = ui.label(RichText::new(right).monospace().size(12.0));
                 slider_w = resp.rect.width();
@@ -515,11 +553,110 @@ mod tests {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 ui.spacing_mut().slider_width = 500.0;
                 let mut v = 0.0;
-                let resp = ui.add_enabled(false, egui::Slider::new(&mut v, 0.0..=1.0).show_value(false));
+                let resp = seek_slider(ui, &mut v, 0.0..=1.0, false);
                 enabled = resp.enabled();
             });
         });
         full.textures_delta.clear();
         assert!(!enabled, "无音频时进度条应被禁用");
     }
+
+    /// 进度条手柄（圆球）应缩小，且行高与垂直居中保持不变。
+    ///
+    /// 回归：egui 手柄球径 = 0.8 × 滑块矩形高，矩形高取 max(正文字号行高, interact_size.y)
+    /// = 28 → 球径 ~22px。`seek_slider` 通过压小作用域内的 interact_size.y 缩球，
+    /// 行高仍固定为原厚度，保证整行布局不变。
+    #[test]
+    fn slider_handle_is_smaller_and_row_height_unchanged() {
+        let ctx = egui::Context::default();
+        crate::fonts::install_fonts(&ctx);
+        crate::theme::apply(&ctx);
+        let screen = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1000.0, 200.0));
+        let mut input = egui::RawInput::default();
+        input.screen_rect = Some(screen);
+
+        // 默认（未缩小）滑块厚度作为球径对照，与行高基准，在闭包内捕获。
+        let old_thickness = std::cell::Cell::new(0.0f32);
+        let mut slider_rect = egui::Rect::NOTHING;
+        let mut row_rect = egui::Rect::NOTHING;
+        let mut full = ctx.run_ui(input, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                ui.spacing_mut().slider_width = 500.0;
+                // 记录改动前的滑块厚度基准。
+                old_thickness.set(
+                    ui.text_style_height(&egui::TextStyle::Body)
+                        .at_least(ui.spacing().interact_size.y),
+                );
+                let mut v = 0.3;
+                let resp = seek_slider(ui, &mut v, 0.0..=1.0, true);
+                slider_rect = resp.rect;
+                row_rect = ui.min_rect();
+            });
+        });
+        full.textures_delta.clear();
+
+        // 行高必须与改动前的滑块厚度一致（整行布局不变）。
+        assert!(
+            (row_rect.height() - old_thickness.get()).abs() < 0.6,
+            "进度条行高 {} 应保持原厚度 {:.1}",
+            row_rect.height(),
+            old_thickness.get()
+        );
+        // 手柄球径（= 0.8 × 滑块矩形高）应明显小于改动前（~0.8 × 原厚度）。
+        let handle_d = 2.0 * (slider_rect.height() / 2.5);
+        let old_handle_d = 2.0 * (old_thickness.get() / 2.5);
+        assert!(
+            handle_d < old_handle_d - 4.0,
+            "手柄球径应从 ~{old_handle_d:.1} 缩小，实际 {handle_d:.1}"
+        );
+        // 球在行内应垂直居中。
+        let row_center = (row_rect.min.y + row_rect.max.y) / 2.0;
+        assert!(
+            (slider_rect.center().y - row_center).abs() < 0.6,
+            "滑块（球）应在行内垂直居中：滑块中心 {:.1} vs 行中心 {:.1}",
+            slider_rect.center().y,
+            row_center
+        );
+        // 球径应落在 SLIDER_HANDLE_DIAMETER 附近（厚度=正文字号行高 → 球径≈0.8×行高）。
+        assert!(
+            handle_d < 18.0,
+            "球径 {handle_d:.1} 应明显小于原来的 ~22px（SLIDER_HANDLE_DIAMETER={SLIDER_HANDLE_DIAMETER}）"
+        );
+    }
+}
+
+#[cfg(test)]
+mod dbg_tmp {
+    use super::*;
+    #[test]
+    fn dbg_numbers() {
+        let ctx = egui::Context::default();
+        crate::fonts::install_fonts(&ctx);
+        crate::theme::apply(&ctx);
+        let mut input = egui::RawInput::default();
+        input.screen_rect = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1000.0, 200.0)));
+        let cell = std::rc::Rc::new(std::cell::RefCell::new(String::new()));
+        let c2 = cell.clone();
+        let mut full = ctx.run_ui(input, move |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                ui.spacing_mut().slider_width = 500.0;
+                let outer = ui.text_style_height(&egui::TextStyle::Body).at_least(ui.spacing().interact_size.y);
+                let r = ui.scope(|ui| {
+                    ui.set_height(outer);
+                    ui.spacing_mut().interact_size.y = SLIDER_HANDLE_DIAMETER;
+                    let mut v = 0.3f64;
+                    ui.add(egui::Slider::new(&mut v, 0.0..=1.0).show_value(false).trailing_fill(true))
+                });
+                *c2.borrow_mut() = format!(
+                    "outer_thickness={outer} scope_rect={:?} slider_rect={:?} scope_h={}",
+                    r.response.rect,
+                    r.inner.rect,
+                    r.response.rect.height()
+                );
+            });
+        });
+        full.textures_delta.clear();
+        panic!("DBG {}", cell.borrow());    }
 }
