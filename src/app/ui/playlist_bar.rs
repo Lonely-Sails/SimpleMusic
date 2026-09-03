@@ -2,7 +2,7 @@
 
 use crate::{icons, theme};
 use crate::state::{Playlist, PlaylistKind};
-use eframe::egui::{self, Align2, Color32, ComboBox, RichText, Sense, Stroke, Vec2};
+use eframe::egui::{self, Align2, Color32, ComboBox, RichText, Sense, Vec2};
 use super::MusicApp;
 
 impl MusicApp {
@@ -40,12 +40,6 @@ impl MusicApp {
                     }),
             )
             .show(ui, |ui| {
-                // 分割线：与上方状态栏分隔。
-                ui.painter().hline(
-                    ui.max_rect().x_range(),
-                    ui.max_rect().top() + 0.5,
-                    Stroke::new(1.0, theme::BORDER_SOFT),
-                );
                 ui.horizontal(|ui| {
                     // 左侧：歌单选择框，占满剩余空间（预留右侧按钮区宽度）。
                     let reserve = 126.0;
