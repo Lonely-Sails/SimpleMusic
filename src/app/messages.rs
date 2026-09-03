@@ -286,6 +286,8 @@ impl MusicApp {
                 self.uname = None;
                 self.login_status = format!("已登录，mid={mid}");
                 self.fav_initiated = false;
+                // 若当前活跃歌单是在线收藏夹，登录后恢复其选中（避免跳回第一个）。
+                self.restore_favorites_selection();
                 // 拉取用户昵称（状态栏显示用）。
                 self.spawn_user_info_fetch();
             }
@@ -354,10 +356,10 @@ impl MusicApp {
                 pn,
                 result,
             } => {
-                self.fav_loading = false;
                 if self.fav_selected != Some(media_id) {
                     return;
                 }
+                self.fav_loading = false;
                 match result {
                     Ok((items, total)) => {
                         if pn == 1 {

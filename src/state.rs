@@ -244,6 +244,9 @@ pub struct Settings {
     /// 音量 0.0 ~ 1.0。
     #[serde(default = "default_volume")]
     pub volume: f32,
+    /// 上次打开的歌单下标（重启后恢复；歌单数量变化时会被钳制）。
+    #[serde(default)]
+    pub active_playlist: usize,
 }
 
 fn default_volume() -> f32 {
@@ -259,6 +262,7 @@ impl Default for Settings {
             play_mode: PlayMode::default(),
             audio_quality: AudioQuality::default(),
             volume: 0.8,
+            active_playlist: 0,
         }
     }
 }

@@ -12,8 +12,37 @@ impl MusicApp {
             return;
         }
         self.active_playlist = idx;
+        self.settings.active_playlist = idx;
         self.current_track = None;
         self.search_text.clear();
+    }
+
+    /// 当前活跃歌单如果是在线收藏夹，返回其 media_id；否则返回 None。
+    pub(crate) fn active_online_media_id(&self) -> Option<i64> {
+        match self.playlists.get(self.active_playlist)?.kind {
+            PlaylistKind::Online { media_id, .. } => Some(media_id),
+            _ => None,
+        }
+    }
+
+    /// 重启/登录后恢复收藏夹视图：若活跃歌单是在线收藏夹，把 `fav_selected`
+    /// 指回该收藏夹（而不是等 `FavFolders` 响应自动选第一个）。
+    /// 已登录时顺带拉取该收藏夹的资源；未登录时只保留选中，登录成功后再拉。
+    pub(crate) fn restore_favorites_selection(&mut self) {
+        if let Some(media_id) = self.active_online_media_id() {
+            let changed = self.fav_selected != Some(media_id);
+            if changed {
+                self.fav_selected = Some(media_id);
+                self.fav_items.clear();
+                self.fav_page = 0;
+                self.fav_total = 0;
+                self.fav_has_more = false;
+            }
+            if changed && self.logged_in() {
+                self.fav_loading = false;
+                self.spawn_fav_resources(media_id, 1);
+            }
+        }
     }
 
     /// 把一首歌添加到指定的本地歌单（去重）。

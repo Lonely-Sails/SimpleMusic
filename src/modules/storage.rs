@@ -309,11 +309,28 @@ mod tests {
             play_mode: crate::state::PlayMode::Sequence,
             audio_quality: crate::state::AudioQuality::High,
             volume: 0.8,
+            active_playlist: 2,
         };
         let text = serde_json::to_string_pretty(&s).expect("序列化失败");
         let back: Settings = serde_json::from_str(&text).expect("反序列化失败");
         assert_eq!(back, s);
         assert!(text.contains("desktop_lyrics_enabled"));
+        assert!(text.contains("\"active_playlist\": 2"));
+    }
+
+    #[test]
+    fn test_settings_old_json_missing_active_playlist_defaults_to_zero() {
+        // 旧版 config.json 没有 active_playlist 字段，必须可反序列化（serde default）。
+        let old = r#"{
+            "desktop_lyrics_enabled": false,
+            "lyrics_locked": false,
+            "font_scale": 1.0,
+            "play_mode": "Sequence",
+            "audio_quality": "High",
+            "volume": 0.8
+        }"#;
+        let s: Settings = serde_json::from_str(old).unwrap();
+        assert_eq!(s.active_playlist, 0);
     }
 
     #[test]

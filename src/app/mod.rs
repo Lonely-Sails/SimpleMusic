@@ -155,6 +155,10 @@ impl MusicApp {
         let mut covers = CoverCache::new(cc.egui_ctx.clone());
         let mut state = PlaybackState::default();
         state.volume = settings.volume;
+        // 重启后恢复上次停留的歌单（歌单可能被删/变化，钳制到合法范围）。
+        let restored_active = settings
+            .active_playlist
+            .min(playlists.len().saturating_sub(1));
         // 启动时预取封面。
         for pl in &playlists {
             for item in &pl.songs {
@@ -170,7 +174,7 @@ impl MusicApp {
             state,
             settings,
             playlists,
-            active_playlist: 0,
+            active_playlist: restored_active,
             current_track: None,
             seek_dragging: false,
             seek_preview: 0.0,
@@ -226,6 +230,9 @@ impl MusicApp {
     if app.logged_in() {
         app.spawn_user_info_fetch();
     }
+    // 重启后若上次停留在在线歌单（B 站收藏夹），恢复 fav_selected 指向该收藏夹，
+    // 避免收藏夹视图跳回列表中的第一个。
+    app.restore_favorites_selection();
     app
 }
 
@@ -360,6 +367,9 @@ impl eframe::App for MusicApp {
             self.fav_initiated = true;
             self.spawn_fav_folders();
         }
+
+        // 同步当前歌单下标到设置（重启后恢复同一视图）。
+        self.settings.active_playlist = self.active_playlist;
 
         self.covers.poll();
         self.update_lyrics_line();
