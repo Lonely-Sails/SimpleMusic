@@ -7,7 +7,9 @@ use eframe::egui::{
 use super::MusicApp;
 
 /// 自定义标题栏高度。
-const TITLEBAR_HEIGHT: f32 = 40.0;
+const TITLEBAR_HEIGHT: f32 = 48.0;
+/// 标题栏左右留白（略大于上下，让四周边距更透气）。
+const TITLEBAR_SIDE_PAD: f32 = 20.0;
 
 impl MusicApp {
     pub(crate) fn show_custom_title_bar(&mut self, ui: &mut egui::Ui) {
@@ -34,7 +36,7 @@ impl MusicApp {
                 ui.interact(bar, ui.id().with("titlebar_drag"), Sense::drag());
 
                 ui.horizontal(|ui| {
-                    ui.add_space(14.0);
+                    ui.add_space(TITLEBAR_SIDE_PAD);
                     // 音符图标 + 应用名（拖动把手）。
                     let (note_rect, note_resp) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::drag());
                     icons::note(ui.painter(), note_rect, theme::ACCENT);
@@ -53,9 +55,9 @@ impl MusicApp {
                     }
                     tr.on_hover_text("拖动移动窗口");
 
-                    // 右侧：窗口控制按钮（外边距 14px，与左侧对称）
+                    // 右侧：窗口控制按钮（外边距与左侧对称，比上下略大）
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add_space(14.0);
+                        ui.add_space(TITLEBAR_SIDE_PAD);
                         // 关闭（最小化到托盘 / 退出）
                         if self.window_ctrl_button(ui, icons::cross, "关闭").clicked() {
                             self.request_close(ui.ctx());

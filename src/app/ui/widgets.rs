@@ -4,7 +4,7 @@
 
 use crate::theme;
 use eframe::egui::{
-    self, Color32, FontId, Painter, Pos2, Rect, Sense, Vec2,
+    self, Align2, Color32, CornerRadius, FontId, Painter, Pos2, Rect, Sense, Stroke, Vec2,
 };
 
 // ---------------------------------------------------------------------------
@@ -111,6 +111,44 @@ pub fn paint_cover_image(painter: &Painter, rect: Rect, texture_id: egui::Textur
         )
         .with_texture(texture_id, uv),
     );
+}
+
+// ---------------------------------------------------------------------------
+// 圆形头像（状态栏左上）
+// ---------------------------------------------------------------------------
+
+/// 绘制圆形头像：有纹理画圆角图（圆角=半径即圆），无纹理画占位圆 + 昵称首字/音符。
+pub fn paint_avatar(
+    painter: &Painter,
+    rect: Rect,
+    texture_id: Option<egui::TextureId>,
+    initial: Option<&str>,
+) {
+    let radius = (rect.width() * 0.5).round();
+    let corner = CornerRadius::same(radius as u8);
+    if let Some(tex) = texture_id {
+        let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+        painter.add(
+            egui::epaint::RectShape::filled(rect, corner, Color32::WHITE).with_texture(tex, uv),
+        );
+    } else {
+        painter.circle_filled(rect.center(), radius, theme::BG_CARD);
+        match initial {
+            Some(ch) if !ch.is_empty() => {
+                painter.text(
+                    rect.center(),
+                    Align2::CENTER_CENTER,
+                    ch,
+                    FontId::proportional(rect.width() * 0.42),
+                    theme::TEXT_SECONDARY,
+                );
+            }
+            _ => {
+                crate::icons::note(painter, rect.shrink(rect.width() * 0.24), theme::TEXT_WEAK);
+            }
+        }
+    }
+    painter.circle_stroke(rect.center(), radius, Stroke::new(1.0, theme::BORDER_SOFT));
 }
 
 // ---------------------------------------------------------------------------

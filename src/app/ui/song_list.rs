@@ -14,6 +14,9 @@ use eframe::egui::{
 use super::MusicApp;
 use super::widgets::{icon_button, paint_cover_image, paint_placeholder_cover, truncate_label};
 
+/// 歌曲列表内容相对滚动区/窗口两边的水平留白（滚动条贴右，内容左右留白）。
+const LIST_PAD_X: f32 = 14.0;
+
 impl MusicApp {
     // ---- 本地歌单歌曲列表 ----
 
@@ -36,6 +39,7 @@ impl MusicApp {
         };
         // 标题行：歌曲数量 + 搜索框
         ui.horizontal(|ui| {
+            ui.add_space(LIST_PAD_X);
             if query.is_empty() {
                 ui.label(
                     RichText::new(format!("歌曲 ({total})"))
@@ -50,6 +54,7 @@ impl MusicApp {
                 );
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(LIST_PAD_X);
                 if !query.is_empty() {
                     if icon_button(ui, 24.0, icons::cross, "清空搜索").clicked() {
                         self.search_text.clear();
@@ -102,6 +107,8 @@ impl MusicApp {
                         Vec2::new(ui.available_width(), row_h),
                         Sense::click(),
                     );
+                    // 行内容在滚动区两侧留白（滚动条本身贴右边）。
+                    let row = rect.shrink2(Vec2::new(LIST_PAD_X, 0.0));
                     let bg = if selected {
                         theme::BG_CARD
                     } else if resp.hovered() {
@@ -112,11 +119,11 @@ impl MusicApp {
                     {
                         let painter = ui.painter();
                         if bg != Color32::TRANSPARENT {
-                            painter.rect_filled(rect, theme::CORNER, bg);
+                            painter.rect_filled(row, theme::CORNER, bg);
                         }
                         if selected {
                             painter.rect_filled(
-                                Rect::from_min_size(rect.min, Vec2::new(3.0, rect.height())),
+                                Rect::from_min_size(row.min, Vec2::new(3.0, row.height())),
                                 2.0,
                                 theme::ACCENT,
                             );
@@ -124,16 +131,16 @@ impl MusicApp {
                     }
                     // 封面 44×44 圆角
                     let cover_rect = Rect::from_min_size(
-                        Pos2::new(rect.left() + 10.0, rect.center().y - 22.0),
+                        Pos2::new(row.left() + 10.0, row.center().y - 22.0),
                         Vec2::splat(44.0),
                     );
                     self.draw_cover_row(ui, cover_rect, &item.bvid, &item.cover_url);
                     let painter = ui.painter();
-                    let text_x = rect.left() + 64.0;
-                    let max_w = rect.width() - 100.0;
+                    let text_x = row.left() + 64.0;
+                    let max_w = row.width() - 100.0;
                     let title = truncate_label(ui, &item.title, max_w);
                     painter.text(
-                        Pos2::new(text_x, rect.top() + 10.0),
+                        Pos2::new(text_x, row.top() + 10.0),
                         Align2::LEFT_TOP,
                         title,
                         FontId::proportional(13.0),
@@ -150,7 +157,7 @@ impl MusicApp {
                     );
                     let sub = truncate_label(ui, &sub, max_w);
                     painter.text(
-                        Pos2::new(text_x, rect.top() + 32.0),
+                        Pos2::new(text_x, row.top() + 32.0),
                         Align2::LEFT_TOP,
                         sub,
                         FontId::proportional(11.0),
@@ -158,7 +165,7 @@ impl MusicApp {
                     );
                     // 删除按钮 ×
                     let btn_rect = Rect::from_center_size(
-                        Pos2::new(rect.right() - 20.0, rect.center().y),
+                        Pos2::new(row.right() - 20.0, row.center().y),
                         Vec2::splat(24.0),
                     );
                     let btn_resp = ui.interact(
@@ -277,6 +284,7 @@ impl MusicApp {
                 .collect()
         };
         ui.horizontal(|ui| {
+            ui.add_space(LIST_PAD_X);
             if query.is_empty() {
                 ui.label(
                     RichText::new(format!("歌曲 ({count}/{total})"))
@@ -291,6 +299,7 @@ impl MusicApp {
                 );
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(LIST_PAD_X);
                 if !query.is_empty() {
                     if icon_button(ui, 24.0, icons::cross, "清空搜索").clicked() {
                         self.search_text.clear();
@@ -337,6 +346,8 @@ impl MusicApp {
                         Vec2::new(ui.available_width(), row_h),
                         Sense::click(),
                     );
+                    // 行内容在滚动区两侧留白（滚动条本身贴右边）。
+                    let row = rect.shrink2(Vec2::new(LIST_PAD_X, 0.0));
                     let bg = if selected {
                         theme::BG_CARD
                     } else if resp.hovered() {
@@ -347,11 +358,11 @@ impl MusicApp {
                     {
                         let painter = ui.painter();
                         if bg != Color32::TRANSPARENT {
-                            painter.rect_filled(rect, theme::CORNER, bg);
+                            painter.rect_filled(row, theme::CORNER, bg);
                         }
                         if selected {
                             painter.rect_filled(
-                                Rect::from_min_size(rect.min, Vec2::new(3.0, rect.height())),
+                                Rect::from_min_size(row.min, Vec2::new(3.0, row.height())),
                                 2.0,
                                 theme::ACCENT,
                             );
@@ -359,17 +370,17 @@ impl MusicApp {
                     }
                     // 封面 44×44 圆角
                     let cover_rect = Rect::from_min_size(
-                        Pos2::new(rect.left() + 10.0, rect.center().y - 22.0),
+                        Pos2::new(row.left() + 10.0, row.center().y - 22.0),
                         Vec2::splat(44.0),
                     );
                     let cover_url = item.cover_url.as_deref().unwrap_or("");
                     self.draw_cover_row(ui, cover_rect, &item.bvid, cover_url);
                     let painter = ui.painter();
-                    let text_x = rect.left() + 64.0;
-                    let max_w = rect.width() - 100.0;
+                    let text_x = row.left() + 64.0;
+                    let max_w = row.width() - 100.0;
                     let title = truncate_label(ui, &item.title, max_w);
                     painter.text(
-                        Pos2::new(text_x, rect.top() + 10.0),
+                        Pos2::new(text_x, row.top() + 10.0),
                         Align2::LEFT_TOP,
                         title,
                         FontId::proportional(13.0),
@@ -382,7 +393,7 @@ impl MusicApp {
                     let sub = format!("{} · {}", item.owner, format_secs(item.duration_secs));
                     let sub = truncate_label(ui, &sub, max_w);
                     painter.text(
-                        Pos2::new(text_x, rect.top() + 32.0),
+                        Pos2::new(text_x, row.top() + 32.0),
                         Align2::LEFT_TOP,
                         sub,
                         FontId::proportional(11.0),
@@ -450,15 +461,6 @@ impl MusicApp {
                 }
                 if let Some(bvid) = play {
                     self.spawn_play_resolve(bvid);
-                }
-                if self.fav_has_more {
-                    ui.add_space(4.0);
-                    if ui.add(theme::primary_button("加载更多")).clicked() {
-                        if let Some(id) = self.fav_selected {
-                            self.fav_loading = false;
-                            self.spawn_fav_resources(id, self.fav_page + 1);
-                        }
-                    }
                 }
             });
     }

@@ -27,8 +27,11 @@ pub(crate) enum AsyncMsg {
     LoginPollStatus(String),
     /// 登录成功（携带 mid）。`gen_id` 是本次登录线程的代号，用于丢弃过期线程的结果。
     LoginSuccess { gen_id: u64, mid: u64 },
-    /// 当前登录用户信息（nav 接口取回的昵称；None = 未登录或拉取失败，状态栏回退显示 UID）。
-    UserInfo { uname: Option<String> },
+    /// 当前登录用户信息（nav 接口取回的昵称/头像；None = 未登录或拉取失败，状态栏回退显示 UID）。
+    UserInfo {
+        uname: Option<String>,
+        face: Option<String>,
+    },
     /// 登录失败。`gen_id` 同上。
     LoginFailed { gen_id: u64, msg: String },
     /// 登录轮询线程已因取消而退出。`gen_id` 同上。
@@ -152,16 +155,19 @@ impl MusicApp {
         self.login_visible = false;
     }
 
-    /// 后台拉取当前登录用户昵称（nav 接口），回传 [`AsyncMsg::UserInfo`]。
+    /// 后台拉取当前登录用户信息（nav 接口：昵称 + 头像 URL），回传 [`AsyncMsg::UserInfo`]。
     pub(crate) fn spawn_user_info_fetch(&mut self) {
         let bili = self.bili.clone();
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let uname = match bili.lock() {
-                Ok(b) => b.nav_user().ok().flatten().map(|u| u.uname),
-                Err(_) => None,
+            let (uname, face) = match bili.lock() {
+                Ok(b) => match b.nav_user().ok().flatten() {
+                    Some(u) => (Some(u.uname), Some(u.face)),
+                    None => (None, None),
+                },
+                Err(_) => (None, None),
             };
-            let _ = tx.send(AsyncMsg::UserInfo { uname });
+            let _ = tx.send(AsyncMsg::UserInfo { uname, face });
         });
     }
 
@@ -300,12 +306,21 @@ impl MusicApp {
                 self.login_stop.store(true, AtomicOrdering::Relaxed);
                 self.error(format!("登录失败: {msg}"));
             }
-            AsyncMsg::UserInfo { uname } => {
+            AsyncMsg::UserInfo { uname, face } => {
                 // 退出登录后线程结果才回来时：logged_in 已为 false，丢弃。
                 if self.logged_in() {
                     self.uname = uname;
+                    self.face = face.clone();
+                    // 头像：按 mid 作缓存 key，后台下载 → 状态栏圆形头像。
+                    if let Some(face) = face {
+                        if !face.is_empty() {
+                            let key = self.avatar_key();
+                            self.covers.request(&key, &face);
+                        }
+                    }
                 } else {
                     self.uname = None;
+                    self.face = None;
                 }
             }
             AsyncMsg::LoginEnded { gen_id } => {
@@ -365,16 +380,20 @@ impl MusicApp {
                         if pn == 1 {
                             self.fav_items.clear();
                         }
-                        let page: Vec<FavItem> = items.clone();
-                        for it in page {
-                            if let Some(u) = it.cover_url {
-                                self.covers.request(&it.bvid, &u);
+                        let has_items = !items.is_empty();
+                        for it in &items {
+                            if let Some(u) = &it.cover_url {
+                                self.covers.request(&it.bvid, u);
                             }
                         }
                         self.fav_items.extend(items);
                         self.fav_page = pn;
                         self.fav_total = total;
                         self.fav_has_more = (self.fav_items.len() as i64) < total;
+                        // 默认一次拉取收藏夹所有视频：剩余未加载且本页有数据则继续下一页。
+                        if self.fav_has_more && has_items {
+                            self.spawn_fav_resources(media_id, pn + 1);
+                        }
                     }
                     Err(e) => self.error(format!("收藏夹资源加载失败: {e}")),
                 }

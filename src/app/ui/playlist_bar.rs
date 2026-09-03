@@ -2,7 +2,7 @@
 
 use crate::{icons, theme};
 use crate::state::{Playlist, PlaylistKind};
-use eframe::egui::{self, Align2, Color32, ComboBox, RichText, Sense, Vec2};
+use eframe::egui::{self, Align2, Color32, ComboBox, RichText, Sense, Stroke, Vec2};
 use super::MusicApp;
 
 impl MusicApp {
@@ -40,12 +40,18 @@ impl MusicApp {
                     }),
             )
             .show(ui, |ui| {
+                // 分割线：与上方状态栏分隔。
+                ui.painter().hline(
+                    ui.max_rect().x_range(),
+                    ui.max_rect().top() + 0.5,
+                    Stroke::new(1.0, theme::BORDER_SOFT),
+                );
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("歌单").color(theme::TEXT_SECONDARY).small());
-                    ui.add_space(6.0);
-
+                    // 左侧：歌单选择框，占满剩余空间（预留右侧按钮区宽度）。
+                    let reserve = 126.0;
+                    let combo_w = (ui.available_width() - reserve).max(120.0);
                     ComboBox::from_id_salt("playlist_selector")
-                        .width(200.0)
+                        .width(combo_w)
                         .selected_text(RichText::new(current_name).color(theme::TEXT_PRIMARY))
                         .show_ui(ui, |ui| {
                             for (i, label, is_online, media_id) in &playlist_options {
@@ -85,74 +91,77 @@ impl MusicApp {
                             }
                         });
 
-                    // + 按钮：创建歌单（用 Popup 菜单）
-                    let add_button = ui.add(
-                        egui::Button::new(RichText::new("+").color(theme::TEXT_PRIMARY))
-                            .fill(theme::BG_CARD)
-                            .corner_radius(theme::CORNER),
-                    );
-
-                    egui::Popup::menu(&add_button).show(|ui| {
-                        ui.set_min_width(160.0);
+                    // 右侧：创建歌单(+)/管理按钮，保持在右侧。
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // 管理按钮：重命名 / 删除歌单
                         if ui
                             .add(
                                 egui::Button::new(
-                                    RichText::new("创建本地歌单").color(theme::TEXT_PRIMARY),
+                                    RichText::new("管理").color(theme::TEXT_SECONDARY),
                                 )
                                 .fill(theme::BG_CARD)
+                                .stroke(eframe::egui::Stroke::NONE)
                                 .corner_radius(theme::CORNER),
                             )
                             .clicked()
                         {
-                            self.playlists.push(Playlist::local(format!(
-                                "新歌单 {}",
-                                self.playlists.len() + 1
-                            )));
-                            let new_idx = self.playlists.len() - 1;
-                            self.switch_active_playlist(new_idx);
-                            self.queue_dirty = true;
-                            ui.close();
+                            self.playlist_mgmt_open = true;
                         }
-                        if self.logged_in() {
+                        ui.add_space(6.0);
+                        // + 按钮：创建歌单（用 Popup 菜单）
+                        let add_button = ui.add(
+                            egui::Button::new(RichText::new("+").color(theme::TEXT_PRIMARY))
+                                .fill(theme::BG_CARD)
+                                .corner_radius(theme::CORNER),
+                        );
+
+                        egui::Popup::menu(&add_button).show(|ui| {
+                            ui.set_min_width(160.0);
                             if ui
                                 .add(
                                     egui::Button::new(
-                                        RichText::new("同步B站收藏夹").color(theme::TEXT_PRIMARY),
+                                        RichText::new("创建本地歌单").color(theme::TEXT_PRIMARY),
                                     )
                                     .fill(theme::BG_CARD)
                                     .corner_radius(theme::CORNER),
                                 )
                                 .clicked()
                             {
-                                self.syncing_online = true;
-                                self.spawn_fav_folders();
+                                self.playlists.push(Playlist::local(format!(
+                                    "新歌单 {}",
+                                    self.playlists.len() + 1
+                                )));
+                                let new_idx = self.playlists.len() - 1;
+                                self.switch_active_playlist(new_idx);
+                                self.queue_dirty = true;
                                 ui.close();
                             }
-                        } else {
-                            ui.add_enabled(
-                                false,
-                                egui::Button::new(
-                                    RichText::new("同步B站收藏夹（需登录）")
-                                        .color(theme::TEXT_WEAK),
-                                ),
-                            );
-                        }
+                            if self.logged_in() {
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            RichText::new("同步B站收藏夹").color(theme::TEXT_PRIMARY),
+                                        )
+                                        .fill(theme::BG_CARD)
+                                        .corner_radius(theme::CORNER),
+                                    )
+                                    .clicked()
+                                {
+                                    self.syncing_online = true;
+                                    self.spawn_fav_folders();
+                                    ui.close();
+                                }
+                            } else {
+                                ui.add_enabled(
+                                    false,
+                                    egui::Button::new(
+                                        RichText::new("同步B站收藏夹（需登录）")
+                                            .color(theme::TEXT_WEAK),
+                                    ),
+                                );
+                            }
+                        });
                     });
-
-                    // 管理按钮：重命名 / 删除歌单
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                RichText::new("管理").color(theme::TEXT_SECONDARY),
-                            )
-                            .fill(theme::BG_CARD)
-                            .stroke(eframe::egui::Stroke::NONE)
-                            .corner_radius(theme::CORNER),
-                        )
-                        .clicked()
-                    {
-                        self.playlist_mgmt_open = true;
-                    }
                 });
             });
     }

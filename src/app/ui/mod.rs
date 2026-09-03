@@ -51,7 +51,7 @@ impl MusicApp {
         // ── 自定义标题栏（窗口控制） ──
         self.show_custom_title_bar(ui);
 
-        // ── 顶部栏：登录状态 + 设置按钮 ──
+        // ── 顶部栏：用户头像 + 昵称 + 登录态 + 设置按钮 ──
         self.show_status_bar(ui);
 
         // ── 歌单选择栏 ──
@@ -62,7 +62,17 @@ impl MusicApp {
 
         // ---- 歌单内容 + 导入输入框 ----
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(Color32::TRANSPARENT).inner_margin(egui::Margin::same(18)))
+            .frame(
+                egui::Frame::new()
+                    .fill(Color32::TRANSPARENT)
+                    // 左右让出歌曲区域留白；右边际设 0，让滚动条真正贴到窗口最右。
+                    .inner_margin(egui::Margin {
+                        left: 18,
+                        right: 0,
+                        top: 10,
+                        bottom: 8,
+                    }),
+            )
             .show(ui, |ui| {
                 if self.active_playlist_is_online() {
                     self.show_online_songs(ui);

@@ -67,6 +67,8 @@ pub struct MusicApp {
     mid: Option<u64>,
     /// 登录用户昵称（nav 接口；None/空 = 未知，状态栏回退显示 UID）。
     uname: Option<String>,
+    /// 登录用户头像 URL（nav 接口 face；用于状态栏圆形头像）。
+    face: Option<String>,
     // 收藏夹（B站在线歌单用）
     fav_initiated: bool,
     fav_folders: Vec<FavFolder>,
@@ -186,6 +188,7 @@ impl MusicApp {
             login_status: String::new(),
             mid,
             uname: None,
+            face: None,
             fav_initiated: false,
             fav_folders: Vec::new(),
             fav_folders_loading: false,
@@ -246,6 +249,11 @@ impl MusicApp {
 
     pub(crate) fn logged_in(&self) -> bool {
         self.bili.lock().map(|b| b.logged_in()).unwrap_or(false)
+    }
+
+    /// 头像缓存键（按 mid，切换账号不会互相串图）。
+    pub(crate) fn avatar_key(&self) -> String {
+        format!("avatar-{}", self.mid.unwrap_or(0))
     }
 
     pub(crate) fn active_songs_mut(&mut self) -> &mut Vec<QueueItem> {

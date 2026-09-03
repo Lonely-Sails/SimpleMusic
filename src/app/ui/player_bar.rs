@@ -6,7 +6,7 @@ use crate::modules::lyrics::Lyrics;
 use crate::state::PlayMode;
 use crate::util::fmt::format_secs;
 use crate::{icons, theme};
-use eframe::egui::{self, Color32, RichText, Sense, Vec2};
+use eframe::egui::{self, Color32, RichText, Sense, Stroke, Vec2};
 
 use super::MusicApp;
 use super::widgets::{spinner_arc, transport_button, truncate_label};
@@ -17,6 +17,8 @@ const PLAY_BTN_SIZE: f32 = 36.0;
 const ICON_BTN_SIZE: f32 = 30.0;
 /// 图标区相邻按钮之间的间距。
 const ICON_ROW_GAP: f32 = 8.0;
+/// 进度条行左右两侧的留白。
+const PROGRESS_PAD: f32 = 16.0;
 
 /// 图标区自然宽度：6 个 `ICON_BTN_SIZE` 图标 + 1 个 `PLAY_BTN_SIZE` 播放键 + 6 个间距，
 /// 用于在整行宽度内把图标区水平居中。此值与 `show_player_bar` 第二行的实际按钮摆放一致，
@@ -39,6 +41,13 @@ impl MusicApp {
                     }),
             )
             .show(ui, |ui| {
+                // 顶部分割线：与上方歌曲列表分隔。
+                ui.painter().hline(
+                    ui.max_rect().x_range(),
+                    ui.max_rect().top() + 0.5,
+                    Stroke::new(1.0, theme::BORDER_SOFT),
+                );
+
                 // ── 第一行：进度条（左：当前播放进度，右：歌曲总时长，进度条占满容器宽度） ──
                 let dur = self.state.duration_secs;
                 // 是否有已加载/可播放的曲目：无音频时禁用进度条互动（灰色、不可拖动）。
@@ -58,6 +67,7 @@ impl MusicApp {
                 ui.horizontal(|ui| {
                     // 关闭自动间距，由 add_space 手动控制，进度条精确占满整行。
                     ui.spacing_mut().item_spacing.x = 0.0;
+                    ui.add_space(PROGRESS_PAD);
                     let time_font = egui::FontId::monospace(12.0);
                     let width_of = |s: &str| {
                         ui.ctx()
@@ -68,9 +78,9 @@ impl MusicApp {
                     // 左右时间标签都按同字号测量，避免测宽偏差导致进度条溢出。
                     let left_w = width_of(&left);
                     let right_w = width_of(&right);
-                    // 先量出左右标签宽度，进度条精确填充剩余空间。
-                    let slider_w =
-                        (ui.available_width() - left_w - right_w - 2.0 * 6.0).max(40.0);
+                    // 先量出左右标签宽度 + 左右留白，进度条精确填充剩余空间。
+                    let slider_w = (ui.available_width() - left_w - right_w - 2.0 * 6.0 - PROGRESS_PAD)
+                        .max(40.0);
                     // egui::Slider 会忽略 add_sized 的尺寸提示（只认 spacing().slider_width），
                     // 必须显式设置 slider_width 才能让进度条真正占满整行，否则只画 ~100px、
                     // 整行无法铺满（宽度不对、进度条也不居中）。
@@ -437,6 +447,7 @@ mod tests {
         let mut full = ctx.run_ui(input, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
+                ui.add_space(PROGRESS_PAD);
                 let left = "00:31";
                 let right = "03:45";
                 let time_font = egui::FontId::monospace(12.0);
@@ -448,7 +459,7 @@ mod tests {
                 };
                 let left_w = width_of(left);
                 let right_w = width_of(right);
-                want_w = (ui.available_width() - left_w - right_w - 2.0 * 6.0).max(40.0);
+                want_w = (ui.available_width() - left_w - right_w - 2.0 * 6.0 - PROGRESS_PAD).max(40.0);
                 ui.spacing_mut().slider_width = want_w;
                 ui.label(RichText::new(left).monospace().size(12.0));
                 ui.add_space(6.0);
@@ -472,12 +483,12 @@ mod tests {
             (slider_w - want_w).abs() < 1.0,
             "滑块宽度 {slider_w:.1} 应等于计算宽度 {want_w:.1}，实际退回默认 100px 则说明 add_sized/slider_width 处理有误"
         );
-        // 整行应铺满 1000px 宽的容器。
+        // 内容区应在左右留白之后铺满（右端 = 1000 - 左右留白，两侧对称留白）。
         assert!(
-            (row_end - 1000.0).abs() < 1.0,
-            "进度条行应铺满整行宽度，实际右端到 {row_end:.1}"
+            (row_end - (1000.0 - PROGRESS_PAD)).abs() < 1.0,
+            "进度条行应在左右留白后铺满，实际右端到 {row_end:.1}"
         );
-        // 滑块应水平居中（容器中心 = 500）。
+        // 滑块应水平居中（容器中心 = 500；左右留白对称故仍在中心）。
         assert!(
             (slider_center - 500.0).abs() < 1.0,
             "进度条应水平居中，实际滑块中心 {slider_center:.1}"
