@@ -23,14 +23,14 @@ impl MusicApp {
                 egui::Frame::new()
                     .fill(Color32::TRANSPARENT)
                     .inner_margin(egui::Margin {
-                        left: 22,
-                        right: 22,
+                        left: 0,
+                        right: 0,
                         top: 12,
                         bottom: 14,
                     }),
             )
             .show(ui, |ui| {
-                // ── 第一行：进度条（左：当前播放进度，右：歌曲总时长，进度条占满剩余宽度） ──
+                // ── 第一行：进度条（左：当前播放进度，右：歌曲总时长，进度条占满容器宽度） ──
                 let dur = self.state.duration_secs;
                 let max = if dur > 0.0 { dur } else { 1.0 };
                 let mut val = if self.seek_dragging {
@@ -38,22 +38,25 @@ impl MusicApp {
                 } else {
                     self.state.position_secs
                 };
-                let left = format_secs(if self.seek_dragging { self.seek_preview } else { self.state.position_secs });
+                let pos = if self.seek_dragging { self.seek_preview } else { self.state.position_secs };
+                let left = format_secs(pos);
                 let right = format_secs(dur);
 
                 ui.horizontal(|ui| {
-                    // 关闭自动间距，由 add_space 手动控制，保证进度条精确占满整行。
+                    // 关闭自动间距，由 add_space 手动控制，进度条精确占满整行。
                     ui.spacing_mut().item_spacing.x = 0.0;
-                    let font = egui::FontId::monospace(12.0);
+                    let time_font = egui::FontId::monospace(12.0);
                     let right_w = ui
                         .ctx()
-                        .fonts_mut(|f| f.layout_no_wrap(right.clone(), font.clone(), Color32::WHITE))
+                        .fonts_mut(|f| f.layout_no_wrap(right.clone(), time_font.clone(), Color32::WHITE))
                         .size()
                         .x;
+                    // 时间标签显式用 12px，与上面测量字号一致，避免测宽偏差。
                     ui.label(
                         RichText::new(left)
                             .color(theme::TEXT_SECONDARY)
-                            .monospace(),
+                            .monospace()
+                            .size(12.0),
                     );
                     ui.add_space(6.0);
                     let slider_w = (ui.available_width() - right_w - 6.0).max(40.0);
@@ -80,7 +83,8 @@ impl MusicApp {
                     ui.label(
                         RichText::new(right)
                             .color(theme::TEXT_SECONDARY)
-                            .monospace(),
+                            .monospace()
+                            .size(12.0),
                     );
                 });
 
