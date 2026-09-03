@@ -45,6 +45,12 @@ impl MusicApp {
         self.audio.play_stream(&stream, &item.bvid);
         self.state.title = item.title.clone();
         self.state.artist = item.uploader.clone();
+        // 用播放列表项已知时长作为进度条区间兜底。B 站 fMP4 音频流常读不出容器
+        // 时长，音频引擎会报 duration_secs=0；若不兜底，进度条 max 退化为 1，
+        // 位置一旦超过 1s 就锁死在全满、且只能在 [0,1] 内拖动。
+        if item.duration_secs > 0.0 {
+            self.state.duration_secs = item.duration_secs;
+        }
         if !item.cover_url.is_empty() {
             self.covers.request(&item.bvid, &item.cover_url);
         }

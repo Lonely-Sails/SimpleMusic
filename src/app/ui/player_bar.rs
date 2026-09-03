@@ -15,6 +15,15 @@ use super::widgets::{spinner_arc, transport_button, truncate_label};
 const PLAY_BTN_SIZE: f32 = 36.0;
 /// 播放条：图标按钮直径。
 const ICON_BTN_SIZE: f32 = 30.0;
+/// 图标区相邻按钮之间的间距。
+const ICON_ROW_GAP: f32 = 8.0;
+
+/// 图标区自然宽度：6 个 `ICON_BTN_SIZE` 图标 + 1 个 `PLAY_BTN_SIZE` 播放键 + 6 个间距，
+/// 用于在整行宽度内把图标区水平居中。此值与 `show_player_bar` 第二行的实际按钮摆放一致，
+/// 新增/删除按钮时需同步更新。
+fn icon_row_width() -> f32 {
+    6.0 * ICON_BTN_SIZE + PLAY_BTN_SIZE + 6.0 * ICON_ROW_GAP
+}
 
 impl MusicApp {
     pub(crate) fn show_player_bar(&mut self, ui: &mut egui::Ui, st: &PlaybackStatus) {
@@ -33,12 +42,14 @@ impl MusicApp {
                 // ── 第一行：进度条（左：当前播放进度，右：歌曲总时长，进度条占满容器宽度） ──
                 let dur = self.state.duration_secs;
                 let max = if dur > 0.0 { dur } else { 1.0 };
-                let mut val = if self.seek_dragging {
+                // 拖动中用预览值；否则用实际播放位置。显示值钳到 [0, max]，
+                // 避免时长未知(max=1)时出现「全满/全空」的异常态。
+                let pos = if self.seek_dragging {
                     self.seek_preview
                 } else {
                     self.state.position_secs
                 };
-                let pos = if self.seek_dragging { self.seek_preview } else { self.state.position_secs };
+                let mut val = pos.clamp(0.0, max);
                 let left = format_secs(pos);
                 let right = format_secs(dur);
 
@@ -46,11 +57,18 @@ impl MusicApp {
                     // 关闭自动间距，由 add_space 手动控制，进度条精确占满整行。
                     ui.spacing_mut().item_spacing.x = 0.0;
                     let time_font = egui::FontId::monospace(12.0);
-                    let right_w = ui
-                        .ctx()
-                        .fonts_mut(|f| f.layout_no_wrap(right.clone(), time_font.clone(), Color32::WHITE))
-                        .size()
-                        .x;
+                    let width_of = |s: &str| {
+                        ui.ctx()
+                            .fonts_mut(|f| f.layout_no_wrap(s.to_owned(), time_font.clone(), Color32::WHITE))
+                            .size()
+                            .x
+                    };
+                    // 左右时间标签都按同字号测量，避免测宽偏差导致进度条溢出。
+                    let left_w = width_of(&left);
+                    let right_w = width_of(&right);
+                    // 先量出左右标签宽度，进度条精确填充剩余空间。
+                    let slider_w =
+                        (ui.available_width() - left_w - right_w - 2.0 * 6.0).max(40.0);
                     // 时间标签显式用 12px，与上面测量字号一致，避免测宽偏差。
                     ui.label(
                         RichText::new(left)
@@ -59,7 +77,6 @@ impl MusicApp {
                             .size(12.0),
                     );
                     ui.add_space(6.0);
-                    let slider_w = (ui.available_width() - right_w - 6.0).max(40.0);
                     let resp = ui.add_sized(
                         [slider_w, 18.0],
                         egui::Slider::new(&mut val, 0.0..=max)
@@ -68,17 +85,6 @@ impl MusicApp {
                             .max_decimals(0)
                             .trailing_fill(true),
                     );
-                    if resp.drag_started() {
-                        self.seek_dragging = true;
-                        self.seek_preview = self.state.position_secs;
-                    }
-                    if self.seek_dragging {
-                        self.seek_preview = val.clamp(0.0, max);
-                        if resp.drag_stopped() {
-                            self.seek_dragging = false;
-                            self.audio.seek(crate::app::player::clamp_seek(val, dur));
-                        }
-                    }
                     ui.add_space(6.0);
                     ui.label(
                         RichText::new(right)
@@ -86,12 +92,31 @@ impl MusicApp {
                             .monospace()
                             .size(12.0),
                     );
+
+                    // 拖动 / 点击 seek。拖拽期间用本地预览值（不打回引擎），松开才 commit。
+                    if resp.drag_started() {
+                        self.seek_dragging = true;
+                    }
+                    if self.seek_dragging {
+                        self.seek_preview = val.clamp(0.0, max);
+                        if resp.drag_stopped() {
+                            self.seek_dragging = false;
+                            self.audio.seek(crate::app::player::clamp_seek(self.seek_preview, dur));
+                        }
+                    }
                 });
 
                 ui.add_space(10.0);
 
-                // ── 第二行：图标区（居中排列） ──
-                ui.horizontal_centered(|ui| {
+                // ── 第二行：图标区（整行宽度内水平居中） ──
+                // 注意：horizontal_centered 只做「纵向居中」，不会把整组控件在横向居中，
+                // 因此这里改为 horizontal + 首部左缩进，使图标区按窗口宽度居中摆放。
+                ui.horizontal(|ui| {
+                    // 关闭自动间距，间距全部由 add_space / 计算值控制，布局精确。
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    let left_pad = ((ui.available_width() - icon_row_width()) / 2.0).max(0.0);
+                    ui.add_space(left_pad);
+
                     // 1. 桌面歌词开关
                     let on = self.settings.desktop_lyrics_enabled;
                     let color = if on { theme::ACCENT } else { theme::TEXT_SECONDARY };
@@ -105,7 +130,7 @@ impl MusicApp {
                     if resp.clicked() {
                         self.settings.desktop_lyrics_enabled = !self.settings.desktop_lyrics_enabled;
                     }
-                    ui.add_space(6.0);
+                    ui.add_space(ICON_ROW_GAP);
 
                     // 2. 歌词选择（点击弹出候选列表）
                     let resp = self.icon_btn(
@@ -142,12 +167,13 @@ impl MusicApp {
                             }
                         }
                     });
-                    ui.add_space(6.0);
+                    ui.add_space(ICON_ROW_GAP);
 
                     // 3. 上一首
                     if transport_button(ui, ICON_BTN_SIZE, icons::prev) {
                         self.prev_track();
                     }
+                    ui.add_space(ICON_ROW_GAP);
 
                     // 4. 播放 / 暂停（loading 时显示转圈）
                     let (rect, resp) = ui.allocate_exact_size(
@@ -178,12 +204,13 @@ impl MusicApp {
                             self.audio.resume();
                         }
                     }
+                    ui.add_space(ICON_ROW_GAP);
 
                     // 5. 下一首
                     if transport_button(ui, ICON_BTN_SIZE, icons::next) {
                         self.next_track();
                     }
-                    ui.add_space(6.0);
+                    ui.add_space(ICON_ROW_GAP);
 
                     // 6. 播放模式切换（按一下循环切换，图标随模式变化）
                     let mode = self.settings.play_mode;
@@ -198,7 +225,7 @@ impl MusicApp {
                     if resp.clicked() {
                         self.settings.play_mode = next_play_mode(mode);
                     }
-                    ui.add_space(6.0);
+                    ui.add_space(ICON_ROW_GAP);
 
                     // 7. 音量（鼠标悬浮出现音量滑条）
                     let vol = self.state.volume;
@@ -352,5 +379,52 @@ mod tests {
             synced_lyrics: String::new(),
         });
         assert_eq!(lyrics_candidate_label(&li), "晴天 — 周杰伦（叶惠美）");
+    }
+
+    /// 图标区宽度应与第二行实际按钮摆放一致（6 个图标 + 1 播放键 + 6 个间距）。
+    #[test]
+    fn icon_row_width_consistent() {
+        assert_eq!(
+            icon_row_width(),
+            6.0 * ICON_BTN_SIZE + PLAY_BTN_SIZE + 6.0 * ICON_ROW_GAP
+        );
+    }
+
+    /// 图标区应在整行宽度内水平居中（回归：horizontal_centered 只纵向居中，不横向居中）。
+    #[test]
+    fn icon_row_is_centered_within_width() {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+        let mut input = egui::RawInput::default();
+        input.screen_rect = Some(screen);
+
+        let mut first_x = f32::MAX;
+        let mut last_x = f32::MIN;
+        let mut n = 0;
+        let mut full = ctx.run_ui(input, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                let pad = ((ui.available_width() - icon_row_width()) / 2.0).max(0.0);
+                ui.add_space(pad);
+                // 复刻第二行：第 4 个是播放键（更大），其余是图标。
+                for i in 0..7 {
+                    let size = if i == 3 { PLAY_BTN_SIZE } else { ICON_BTN_SIZE };
+                    let (r, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
+                    if n == 0 {
+                        first_x = r.min.x;
+                    }
+                    last_x = r.max.x;
+                    n += 1;
+                    ui.add_space(ICON_ROW_GAP);
+                }
+            });
+        });
+        full.textures_delta.clear();
+
+        let center = (first_x + last_x) / 2.0;
+        assert!(
+            (center - 400.0).abs() < 2.0,
+            "图标区应在 800px 宽容器内水平居中，实际中心 {center:.1}"
+        );
     }
 }
