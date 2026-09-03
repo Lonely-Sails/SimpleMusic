@@ -47,10 +47,10 @@ pub(crate) enum AsyncMsg {
         seq: u64,
         result: Result<(QueueItem, StreamUrl), String>,
     },
-    /// 一首歌的歌词已取回（按 bvid 装配）。
+    /// 一首歌的歌词候选已取回（按 bvid 装配，多源候选供「歌词选择」弹窗）。
     LyricsFetched {
         key: String,
-        lyrics: Option<Lyrics>,
+        candidates: Vec<Lyrics>,
     },
 }
 
@@ -259,8 +259,8 @@ impl MusicApp {
     pub(crate) fn spawn_lyrics_fetch(&self, key: String, title: String, uploader: String) {
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let lyrics = lyrics::LyricsProvider::fetch(&title, &uploader);
-            let _ = tx.send(AsyncMsg::LyricsFetched { key, lyrics });
+            let candidates = lyrics::LyricsProvider::fetch_all(&title, &uploader);
+            let _ = tx.send(AsyncMsg::LyricsFetched { key, candidates });
         });
     }
 
@@ -382,24 +382,18 @@ impl MusicApp {
                     }
                 }
             }
-            AsyncMsg::LyricsFetched { key, lyrics } => {
+            AsyncMsg::LyricsFetched { key, candidates } => {
                 let is_current = self.current_item().map(|i| i.bvid == key).unwrap_or(false);
                 if is_current {
-                    if let Some(li) = lyrics {
-                        self.current_lyrics = Some(li.clone());
-                        self.lyrics_lines = li.lrc_lines();
-                        self.lyrics_plain = li
-                            .plain
-                            .lines()
-                            .map(|s| s.trim().to_string())
-                            .filter(|s| !s.is_empty())
-                            .collect();
+                    self.lyrics_candidates = candidates.clone();
+                    if let Some(first) = candidates.first() {
+                        self.apply_lyrics(first);
                     } else {
                         self.current_lyrics = None;
                         self.lyrics_lines.clear();
                         self.lyrics_plain.clear();
+                        self.update_lyrics_line();
                     }
-                    self.update_lyrics_line();
                 }
             }
         }

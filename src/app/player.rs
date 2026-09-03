@@ -49,6 +49,7 @@ impl MusicApp {
             self.covers.request(&item.bvid, &item.cover_url);
         }
         self.current_lyrics = None;
+        self.lyrics_candidates.clear();
         self.lyrics_lines.clear();
         self.lyrics_plain.clear();
         self.lyrics_next_line.clear();
@@ -148,6 +149,7 @@ impl MusicApp {
         self.state.artist = "SimpleMusic".into();
         self.state.current_lrc_line.clear();
         self.current_lyrics = None;
+        self.lyrics_candidates.clear();
         self.lyrics_lines.clear();
         self.lyrics_plain.clear();
         self.lyrics_next_line.clear();

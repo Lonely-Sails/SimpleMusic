@@ -88,6 +88,7 @@ pub struct MusicApp {
     settings_window_open: bool,
     // 歌词
     current_lyrics: Option<Lyrics>,
+    lyrics_candidates: Vec<Lyrics>,
     lyrics_lines: Vec<LrcLine>,
     lyrics_plain: Vec<String>,
     lyrics_next_line: String,
@@ -197,6 +198,7 @@ impl MusicApp {
             new_playlist_name: String::new(),
             settings_window_open: false,
             current_lyrics: None,
+            lyrics_candidates: Vec::new(),
             lyrics_lines: Vec::new(),
             lyrics_plain: Vec::new(),
             lyrics_next_line: String::new(),

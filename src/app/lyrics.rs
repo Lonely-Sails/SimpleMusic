@@ -1,6 +1,6 @@
 //! 歌词同步：把当前播放进度映射为「当前句 / 下一句」。
 
-use crate::modules::lyrics;
+use crate::modules::lyrics::{self, Lyrics};
 
 use super::MusicApp;
 
@@ -48,6 +48,19 @@ impl MusicApp {
         };
         self.state.current_lrc_line = current_line;
         self.lyrics_next_line = if prelude { cur } else { next };
+    }
+
+    /// 应用一份歌词候选（歌词选择弹窗点选时调用）：重设当前歌词与时间轴/纯文本行。
+    pub(crate) fn apply_lyrics(&mut self, li: &Lyrics) {
+        self.current_lyrics = Some(li.clone());
+        self.lyrics_lines = li.lrc_lines();
+        self.lyrics_plain = li
+            .plain
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        self.update_lyrics_line();
     }
 }
 

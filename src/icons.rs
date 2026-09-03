@@ -21,6 +21,7 @@ mod glyph {
     pub const SKIP_BACK: char = '\u{e5a4}';
     pub const SKIP_FORWARD: char = '\u{e5a6}';
     pub const SPEAKER_HIGH: char = '\u{e44a}';
+    pub const SPEAKER_NONE: char = '\u{e44e}';
     pub const MUSIC_NOTE: char = '\u{e33c}';
     pub const MUSIC_NOTES: char = '\u{e340}';
     pub const FOLDER: char = '\u{e24a}';
@@ -28,6 +29,11 @@ mod glyph {
     pub const X: char = '\u{e4f6}';
     pub const MINUS: char = '\u{e32a}';
     pub const CORNERS_OUT: char = '\u{e1d0}';
+    pub const MONITOR: char = '\u{e32e}';
+    pub const TEXT_T: char = '\u{e48a}';
+    pub const REPEAT: char = '\u{e3f6}';
+    pub const REPEAT_ONCE: char = '\u{e3f8}';
+    pub const SHUFFLE: char = '\u{e422}';
 }
 
 /// 把单个 Phosphor 字形画到 `rect` 中心。
@@ -63,6 +69,36 @@ pub fn next(painter: &Painter, rect: Rect, color: Color32) {
 /// 音量（喇叭 + 声波）。
 pub fn volume(painter: &Painter, rect: Rect, color: Color32) {
     paint(painter, rect, glyph::SPEAKER_HIGH, 1.1, color);
+}
+
+/// 静音（喇叭 + 斜杠）。
+pub fn volume_mute(painter: &Painter, rect: Rect, color: Color32) {
+    paint(painter, rect, glyph::SPEAKER_NONE, 1.1, color);
+}
+
+/// 桌面歌词开关：显示器图标。
+pub fn monitor(painter: &Painter, rect: Rect, color: Color32) {
+    paint(painter, rect, glyph::MONITOR, 1.1, color);
+}
+
+/// 歌词选择：大写 T 文本图标。
+pub fn text_t(painter: &Painter, rect: Rect, color: Color32) {
+    paint(painter, rect, glyph::TEXT_T, 1.1, color);
+}
+
+/// 播放模式：顺序循环（重复箭头）。
+pub fn repeat(painter: &Painter, rect: Rect, color: Color32) {
+    paint(painter, rect, glyph::REPEAT, 1.05, color);
+}
+
+/// 播放模式：单曲循环（重复箭头 + 1）。
+pub fn repeat_once(painter: &Painter, rect: Rect, color: Color32) {
+    paint(painter, rect, glyph::REPEAT_ONCE, 1.05, color);
+}
+
+/// 播放模式：随机（交叉箭头）。
+pub fn shuffle(painter: &Painter, rect: Rect, color: Color32) {
+    paint(painter, rect, glyph::SHUFFLE, 1.05, color);
 }
 
 /// 单音符。

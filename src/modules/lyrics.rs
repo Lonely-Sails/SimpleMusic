@@ -485,9 +485,24 @@ pub struct LyricsProvider;
 impl LyricsProvider {
     /// 拉取歌词：先查 vkeys.cn 聚合源（QQ 音乐优先 → 网易云），再回退 LRCLIB。
     ///
+    /// 等价于 [`fetch_all`](LyricsProvider::fetch_all) 的第一个候选（最优先命中）。
     /// 全链路失败返回 `None`（网络错误、无命中、无歌词）。
     pub fn fetch(title: &str, uploader: &str) -> Option<Lyrics> {
+        Self::fetch_all(title, uploader).into_iter().next()
+    }
+
+    /// 拉取**全部**歌词候选（供「歌词选择」弹窗使用）。
+    ///
+    /// 收集顺序与 [`fetch`](LyricsProvider::fetch) 的优先级一致：
+    /// 1. 每条查询：vkeys QQ 音乐最佳命中 → 网易云最佳命中；
+    /// 2. 每条查询：LRCLIB 搜索的最佳命中（得分达标）；
+    /// 3. LRCLIB 精确 GET（歌名 + 艺术家）。
+    ///
+    /// 按歌词内容去重（不同来源命中同一份歌词时只保留第一个），
+    /// 无任何命中返回空数组。
+    pub fn fetch_all(title: &str, uploader: &str) -> Vec<Lyrics> {
         let client = http_client();
+        let mut out: Vec<Lyrics> = Vec::new();
 
         // 1) vkeys.cn 聚合源（QQ 音乐 priority=1, 网易云 priority=0）
         for q in search_queries(title, uploader) {
@@ -496,10 +511,10 @@ impl LyricsProvider {
                 continue;
             }
             if let Some(ly) = vkeys_source_fetch(&client, VkSource::Qq, q, title, uploader) {
-                return Some(ly);
+                push_unique_lyrics(&mut out, ly);
             }
             if let Some(ly) = vkeys_source_fetch(&client, VkSource::Netease, q, title, uploader) {
-                return Some(ly);
+                push_unique_lyrics(&mut out, ly);
             }
         }
 
@@ -512,7 +527,7 @@ impl LyricsProvider {
             if let Some(results) = search(&client, q) {
                 if let Some(best) = best_match(&results, title, uploader) {
                     if match_score(best, title, uploader) >= MIN_ACCEPT_SCORE {
-                        return Some(lyrics_from(best));
+                        push_unique_lyrics(&mut out, lyrics_from(best));
                     }
                 }
             }
@@ -521,10 +536,27 @@ impl LyricsProvider {
         let track = clean_title(title);
         if !track.is_empty() {
             if let Some(res) = get(&client, artist, &track) {
-                return Some(lyrics_from(&res));
+                push_unique_lyrics(&mut out, lyrics_from(&res));
             }
         }
-        None
+        out
+    }
+}
+
+/// 把 `ly` 追加到候选列表末尾；若已有内容相同的候选（比较 LRC 原文，
+/// 无 LRC 时比较纯文本）则跳过。
+fn push_unique_lyrics(out: &mut Vec<Lyrics>, ly: Lyrics) {
+    if out.iter().any(|x| lyrics_same_content(x, &ly)) {
+        return;
+    }
+    out.push(ly);
+}
+
+/// 两份歌词是否内容相同（有 LRC 比 LRC，否则比纯文本）。
+fn lyrics_same_content(a: &Lyrics, b: &Lyrics) -> bool {
+    match (a.lrc.as_deref(), b.lrc.as_deref()) {
+        (Some(x), Some(y)) => x.trim() == y.trim(),
+        _ => a.plain.trim() == b.plain.trim(),
     }
 }
 
@@ -695,7 +727,17 @@ fn vkeys_source_fetch(
     let best_idx = candidates.iter().position(|c| std::ptr::eq(c, best))?;
     let best_id = vkey_item_id(src, &items[best_idx])?;
     let lyric = vkeys_lyric_fetch(client, src, &best_id)?;
-    build_vkey_lyrics(lyric)
+    let mut ly = build_vkey_lyrics(lyric)?;
+    // 带上候选元信息（用于「歌词选择」弹窗显示曲名/歌手）。
+    let mut meta = best.clone();
+    if meta.album_name.is_empty() {
+        meta.album_name = match src {
+            VkSource::Qq => "QQ音乐".to_string(),
+            VkSource::Netease => "网易云".to_string(),
+        };
+    }
+    ly.source = Some(meta);
+    Some(ly)
 }
 
 /// vkeys 搜索响应 → 歌曲条目数组（`data` 数组 / 单对象 / 空）。
