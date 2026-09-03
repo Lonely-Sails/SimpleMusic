@@ -47,6 +47,8 @@ impl MusicApp {
                     ui.max_rect().top() + 0.5,
                     Stroke::new(1.0, theme::BORDER_SOFT),
                 );
+                // 进度条与上部分割线之间的留白。
+                ui.add_space(8.0);
 
                 // ── 第一行：进度条（左：当前播放进度，右：歌曲总时长，进度条占满容器宽度） ──
                 let dur = self.state.duration_secs;
@@ -100,6 +102,15 @@ impl MusicApp {
                             .max_decimals(0)
                             .trailing_fill(true),
                     );
+                    // 未加载音频时滑块被禁用（整体透明度被拉低），手柄会变透明。
+                    // 这里在值 0（最左端）补画一个清晰的圆形手柄，避免「空进度条只剩一条线」。
+                    if !has_audio {
+                        let rect = resp.rect;
+                        let radius = rect.height() / 2.5;
+                        let center = egui::Pos2::new(rect.left() + radius, rect.center().y);
+                        ui.painter().circle_filled(center, radius, theme::ACCENT);
+                        ui.painter().circle_stroke(center, radius, Stroke::new(1.0, theme::ACCENT_HOVER));
+                    }
                     ui.add_space(6.0);
                     ui.label(
                         RichText::new(right)
@@ -121,7 +132,7 @@ impl MusicApp {
                     }
                 });
 
-                ui.add_space(10.0);
+                ui.add_space(5.0);
 
                 // ── 第二行：图标区（整行宽度内水平居中） ──
                 // 注意：horizontal_centered 只做「纵向居中」，不会把整组控件在横向居中，
