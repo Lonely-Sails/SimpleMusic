@@ -56,6 +56,9 @@ impl MusicApp {
         // ── 歌单选择栏 ──
         self.show_playlist_selector(ui);
 
+        // ── 底部控制区（先于 CentralPanel，遵循 egui "CentralPanel 最后添加" 规则） ──
+        self.show_player_bar(ui, &st);
+
         // ---- 歌单内容 + 导入输入框 ----
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(Color32::TRANSPARENT).inner_margin(egui::Margin::same(18)))
@@ -68,9 +71,6 @@ impl MusicApp {
                     self.show_import(ui);
                 }
             });
-
-        // ── 底部控制区 ──
-        self.show_player_bar(ui, &st);
 
         // ── 右下角缩放把手 ──
         self.show_resize_grip(ui);
