@@ -13,10 +13,13 @@ impl MusicApp {
         );
         ui.add_space(8.0);
         ui.horizontal(|ui| {
+            // 预留右侧「添加并播放」按钮 + 右侧留白，输入框占满剩余空间。
+            let btn_reserve = 132.0;
+            let field_w = (ui.available_width() - btn_reserve).max(140.0);
             ui.add(
                 egui::TextEdit::singleline(&mut self.import_text)
                     .hint_text("BV 号 / 视频链接 / b23.tv 短链")
-                    .desired_width(f32::INFINITY),
+                    .desired_width(field_w),
             );
             let can_submit = !self.import_text.trim().is_empty();
             if ui
