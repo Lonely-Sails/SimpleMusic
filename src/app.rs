@@ -31,11 +31,11 @@ const LYRICS_VIEWPORT_SIZE: Vec2 = Vec2::new(800.0, 104.0);
 /// 二维码渲染的边长（含留白边框）。
 const QR_SIZE: f32 = 260.0;
 /// 播放条：播放/暂停圆形按钮直径。
-const PLAY_BTN_SIZE: f32 = 34.0;
+const PLAY_BTN_SIZE: f32 = 36.0;
 /// 播放条：上一首/下一首圆形按钮直径。
-const TRANSPORT_BTN_SIZE: f32 = 28.0;
+const TRANSPORT_BTN_SIZE: f32 = 30.0;
 /// 自定义标题栏高度。
-const TITLEBAR_HEIGHT: f32 = 38.0;
+const TITLEBAR_HEIGHT: f32 = 40.0;
 
 /// 桌面歌词 viewport 的稳定 id。
 fn lyrics_viewport_id() -> ViewportId {
@@ -1035,7 +1035,7 @@ impl MusicApp {
 
         // ── 歌单内容 + 导入输入框 ──
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(Color32::TRANSPARENT).inner_margin(egui::Margin::same(14)))
+            .frame(egui::Frame::new().fill(Color32::TRANSPARENT).inner_margin(egui::Margin::same(18)))
             .show(ui, |ui| {
                 if self.active_playlist_is_online() {
                     self.show_online_songs(ui);
@@ -1120,7 +1120,7 @@ impl MusicApp {
         icon: fn(&egui::Painter, Rect, Color32),
         tooltip: &str,
     ) -> egui::Response {
-        let size = Vec2::splat(22.0);
+        let size = Vec2::splat(24.0);
         let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
         let bg = if resp.is_pointer_button_down_on() {
             theme::BG_ACTIVE
@@ -1130,7 +1130,7 @@ impl MusicApp {
             Color32::TRANSPARENT
         };
         if bg != Color32::TRANSPARENT {
-            ui.painter().rect_filled(rect, CornerRadius::same(6), bg);
+            ui.painter().rect_filled(rect, CornerRadius::same(theme::CORNER), bg);
         }
         icon(ui.painter(), rect.shrink(4.0), theme::TEXT_SECONDARY);
         resp.on_hover_text(tooltip)
@@ -1141,10 +1141,10 @@ impl MusicApp {
     fn show_status_bar(&mut self, ui: &mut egui::Ui) {
         egui::Panel::top(egui::Id::new("status_bar"))
             .frame(egui::Frame::new().fill(Color32::TRANSPARENT).inner_margin(egui::Margin {
-                left: 14,
-                right: 12,
-                top: 8,
-                bottom: 6,
+                left: 18,
+                right: 16,
+                top: 10,
+                bottom: 8,
             }))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -1324,10 +1324,10 @@ impl MusicApp {
                 egui::Frame::new()
                     .fill(Color32::TRANSPARENT)
                     .inner_margin(egui::Margin {
-                        left: 18,
-                        right: 16,
-                        top: 4,
-                        bottom: 4,
+                        left: 22,
+                        right: 20,
+                        top: 6,
+                        bottom: 6,
                     }),
             )
             .show(ui, |ui| {
@@ -1427,7 +1427,7 @@ impl MusicApp {
                                 RichText::new("管理").color(theme::TEXT_SECONDARY),
                             )
                             .fill(theme::BG_CARD)
-                            .stroke(Stroke::new(1.0, theme::BORDER_SOFT))
+                            .stroke(Stroke::NONE)
                             .corner_radius(theme::CORNER),
                         )
                         .clicked()
@@ -1710,7 +1710,7 @@ impl MusicApp {
 
                 let mut actions: Vec<(usize, bool)> = Vec::new();
                 let mut remove: Option<usize> = None;
-                let row_h = 52.0;
+                let row_h = 56.0;
 
                 for (i, item) in &visible {
                     let i = *i;
@@ -1750,7 +1750,7 @@ impl MusicApp {
                     let max_w = rect.width() - 100.0;
                     let title = truncate_label(ui, &item.title, max_w);
                     painter.text(
-                        Pos2::new(text_x, rect.top() + 8.0),
+                        Pos2::new(text_x, rect.top() + 10.0),
                         Align2::LEFT_TOP,
                         title,
                         FontId::proportional(14.0),
@@ -1767,7 +1767,7 @@ impl MusicApp {
                     );
                     let sub = truncate_label(ui, &sub, max_w);
                     painter.text(
-                        Pos2::new(text_x, rect.top() + 28.0),
+                        Pos2::new(text_x, rect.top() + 32.0),
                         Align2::LEFT_TOP,
                         sub,
                         FontId::proportional(11.0),
@@ -1931,7 +1931,7 @@ impl MusicApp {
                     });
                 }
                 let mut play: Option<String> = None;
-                let row_h = 54.0;
+                let row_h = 56.0;
                 if fav_items.is_empty() && count > 0 {
                     // 有歌曲但搜索无匹配
                     ui.vertical_centered(|ui| {
@@ -1985,7 +1985,7 @@ impl MusicApp {
                     let max_w = rect.width() - 100.0;
                     let title = truncate_label(ui, &item.title, max_w);
                     painter.text(
-                        Pos2::new(text_x, rect.top() + 8.0),
+                        Pos2::new(text_x, rect.top() + 10.0),
                         Align2::LEFT_TOP,
                         title,
                         FontId::proportional(14.0),
@@ -1998,7 +1998,7 @@ impl MusicApp {
                     let sub = format!("{} · {}", item.owner, format_secs(item.duration_secs));
                     let sub = truncate_label(ui, &sub, max_w);
                     painter.text(
-                        Pos2::new(text_x, rect.top() + 28.0),
+                        Pos2::new(text_x, rect.top() + 32.0),
                         Align2::LEFT_TOP,
                         sub,
                         FontId::proportional(11.0),
@@ -2122,10 +2122,10 @@ impl MusicApp {
                 egui::Frame::new()
                     .fill(Color32::TRANSPARENT)
                     .inner_margin(egui::Margin {
-                        left: 18,
-                        right: 18,
-                        top: 10,
-                        bottom: 12,
+                        left: 22,
+                        right: 22,
+                        top: 12,
+                        bottom: 14,
                     }),
             )
             .show(ui, |ui| {
@@ -2433,23 +2433,16 @@ impl MusicApp {
 
     fn lyrics_capsule(&mut self, ui: &mut egui::Ui) {
         let on = self.settings.desktop_lyrics_enabled;
-        let (fill, fg, stroke) = if on {
-            (
-                theme::ACCENT,
-                theme::TEXT_ON_ACCENT,
-                Stroke::new(1.0, theme::ACCENT_DEEP),
-            )
+        // 用填充色 + 文字色表达状态，不加描边；悬停/按下由主题的 bg 变色反馈。
+        let (fill, fg) = if on {
+            (theme::ACCENT, theme::TEXT_ON_ACCENT)
         } else {
-            (
-                theme::BG_CARD,
-                theme::TEXT_SECONDARY,
-                Stroke::new(1.0, theme::BORDER_SOFT),
-            )
+            (theme::BG_CARD, theme::TEXT_SECONDARY)
         };
         let btn = egui::Button::new(RichText::new("桌面歌词").color(fg))
             .fill(fill)
-            .stroke(stroke)
-            .corner_radius(egui::CornerRadius::same(13))
+            .stroke(Stroke::NONE)
+            .corner_radius(egui::CornerRadius::same(16))
             .selected(on);
         if ui.add(btn).clicked() {
             self.settings.desktop_lyrics_enabled = !self.settings.desktop_lyrics_enabled;
@@ -2543,8 +2536,9 @@ impl MusicApp {
                 let (rect, response) =
                     ui.allocate_exact_size(ui.available_size(), Sense::drag());
 
-                // 默认全透明：只有「解锁 + 鼠标悬浮」时才绘制背景卡片（含外圈柔光与描边），
+                // 默认全透明：只有「解锁 + 鼠标悬浮」时才绘制背景卡片（含外圈柔光），
                 // 让歌词无边框地浮在桌面上；锁定（鼠标穿透）时不会触发 hover，永远透明。
+                // 悬停提示仅用背景亮度变化，不加描边。
                 let show_bg = response.hovered() && !locked;
                 if show_bg {
                     for (expand, alpha) in [(6.0, 26), (3.0, 40)] {
@@ -2555,12 +2549,6 @@ impl MusicApp {
                         );
                     }
                     ui.painter().rect_filled(rect, theme::CORNER, theme::LYRIC_BG);
-                    ui.painter().rect_stroke(
-                        rect,
-                        theme::CORNER,
-                        Stroke::new(1.0, Color32::from_rgba_premultiplied(0x8F, 0xB8, 0xD0, 26)),
-                        StrokeKind::Inside,
-                    );
                 }
 
                 if !locked && response.drag_started() {

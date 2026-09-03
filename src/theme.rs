@@ -1,4 +1,4 @@
-//! 集中式主题样式：深色淡雅、简洁大气、小圆角。
+//! 集中式主题样式：深色淡雅、简洁大气、大圆角。
 //!
 //! 暴露 `pub fn apply(ctx)` 应用全局主题，以及语义色板常量供 UI 代码使用，
 //! 避免魔法颜色散落各处。
@@ -61,16 +61,16 @@ pub const TITLEBAR_BG: Color32 = Color32::from_rgb(0x1C, 0x22, 0x2A);
 // 圆角常量
 // ===========================================================================
 
-/// 统一小圆角（按钮、输入框、卡片、弹窗、桌面歌词条）
-pub const CORNER: u8 = 6;
+/// 统一圆角（按钮、输入框、卡片、弹窗、桌面歌词条）
+pub const CORNER: u8 = 9;
 /// 悬浮主窗口卡片的大圆角（浮窗感）
-pub const CORNER_XL: u8 = 14;
+pub const CORNER_XL: u8 = 18;
 
 // ===========================================================================
 // public helpers
 // ===========================================================================
 
-/// 创建一个主操作按钮（点缀色填充、深色文字、小圆角）。
+/// 创建一个主操作按钮（点缀色填充、深色文字、大圆角）。
 pub fn primary_button(text: impl Into<RichText>) -> egui::Button<'static> {
     // 用 RichText 设置文字颜色，fill 设置按钮背景，stroke 去掉边框。
     let rich = text.into().color(TEXT_ON_ACCENT);
@@ -80,12 +80,12 @@ pub fn primary_button(text: impl Into<RichText>) -> egui::Button<'static> {
         .corner_radius(CORNER)
 }
 
-/// 创建一个次级小按钮（卡片底、次级文字、小圆角），用于顶栏/内嵌操作。
+/// 创建一个次级小按钮（卡片底、次级文字、大圆角），用于顶栏/内嵌操作。
 pub fn small_button(text: impl Into<RichText>) -> egui::Button<'static> {
     let rich = text.into().color(TEXT_SECONDARY);
     egui::Button::new(rich)
         .fill(BG_CARD)
-        .stroke(Stroke::new(1.0, BORDER_SOFT))
+        .stroke(Stroke::NONE)
         .corner_radius(CORNER)
 }
 
@@ -93,7 +93,7 @@ pub fn small_button(text: impl Into<RichText>) -> egui::Button<'static> {
 // 主题构建
 // ===========================================================================
 
-/// 应用全局主题（深色淡雅、简洁大气、小圆角）。
+/// 应用全局主题（深色淡雅、简洁大气、大圆角）。
 pub fn apply(ctx: &egui::Context) {
     ctx.set_visuals(visuals());
     ctx.all_styles_mut(|style| {
@@ -123,19 +123,19 @@ fn visuals() -> egui::Visuals {
 
     v.widgets.hovered.weak_bg_fill = BG_HOVER;
     v.widgets.hovered.bg_fill = BG_HOVER;
-    v.widgets.hovered.bg_stroke = Stroke::new(1.0, ACCENT_HOVER);
+    v.widgets.hovered.bg_stroke = Stroke::NONE;
     v.widgets.hovered.fg_stroke = Stroke::new(1.0, TEXT_PRIMARY);
     v.widgets.hovered.corner_radius = CornerRadius::same(CORNER);
 
     v.widgets.active.weak_bg_fill = BG_ACTIVE;
     v.widgets.active.bg_fill = BG_ACTIVE;
-    v.widgets.active.bg_stroke = Stroke::new(1.0, ACCENT_DEEP);
+    v.widgets.active.bg_stroke = Stroke::NONE;
     v.widgets.active.fg_stroke = Stroke::new(1.0, TEXT_PRIMARY);
     v.widgets.active.corner_radius = CornerRadius::same(CORNER);
 
     v.widgets.open.weak_bg_fill = BG_HOVER;
     v.widgets.open.bg_fill = BG_HOVER;
-    v.widgets.open.bg_stroke = Stroke::new(1.0, ACCENT_HOVER);
+    v.widgets.open.bg_stroke = Stroke::NONE;
     v.widgets.open.fg_stroke = Stroke::new(1.0, TEXT_PRIMARY);
     v.widgets.open.corner_radius = CornerRadius::same(CORNER);
 
@@ -203,25 +203,25 @@ fn visuals() -> egui::Visuals {
 fn spacing() -> egui::style::Spacing {
     let mut s = egui::style::Spacing::default();
     // 宽松布局：元素间、控件内留白都比默认更大，视觉更透气。
-    s.item_spacing = Vec2::new(12.0, 10.0);
-    s.window_margin = Margin::same(16);
-    s.button_padding = Vec2::new(14.0, 6.0);
-    s.menu_margin = Margin::same(10);
-    s.indent = 20.0;
-    s.interact_size = Vec2::new(30.0, 26.0);
-    s.slider_width = 120.0;
-    s.slider_rail_height = 4.0;
-    s.text_edit_width = 220.0;
-    s.combo_width = 140.0;
-    s.combo_height = 220.0;
-    s.icon_width = 18.0;
-    s.icon_width_inner = 10.0;
-    s.icon_spacing = 6.0;
-    s.default_area_size = Vec2::splat(220.0);
+    s.item_spacing = Vec2::new(14.0, 12.0);
+    s.window_margin = Margin::same(20);
+    s.button_padding = Vec2::new(18.0, 8.0);
+    s.menu_margin = Margin::same(12);
+    s.indent = 24.0;
+    s.interact_size = Vec2::new(34.0, 30.0);
+    s.slider_width = 140.0;
+    s.slider_rail_height = 6.0;
+    s.text_edit_width = 240.0;
+    s.combo_width = 160.0;
+    s.combo_height = 240.0;
+    s.icon_width = 20.0;
+    s.icon_width_inner = 12.0;
+    s.icon_spacing = 8.0;
+    s.default_area_size = Vec2::splat(240.0);
     s.tooltip_width = 400.0;
-    s.menu_width = 200.0;
-    s.menu_spacing = 6.0;
-    s.extra_text_line_spacing = 1.0;
+    s.menu_width = 220.0;
+    s.menu_spacing = 8.0;
+    s.extra_text_line_spacing = 2.0;
     s.indent_ends_with_horizontal_line = false;
 
     s.scroll = ScrollStyle {
@@ -252,18 +252,18 @@ fn style_build() -> Style {
     style.visuals = visuals();
 
     let mut text_styles = std::collections::BTreeMap::new();
-    let body = FontId::new(14.0, FontFamily::Proportional);
+    let body = FontId::new(15.0, FontFamily::Proportional);
     text_styles.insert(TextStyle::Body, body.clone());
-    text_styles.insert(TextStyle::Button, FontId::new(14.0, FontFamily::Proportional));
-    text_styles.insert(TextStyle::Heading, FontId::new(17.0, FontFamily::Proportional));
-    text_styles.insert(TextStyle::Small, FontId::new(11.0, FontFamily::Proportional));
+    text_styles.insert(TextStyle::Button, FontId::new(15.0, FontFamily::Proportional));
+    text_styles.insert(TextStyle::Heading, FontId::new(18.0, FontFamily::Proportional));
+    text_styles.insert(TextStyle::Small, FontId::new(12.0, FontFamily::Proportional));
     text_styles.insert(TextStyle::Monospace, FontId::new(13.0, FontFamily::Monospace));
     style.text_styles = text_styles;
 
     style.spacing = spacing();
     style.interaction.resize_grab_radius_side = 4.0;
     style.interaction.resize_grab_radius_corner = 8.0;
-    style.interaction.interact_radius = 3.0;
+    style.interaction.interact_radius = 4.0;
     style.interaction.show_tooltips_only_when_still = true;
     style.interaction.tooltip_delay = 0.4;
     style.interaction.tooltip_grace_time = 0.1;
