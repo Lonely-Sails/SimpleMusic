@@ -29,8 +29,8 @@ impl LaunchOptions {
     /// - `simple-music --width 1024 --height 640`
     /// - `simple-music --smoke`（无窗口自检）
     fn parse() -> Self {
-        let mut width = 400.0_f32;
-        let mut height = 620.0_f32;
+        let mut width = 520.0_f32;
+        let mut height = 820.0_f32;
         let mut smoke = false;
 
         let args: Vec<String> = std::env::args().collect();
@@ -160,7 +160,7 @@ fn main() -> eframe::Result<()> {
     let viewport = eframe::egui::ViewportBuilder::default()
         .with_title("SimpleMusic")
         .with_inner_size([opts.width, opts.height])
-        .with_min_inner_size([320.0, 480.0])
+        .with_min_inner_size([380.0, 560.0])
         .with_decorations(false)
         .with_titlebar_shown(false)
         .with_transparent(true)
@@ -179,7 +179,7 @@ fn main() -> eframe::Result<()> {
             let font_choice = fonts::install_fonts(&cc.egui_ctx);
             match font_choice {
                 fonts::FontChoice::Embedded => {
-                    println!("[font] 使用内嵌 Noto Sans SC (Regular, OTF, 16MB)");
+                    println!("[font] 使用内嵌 Noto Sans SC + Phosphor 图标字体");
                 }
                 fonts::FontChoice::System(p) => {
                     println!("[font] 内嵌失败，回退系统字体: {}", p.display());

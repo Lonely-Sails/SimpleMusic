@@ -25,7 +25,7 @@ cargo run                         # 真实 GUI 启动（需要显示环境）
   `cargo build --no-default-features` 跳过托盘，GUI 其余功能不受影响）；
   **macOS/Windows 用系统原生托盘（NSStatusItem / Shell_NotifyIcon），无需 GTK、无额外线程**，
   图标由 `MusicApp::new` 在主线程创建（macOS 要求事件循环运行中创建）。
-- 内嵌字体 `assets/NotoSansSC-Regular.otf`（约 16MB）编译期 `include_bytes!` 进二进制。
+- 内嵌字体 `assets/NotoSansSC-Regular.otf`（约 16MB）+ `assets/Phosphor.ttf`（图标字体，约 0.5MB，MIT）编译期 `include_bytes!` 进二进制。
 - 已有 git 仓库（分支 `main`）：改动用增量编辑，提交信息用中文、说明动机；`SimpleMusic.zip`
   手动备份包与 `.toolchain/`、`.sysroot/`、`target/` 均已在 `.gitignore` 中排除。
 
@@ -42,9 +42,9 @@ tray.rs       系统托盘（feature=tray）：Linux=独立 GTK 线程+libappind
               macOS/Windows 用 `with_menu_on_left_click(false)` 关掉左键弹菜单后监听 `TrayIconEvent::Click`。
 state.rs      数据模型：PlaybackState / QueueItem / Playlist / PlayMode / AudioQuality / Settings
 theme.rs      主题色板 + 按钮/样式辅助（BG_*/TEXT_*/ACCENT 等语义常量）
-icons.rs      painter 手绘矢量图标（play/pause/prev/next/volume/cross/窗口控制），不依赖字体字形
-cover.rs      封面缩略图：后台线程下载 → image 解码 → egui 纹理缓存（LRU，失败 30 分钟冷却）
-fonts.rs      CJK 字体：内嵌 Noto Sans SC 优先，失败探测系统字体
+icons.rs      界面图标：内嵌 Phosphor 图标字体（PUA 码点，画到 rect 中心），不依赖 emoji/系统字形
+cover.rs      封面缩略图：后台线程下载 + image 解码（不在主线程解码）→ egui 纹理缓存（LRU，失败 30 分钟冷却）
+fonts.rs      字体：内嵌 Noto Sans SC（CJK）+ Phosphor（图标，MIT），均编译期 include_bytes!
 modules/
   bilibili.rs B 站客户端：扫码登录/收藏夹/BV 解析/playurl DASH 音频流（含 WBI 签名）
   audio.rs    音频引擎：下载缓存(md5 键控) + symphonia 解码 + rodio 输出（专用线程）
@@ -88,7 +88,7 @@ modules/
 4. **键盘快捷键**在 `handle_shortcuts`（`logic` 里调用），用 `ctx.memory(|m| m.focused().is_none())` 判断无输入焦点才生效，避免抢空格/方向键。新增快捷键加在这里，别散落到 UI 闭包里。
 5. **文本输入框**（导入/搜索/重命名）：聚焦时 `focused()` 返回 Some，快捷键自动停用，这是预期行为。
 6. **主题**：一律用 `theme::` 语义色常量（`BG_CARD`/`TEXT_PRIMARY`/`ACCENT`/`GOLD`…），不要写魔法色值；按钮样式用 `theme::primary_button`/`theme::small_button`。
-7. **图标**：媒体控制图标用 `icons::*`（painter 绘制），不要依赖 emoji/字体码点（跨平台字形缺失）。
+7. **图标**：所有界面图标用 `icons::*`（内嵌 Phosphor 图标字体，PUA 码点渲染到 rect 中心），不要依赖 emoji 或媒体控制码点（跨平台字形缺失会显示 "?"）。
 8. **错误处理**：音频错误不 panic，写 `PlaybackStatus.error` 由 UI 展示；网络错误经 `AsyncMsg` 回 `ui_error`（红色）或 `notice`（金色轻提示，4 秒）。
 9. **文本宽度**：动态文案先 `truncate_label`/`fit_text` 再 `painter.text`。
 10. **单测**：纯函数（解析/打分/格式化/过滤）放 `#[cfg(test)] mod tests`，用 `cargo test` 离线跑；真实网络用 `#[ignore]` 标注。新增纯逻辑尽量带测试。

@@ -1,8 +1,9 @@
 //! 封面缩略图系统：异步下载 B 站视频封面 → 解码 → 小尺寸纹理缓存。
 //!
-//! - 后台线程用 reqwest blocking 下载（带 UA；上限 2MB），结果经 mpsc 回主线程；
-//! - 主线程每帧 [`CoverCache::poll`] 排空 channel，`image` 解码 + 居中方形裁剪 +
-//!   缩略到 96px，然后（lazy）注册为 egui 纹理；
+//! - 后台线程用 reqwest blocking 下载（带 UA；上限 2MB），下载后立即解码 + 居中
+//!   方形裁剪 + 缩略到 96px，结果经 mpsc 回主线程；
+//! - 主线程每帧 [`CoverCache::poll`] 排空 channel，存入缓存并注册（lazy）egui 纹理；
+//! - 解码放入后台线程，避免主线程因大量封面解码而卡顿；
 //! - 失败缓存 30 分钟不重试；内存条目上限 400，超出按最久未访问清理 100 条。
 //!
 //! 本模块不依赖项目的主题色板（不 import crate::theme），保持可独立测试。
@@ -31,8 +32,9 @@ type CoverImage = Arc<ColorImage>;
 /// 封面缓存（UI 线程持有；`request` 可随时调用，内部自行去重）。
 pub struct CoverCache {
     ctx: egui::Context,
-    tx: Sender<(String, Result<Vec<u8>, String>)>,
-    rx: Receiver<(String, Result<Vec<u8>, String>)>,
+    /// 后台线程发回已解码的 `ColorImage`（Arc 共享，零拷贝）。
+    tx: Sender<(String, Result<CoverImage, String>)>,
+    rx: Receiver<(String, Result<CoverImage, String>)>,
     /// key(bvid) -> (解码图, 延迟注册的纹理, 最近访问时间)。
     images: HashMap<String, (CoverImage, Option<TextureHandle>, Instant)>,
     /// key -> 最近失败时间。
@@ -75,7 +77,12 @@ impl CoverCache {
         let key = key.to_string();
         let url = url.to_string();
         std::thread::spawn(move || {
-            let result = download_cover(&key, &url);
+            let result = download_cover(&key, &url)
+                .and_then(|bytes| {
+                    decode_cover(&bytes)
+                        .map(Arc::new)
+                        .ok_or_else(|| "封面解码失败".to_string())
+                });
             let _ = tx.send((key, result));
         });
     }
@@ -85,22 +92,17 @@ impl CoverCache {
         while let Ok((key, result)) = self.rx.try_recv() {
             self.in_flight.remove(&key);
             match result {
-                Ok(bytes) => match decode_cover(&bytes) {
-                    Some(img) => {
-                        self.images.insert(
-                            key,
-                            (Arc::new(img), None, Instant::now()),
-                        );
-                        prune_oldest(
-                            &mut self.images,
-                            MAX_ENTRIES,
-                            PRUNE_KEEP,
-                        );
-                    }
-                    None => {
-                        self.failed.insert(key, Instant::now());
-                    }
-                },
+                Ok(img) => {
+                    self.images.insert(
+                        key,
+                        (img, None, Instant::now()),
+                    );
+                    prune_oldest(
+                        &mut self.images,
+                        MAX_ENTRIES,
+                        PRUNE_KEEP,
+                    );
+                }
                 Err(_) => {
                     self.failed.insert(key, Instant::now());
                 }
