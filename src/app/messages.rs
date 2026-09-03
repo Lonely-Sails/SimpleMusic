@@ -239,14 +239,25 @@ impl MusicApp {
         let quality = self.settings.audio_quality;
         std::thread::spawn(move || {
             let result = (|| -> Result<(QueueItem, StreamUrl), String> {
-                let guard = bili.lock().map_err(|e| format!("客户端锁中毒: {e}"))?;
-                let bvid = guard
-                    .parse_bvid(&raw)
-                    .ok_or_else(|| "无法识别 BV 号或链接（支持纯 BV / video/BV.. / b23.tv 短链）".to_string())?;
-                let detail = guard.video_info(&bvid).map_err(|e| e.to_string())?;
-                let stream = guard
-                    .resolve_stream_with_cid(&bvid, detail.cid, quality)
-                    .map_err(|e| e.to_string())?;
+                // 每个网络请求只在极短临界区内持锁：网络耗时（video_info /
+                // resolve_stream / b23.tv 重定向）都在锁外进行，否则后台线程串行
+                // 排队且任何需要 bili 的调用（含渲染线程）都会被长时间阻塞。
+                let bvid = {
+                    let guard = bili.lock().map_err(|e| format!("客户端锁中毒: {e}"))?;
+                    guard.parse_bvid(&raw).ok_or_else(|| {
+                        "无法识别 BV 号或链接（支持纯 BV / video/BV.. / b23.tv 短链）".to_string()
+                    })?
+                };
+                let detail = {
+                    let guard = bili.lock().map_err(|e| format!("客户端锁中毒: {e}"))?;
+                    guard.video_info(&bvid).map_err(|e| e.to_string())?
+                };
+                let stream = {
+                    let guard = bili.lock().map_err(|e| format!("客户端锁中毒: {e}"))?;
+                    guard
+                        .resolve_stream_with_cid(&bvid, detail.cid, quality)
+                        .map_err(|e| e.to_string())?
+                };
                 let item = QueueItem::new_with_cover(
                     bvid,
                     detail.info.title,
@@ -289,6 +300,7 @@ impl MusicApp {
                 self.login_visible = false;
                 self.login_stop.store(true, AtomicOrdering::Relaxed);
                 self.mid = Some(mid);
+                self.login_state = true;
                 self.uname = None;
                 self.login_status = format!("已登录，mid={mid}");
                 self.fav_initiated = false;
@@ -444,11 +456,18 @@ fn resolve_playable(
     bvid: &str,
     quality: AudioQuality,
 ) -> Result<(QueueItem, StreamUrl), String> {
-    let guard = bili.lock().map_err(|e| format!("客户端锁中毒: {e}"))?;
-    let detail = guard.video_info(bvid).map_err(|e| e.to_string())?;
-    let stream = guard
-        .resolve_stream_with_cid(bvid, detail.cid, quality)
-        .map_err(|e| e.to_string())?;
+    // 每个网络请求只在极短临界区内持锁：video_info / resolve_stream 的耗时都在锁外，
+    // 后台线程之间不再互相排队，也不会让任何需要 bili 的调用（含渲染线程）长时间阻塞。
+    let detail = {
+        let guard = bili.lock().map_err(|e| format!("客户端锁中毒: {e}"))?;
+        guard.video_info(bvid).map_err(|e| e.to_string())?
+    };
+    let stream = {
+        let guard = bili.lock().map_err(|e| format!("客户端锁中毒: {e}"))?;
+        guard
+            .resolve_stream_with_cid(bvid, detail.cid, quality)
+            .map_err(|e| e.to_string())?
+    };
     let item = QueueItem::new_with_cover(
         bvid,
         detail.info.title,

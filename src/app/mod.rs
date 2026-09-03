@@ -65,6 +65,10 @@ pub struct MusicApp {
     login_qr: Option<(String, Vec<Vec<bool>>)>,
     login_status: String,
     mid: Option<u64>,
+    /// 缓存登录态（是否已登录）。UI 渲染热路径只在启动/登录/登出时更新，
+    /// 渲染时读取该缓存即可，绝不在每帧走到 `bili` 互斥锁上——否则后台线程
+    /// 做网络解析（网络请求）时会阻塞渲染进程、切歌卡顿。
+    login_state: bool,
     /// 登录用户昵称（nav 接口；None/空 = 未知，状态栏回退显示 UID）。
     uname: Option<String>,
     /// 登录用户头像 URL（nav 接口 face；用于状态栏圆形头像）。
@@ -138,6 +142,8 @@ impl MusicApp {
             BiliClient::new().expect("初始化 BiliClient 失败")
         });
         let mid = bili.mid();
+        // 缓存登录态（每帧渲染读取的字段，避免渲染时锁 bili；网络解析持锁时不再卡 UI）。
+        let login_state = bili.logged_in();
         // 后台补齐 buvid3/buvid4 设备指纹（阻塞网络，不能放 UI 线程）：
         // 部分接口缺 buvid 易被 B 站风控 412；失败静默（smoke 之外这是唯一调用点）。
         let bili = Arc::new(Mutex::new(bili));
@@ -187,6 +193,7 @@ impl MusicApp {
             login_qr: None,
             login_status: String::new(),
             mid,
+            login_state,
             uname: None,
             face: None,
             fav_initiated: false,
@@ -247,8 +254,10 @@ impl MusicApp {
         self.current_track.and_then(|i| pl.songs.get(i))
     }
 
+    /// 是否已登录（读取缓存字段，不锁 `bili`——`bili` 锁会被后台网络解析长时间持有，
+    /// 每帧渲染调用的话会阻塞渲染进程、切歌卡顿）。
     pub(crate) fn logged_in(&self) -> bool {
-        self.bili.lock().map(|b| b.logged_in()).unwrap_or(false)
+        self.login_state
     }
 
     /// 头像缓存键（按 mid，切换账号不会互相串图）。

@@ -82,6 +82,7 @@ impl MusicApp {
         if let Ok(mut b) = self.bili.lock() {
             let _ = b.logout();
         }
+        self.login_state = false;
         self.mid = None;
         self.uname = None;
         self.face = None;
