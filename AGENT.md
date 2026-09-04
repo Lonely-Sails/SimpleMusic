@@ -103,6 +103,10 @@ src/
   隐藏相关代码前先读懂这两个 issue**；`on_exit` 里必须置位 `keepalive_stop`。
 - `BiliClient` 以 `Arc<Mutex<..>>` 跨线程共享（有锁中毒保护）；`AudioEngine` 仅在 UI 线程持有，命令经 mpsc 发往专用播放线程，状态经 `Arc<Mutex<PlaybackStatus>>` 轮询。
 - **桌面歌词浮窗**通过 `egui::Context::show_viewport_deferred`（延迟模式）渲染，**不与主窗口共享重绘节奏**：浮窗只在歌词文本变化或被 `request_repaint_of` 显式唤醒时才重绘，主窗口播放动画时不会连带浮窗——彻底解决多 viewport 卡顿。
+  歌词**切换过渡动画**也遵守该约定：过渡状态（旧文本 + 起始时刻）存在共享 `Context`
+  的 data 槽（`TRANSITION_SLOT`），动画期间浮窗闭包内 `request_repaint_after(1/60s)`
+  只唤醒浮窗自身，0.4s 过渡结束自动停止；无头测试无法驱动 viewport 动画，过渡状态机
+  `LineFade` 是纯函数可单测（见 `lyrics_viewport.rs` tests）。
 - UI 闭包里禁止直接做网络请求；需要结果就 `spawn_*` 一个后台线程 + 发消息。
 
 ### 播放列表语义（改播放相关代码前必读）

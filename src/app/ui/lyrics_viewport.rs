@@ -21,17 +21,34 @@
 //!
 //! 约定：锁定时（鼠标穿透）永远透明；未锁定时仅鼠标悬浮才绘制背景卡片（含外圈柔光）；
 //! 大号歌词文本用多次偏移重绘近似描边阴影。
+//!
+//! ## 歌词切换过渡动画
+//!
+//! 当前歌行推进到下一行时不是瞬时替换，而是旧行淡出并继续上移、新行从下方淡入升起
+//! （cubic_out 缓动，约 0.4s），下一行预览同步交叉淡化。过渡状态（上一帧渲染的文本 +
+//! 过渡起点时间）存在共享 `Context` 的 data 槽里——deferred 闭包是 `Fn`，不能持可变
+//! 状态，但所有 viewport 共享同一个 `egui::Context`，`IdTypeMap` 即跨调用内存。
+//! 动画期间闭包内 `request_repaint_after(16ms)` 只唤醒浮窗自身 viewport（约 60fps），
+//! 过渡结束自动停止，空闲时浮窗仍完全静止，不影响主窗口重绘节奏。
 
 use crate::{icons, theme};
 use eframe::egui::{
     self, Align2, Color32, FontId, Id, Pos2, Rect, Sense, Vec2, ViewportBuilder, ViewportCommand,
     ViewportId,
 };
+use std::time::Instant;
 use super::MusicApp;
 use super::widgets::fit_text;
 
 /// 桌面歌词悬浮窗固定尺寸。
 const LYRICS_VIEWPORT_SIZE: Vec2 = Vec2::new(800.0, 104.0);
+
+/// 歌词切换过渡动画时长。
+const SWITCH_DURATION: f32 = 0.4;
+/// 过渡期间歌词垂直滑动的距离（px）：新行从下方滑入，旧行向上滑出。
+const SWITCH_SLIDE: f32 = 14.0;
+/// 过渡动画的目标帧间隔（约 60fps）。
+const ANIM_FRAME_INTERVAL: f32 = 1.0 / 60.0;
 
 /// 桌面歌词 viewport 的稳定 id。
 pub(crate) fn lyrics_viewport_id() -> ViewportId {
@@ -42,6 +59,46 @@ pub(crate) fn lyrics_viewport_id() -> ViewportId {
 const CLOSE_SLOT: &str = "simple_music_lyrics_close";
 /// data 槽：浮窗重绘时上报的当前窗口位置（Pos2，外框左上角屏幕坐标）。
 const POS_SLOT: &str = "simple_music_lyrics_pos";
+/// data 槽：歌词过渡状态（上一次绘制的当前行/下一行文本 + 过渡起点时间）。
+const TRANSITION_SLOT: &str = "simple_music_lyrics_transition";
+
+/// 歌词文本的过渡状态：记录上一次绘制的文本，文本变化时以此作淡出方，
+/// 配合过渡起点时间画出「旧行淡出上移 + 新行淡入升起」。
+#[derive(Clone)]
+struct LineFade {
+    /// 淡出方：变化前渲染的文本（过渡结束后保留，下次变化时被覆盖）。
+    outgoing: String,
+    /// 上一帧实际渲染的文本（变化检测基准）。
+    drawn: String,
+    /// 本次过渡的起点时间。
+    started: Instant,
+}
+
+impl LineFade {
+    /// 初始状态：视作「上一轮过渡已完成」（进度恒 1），首帧只画当前文本，
+    /// 不会把空的 `outgoing` 当占位层放出来。
+    fn settled(drawn: String, now: Instant) -> Self {
+        Self {
+            outgoing: String::new(),
+            drawn,
+            started: now - std::time::Duration::from_secs_f32(SWITCH_DURATION),
+        }
+    }
+
+    /// 吸收本帧要渲染的文本：与上帧不同则旧文本转为淡出方并重启计时。
+    fn update(&mut self, text: &str, now: Instant) {
+        if self.drawn != text {
+            self.outgoing = std::mem::take(&mut self.drawn);
+            self.drawn = text.to_owned();
+            self.started = now;
+        }
+    }
+
+    /// 过渡进度 [0, 1]，1 = 完成。
+    fn progress(&self, now: Instant) -> f32 {
+        ((now - self.started).as_secs_f32() / SWITCH_DURATION).clamp(0.0, 1.0)
+    }
+}
 
 /// 是否运行在原生 Wayland 会话（winit 在设置了 `WAYLAND_DISPLAY` 时优先选 Wayland 后端）。
 /// xdg_shell 协议下客户端拿不到也设置不了窗口全局位置——位置记录/恢复都无意义，
@@ -176,51 +233,143 @@ impl MusicApp {
                 let current = fit_text(ui.ctx(), &current, &font, max_w);
                 let next = fit_text(ui.ctx(), &next, &next_font, max_w);
                 let center = rect.center();
-                if !current.is_empty() {
-                    let cur_center = center + Vec2::new(0.0, -12.0);
-                    for (dx, dy) in [(-1.5, 0.0), (1.5, 0.0), (0.0, -1.5), (0.0, 1.5)] {
-                        ui.painter().text(
-                            cur_center + Vec2::new(dx, dy),
-                            Align2::CENTER_CENTER,
-                            current.as_str(),
-                            font.clone(),
-                            Color32::from_black_alpha(120),
-                        );
-                    }
-                    ui.painter().text(
-                        cur_center,
-                        Align2::CENTER_CENTER,
-                        current.as_str(),
-                        font,
-                        theme::LYRIC_CURRENT,
+
+                // ── 歌词切换过渡 ──
+                // 每行独立过渡：文本相对上一帧变化时，旧行转为淡出方并重启计时，
+                // cubic_out 缓动驱动交叉淡化 + 上滑。过渡期间 request_repaint_after
+                // 只唤醒本 viewport（约 60fps），空闲时零重绘。
+                let now = Instant::now();
+                let (cur_fade, next_fade) = ui.ctx().data_mut(|d| {
+                    let st = d.get_temp_mut_or::<(LineFade, LineFade)>(
+                        Id::new(TRANSITION_SLOT),
+                        (
+                            LineFade::settled(current.clone(), now),
+                            LineFade::settled(next.clone(), now),
+                        ),
                     );
-                } else {
-                    ui.painter().text(
+                    st.0.update(&current, now);
+                    st.1.update(&next, now);
+                    (st.0.clone(), st.1.clone())
+                });
+                let cur_p = cur_fade.progress(now);
+                let next_p = next_fade.progress(now);
+                if cur_p < 1.0 || next_p < 1.0 {
+                    ui.ctx().request_repaint_after(std::time::Duration::from_secs_f32(
+                        ANIM_FRAME_INTERVAL,
+                    ));
+                }
+                let cur_ease = egui::emath::easing::cubic_out(cur_p);
+                let next_ease = egui::emath::easing::cubic_out(next_p);
+
+                // 当前行：新行从下方 SWITCH_SLIDE px 淡入升起，旧行淡出并继续上移。
+                // 「等待播放」占位只随 incoming 层淡入（outgoing 为空 = 首帧没有
+                // 可淡出的内容，不凭空放出占位文本）。
+                if !cur_fade.outgoing.is_empty() && cur_ease < 1.0 {
+                    draw_current_layer(
+                        ui.painter(),
                         center,
-                        Align2::CENTER_CENTER,
-                        "桌面歌词（等待播放…）",
-                        FontId::proportional(18.0),
-                        theme::TEXT_SECONDARY,
+                        &cur_fade.outgoing,
+                        font.clone(),
+                        1.0 - cur_ease,
+                        -SWITCH_SLIDE * cur_ease,
                     );
                 }
-                if !next.is_empty() {
-                    let next_center = center + Vec2::new(0.0, 26.0);
-                    ui.painter().text(
-                        next_center,
-                        Align2::CENTER_CENTER,
-                        next.as_str(),
-                        next_font,
-                        theme::LYRIC_NEXT,
+                draw_current_layer(
+                    ui.painter(),
+                    center,
+                    current.as_str(),
+                    font,
+                    cur_ease,
+                    SWITCH_SLIDE * (1.0 - cur_ease),
+                );
+
+                // 下一行预览：交叉淡化，旧行向上滑出、新行从下方轻微上浮，与当前行的
+                // 流动方向一致（整组歌词向上推进）。
+                if next_ease < 1.0 {
+                    draw_next_layer(
+                        ui.painter(),
+                        center,
+                        &next_fade.outgoing,
+                        next_font.clone(),
+                        1.0 - next_ease,
+                        -SWITCH_SLIDE * 0.5 * next_ease,
                     );
                 }
+                draw_next_layer(
+                    ui.painter(),
+                    center,
+                    next.as_str(),
+                    next_font,
+                    next_ease,
+                    SWITCH_SLIDE * 0.5 * (1.0 - next_ease),
+                );
             },
         );
     }
 }
 
+/// 绘制一行当前歌词（含描边阴影）；`alpha` 为过渡透明度，`dy` 为相对锚点的
+/// 垂直偏移（负=上移）。`text` 为空表示「等待播放」占位层（18px 固定字号）。
+fn draw_current_layer(
+    painter: &egui::Painter,
+    center: Pos2,
+    text: &str,
+    font: FontId,
+    alpha: f32,
+    dy: f32,
+) {
+    if alpha <= f32::EPSILON {
+        return;
+    }
+    let anchor = center + Vec2::new(0.0, -12.0 + dy);
+    if text.is_empty() {
+        painter.text(
+            anchor,
+            Align2::CENTER_CENTER,
+            "桌面歌词（等待播放…）",
+            FontId::proportional(18.0),
+            theme::TEXT_SECONDARY.gamma_multiply(alpha),
+        );
+        return;
+    }
+    let shadow_alpha = ((120.0 * alpha).round() as u8).max(1);
+    for (dx, dy) in [(-1.5, 0.0), (1.5, 0.0), (0.0, -1.5), (0.0, 1.5)] {
+        painter.text(
+            anchor + Vec2::new(dx, dy),
+            Align2::CENTER_CENTER,
+            text,
+            font.clone(),
+            Color32::from_black_alpha(shadow_alpha),
+        );
+    }
+    painter.text(
+        anchor,
+        Align2::CENTER_CENTER,
+        text,
+        font,
+        theme::LYRIC_CURRENT.gamma_multiply(alpha),
+    );
+}
+
+/// 绘制下一行歌词预览（无描边）；`alpha` 为过渡透明度，`dy` 为相对锚点的
+/// 垂直偏移（负=上移）。
+fn draw_next_layer(painter: &egui::Painter, center: Pos2, text: &str, font: FontId, alpha: f32, dy: f32) {
+    if alpha <= f32::EPSILON || text.is_empty() {
+        return;
+    }
+    painter.text(
+        center + Vec2::new(0.0, 26.0 + dy),
+        Align2::CENTER_CENTER,
+        text,
+        font,
+        theme::LYRIC_NEXT.gamma_multiply(alpha),
+    );
+}
+
 #[cfg(test)]
 mod tests {
-    use super::wayland_session_from;
+    use super::{wayland_session_from, LineFade, SWITCH_DURATION};
+    use std::time::{Duration, Instant};
 
     #[test]
     fn wayland_session_detects_env_var() {
@@ -232,5 +381,76 @@ mod tests {
         assert!(!wayland_session_from(Some("  ")));
         // 未设置 = X11（或无显示环境），位置功能正常。
         assert!(!wayland_session_from(None));
+    }
+
+    /// 状态机：首次吸收文本不产生过渡（无占位残留被误淡出）；
+    /// 文本变化把旧文本转为淡出方并重启计时；同文本重复吸收不重启。
+    #[test]
+    fn line_fade_starts_and_retargets() {
+        let t0 = Instant::now();
+        let mut f = LineFade::settled("第一句".into(), t0);
+        // 首帧同文本：无过渡。
+        f.update("第一句", t0);
+        assert_eq!(f.progress(t0), 1.0, "无变化不应进入过渡");
+        assert!(f.outgoing.is_empty());
+
+        // 变化：旧文本转为淡出方，进度从 0 开始。
+        let t1 = t0 + Duration::from_millis(500);
+        f.update("第二句", t1);
+        assert_eq!(f.outgoing, "第一句");
+        assert_eq!(f.drawn, "第二句");
+        assert_eq!(f.progress(t1), 0.0);
+
+        // 过渡中重复吸收同文本：不重启（进度继续推进）。
+        let t2 = t1 + Duration::from_millis(100);
+        f.update("第二句", t2);
+        assert_eq!(f.outgoing, "第一句");
+        assert!((f.progress(t2) - 0.25).abs() < 1e-4, "过渡中不应重置计时");
+
+        // 过渡中途再变（快速歌词）：淡出方换成上次渲染的文本，计时重置。
+        let t3 = t2 + Duration::from_millis(50);
+        f.update("第三句", t3);
+        assert_eq!(f.outgoing, "第二句");
+        assert_eq!(f.progress(t3), 0.0);
+    }
+
+    /// 进度钳制：超过时长后停在 1（过渡自然结束，不再请求重绘）。
+    #[test]
+    fn line_fade_progress_clamps_to_one() {
+        let t0 = Instant::now();
+        let f = LineFade {
+            outgoing: "旧".into(),
+            drawn: "新".into(),
+            started: t0,
+        };
+        assert_eq!(f.progress(t0), 0.0);
+        assert_eq!(
+            f.progress(t0 + Duration::from_secs_f32(SWITCH_DURATION)),
+            1.0
+        );
+        assert_eq!(
+            f.progress(t0 + Duration::from_secs_f32(SWITCH_DURATION * 3.0)),
+            1.0
+        );
+    }
+
+    /// 空文本（停止播放 → 等待占位）同样触发过渡：占位淡入、歌词淡出，
+    /// 反向（开始播放）占位淡出、歌词淡入。
+    #[test]
+    fn line_fade_handles_placeholder_swaps() {
+        let t0 = Instant::now();
+        let mut f = LineFade::settled(String::new(), t0);
+        f.update("", t0);
+        assert_eq!(f.progress(t0), 1.0);
+
+        let t1 = t0 + Duration::from_millis(100);
+        f.update("歌词出现", t1);
+        assert!(f.outgoing.is_empty(), "占位无文字，淡出方为空层");
+        assert_eq!(f.drawn, "歌词出现");
+
+        let t2 = t1 + Duration::from_millis(100);
+        f.update("", t2);
+        assert_eq!(f.outgoing, "歌词出现");
+        assert!(f.drawn.is_empty());
     }
 }
