@@ -7,6 +7,7 @@
 use crate::modules::bilibili::{BiliClient, FavFolder, FavItem, QrPoll, StreamUrl};
 use crate::modules::lyrics::{self, Lyrics};
 use crate::state::{AudioQuality, QueueItem};
+use crate::app::player::enqueue_dedup;
 use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -416,10 +417,20 @@ impl MusicApp {
                 }
                 match result {
                     Ok((item, stream)) => {
-                        if self.import_seq == Some(seq) {
+                        let was_import = self.import_seq == Some(seq);
+                        if was_import {
                             self.import_seq = None;
                             self.pending_import = false;
                             self.import_text.clear();
+                            // 导入 = 显式把歌加进当前选中的歌单（在线歌单只读，跳过）。
+                            // 静默去重：已在歌单里就不重复追加，只播放。
+                            if !self.active_playlist_is_online() {
+                                let (_, added) =
+                                    enqueue_dedup(self.active_songs_mut(), item.clone());
+                                if added {
+                                    self.queue_dirty = true;
+                                }
+                            }
                         }
                         self.play_prepared(item, stream);
                     }
@@ -433,7 +444,7 @@ impl MusicApp {
                 }
             }
             AsyncMsg::LyricsFetched { key, candidates } => {
-                let is_current = self.current_item().map(|i| i.bvid == key).unwrap_or(false);
+                let is_current = self.current_bvid().map(|b| b == key).unwrap_or(false);
                 if is_current {
                     self.lyrics_candidates = candidates.clone();
                     if let Some(first) = candidates.first() {

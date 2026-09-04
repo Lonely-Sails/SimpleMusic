@@ -6,14 +6,17 @@ use super::MusicApp;
 use crate::app::player::enqueue_dedup;
 
 impl MusicApp {
-    /// 切换活跃歌单并重置当前曲目索引（指向原歌单，不再有效）。
+    /// 切换活跃歌单：当前选中歌单就是播放列表，切走后原「当前曲目」不属于
+    /// 新的播放列表，直接停止播放并清掉当前曲目标记。
     pub(crate) fn switch_active_playlist(&mut self, idx: usize) {
         if idx == self.active_playlist {
             return;
         }
         self.active_playlist = idx;
         self.settings.active_playlist = idx;
-        self.current_track = None;
+        if self.current_bvid.is_some() {
+            self.stop_current();
+        }
         self.search_text.clear();
     }
 
@@ -71,9 +74,16 @@ impl MusicApp {
         let is_online = self.playlists[idx].is_online();
         let was_active = idx == self.active_playlist;
         let name = self.playlists[idx].name.clone();
+        // 正在播放的歌如果属于被删的歌单，先停止播放。
+        let playing_from_deleted = was_active
+            && self
+                .playlists[idx]
+                .songs
+                .iter()
+                .any(|s| self.current_bvid.as_deref() == Some(s.bvid.as_str()));
         self.playlists.remove(idx);
         if was_active {
-            if self.current_track.is_some() {
+            if playing_from_deleted {
                 self.stop_current();
             }
             self.search_text.clear();

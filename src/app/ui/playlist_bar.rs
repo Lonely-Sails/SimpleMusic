@@ -68,8 +68,8 @@ impl MusicApp {
                                         .changed();
                                 });
                                 if picked {
-                                    // 切换歌单：当前曲目下标（属于原歌单）不再有效。
-                                    self.current_track = None;
+                                    // 切换歌单：播放列表变为新歌单，停止原歌单的播放。
+                                    self.switch_active_playlist(*i);
                                     if *is_online {
                                         if let Some(mid) = media_id {
                                             self.fav_selected = Some(*mid);

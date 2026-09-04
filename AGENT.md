@@ -134,6 +134,7 @@ src/
 - **B 站扫码登录**：二维码 + 轮询（86101/86090/86038），Cookie 持久化、日志脱敏。
 - **音源（仅两种入口，刻意无搜索）**：① 收藏夹 → 在线歌单（分页加载，只读）；② 链接导入（BV 号 / `/video/BV..` / `b23.tv` 短链）。
 - **播放**：播放/暂停、上下曲、进度条 seek、音量、曲终自动下一首、加载进度、三种切歌模式（顺序循环/单曲循环/随机）、音质偏好（64/128/320k/无损）。
+- **播放列表语义**：**当前选中的歌单就是播放列表**，没有独立队列；播放时不隐式写歌进歌单，本地歌单只有显式「导入/添加/删除」才变化，在线歌单内容始终来自 B 站收藏夹接口（只读）。上下曲/随机/曲终自动切歌遍历选中歌单内容（本地取 `songs`，在线取已加载的 `fav_items`）。
 - **封面**：列表/播放条圆角缩略图，异步 + 内存缓存 + 占位图。
 - **桌面歌词**：透明置顶无边框悬浮窗，当前句+下一句预览，可拖动/锁定(鼠标穿透)/调字号，位置持久化（仅 X11）。
 - **歌词**：vkeys.cn 聚合源（QQ 音乐/网易云）自动搜索 + LRC 时间轴同步，翻译歌词并入；LRCLIB 兜底。
@@ -147,7 +148,23 @@ src/
 
 ## 6. 近期改动（本轮已实现）
 
-本轮（性能修复：桌面歌词浮窗改为延迟 viewport + 按需重绘，消除主界面卡顿）：
+本轮（重构：移除隐式播放队列，播放列表 = 当前选中歌单）：
+
+- **移除内部播放队列**：原 `play_prepared` 在播放任何歌时都会把歌 `enqueue_dedup`
+  进当前歌单的 `songs` 并落盘——点播在线收藏夹的歌会悄悄累积进收藏夹歌单（脏数据）。
+  现在改为：`MusicApp.current_bvid: Option<String>` 只按 bvid 记住「正在播哪首」，
+  `play_prepared` 只出声、绝不写歌单。
+- **播放列表 = 当前选中歌单的内容**：`MusicApp::playback_songs()` 按需构建只读快照——
+  本地歌单取其 `songs`，在线歌单取已加载的收藏夹条目 `fav_items`。
+  上下曲/随机/曲终自动切歌/列表高亮全部基于该快照。
+- **行为变化（刻意）**：切换歌单即切换播放列表，原歌单正在播的歌会停止
+  （`switch_active_playlist` → `stop_current`）；删除正在播放的歌也是直接停止。
+- **导入语义**：「添加并播放」现在显式把歌加进当前选中的**本地歌单**（静默去重）再播放；
+  在线歌单只读，导入时只播放不入单。
+- **启动清理**：加载歌单时自动清空在线歌单 `songs` 的历史残留（旧版隐式入列的脏数据）。
+- 133 个单测全绿，`cargo check`（含默认 tray feature）通过，`--smoke` OK。
+
+上一轮（性能修复：桌面歌词浮窗改为延迟 viewport + 按需重绘，消除主界面卡顿）：
 
 - **根因**：浮窗原来用 `show_viewport_immediate`（立即模式），egui 文档明确说明该模式
   「父子窗口任一需要重绘，双方都重绘」= 双倍工作量。主窗口播放时每帧重绘（进度条动画），
@@ -171,7 +188,7 @@ src/
   纯函数抽到新 `src/util/`（fmt/rand/filter，全部带单测）。
   行为零改动：88 个单测全绿，`cargo check`（含默认 tray feature）通过。
 - **重构细节**：`MusicApp` 仍是单一结构体，各文件是其 `impl` 块；跨文件调用的方法
-  标 `pub(crate)`（如 `current_item`/`spawn_*`/`show_*`）；闭包借用模式、`AsyncMsg`
+  标 `pub(crate)`（如 `current_bvid`/`spawn_*`/`show_*`）；闭包借用模式、`AsyncMsg`
   消息协议、持久化格式、快捷键与 UI 布局均未改变。
 - **新增单测**：`util::rand` 边界测试（`max=0` / `max=1` / 界内）3 个。
 
@@ -190,7 +207,7 @@ src/
 上一轮在 `app/` 目录新增/改动（均有单测或 smoke 验证，88+ 测试通过）：
 
 - `MusicApp` 新字段：`search_text`、`playlist_mgmt_open`、`renaming_idx`、`rename_text`、`last_notice`。
-- 新辅助方法：`notice` / `switch_active_playlist`（切歌单重置 `current_track` 并清搜索） / `stop_current` / `add_song_to_local_playlist` / `delete_playlist` / `rename_playlist` / `change_volume` / `handle_shortcuts`。
+- 新辅助方法：`notice` / `switch_active_playlist`（切歌单停止播放并清搜索） / `stop_current` / `add_song_to_local_playlist` / `delete_playlist` / `rename_playlist` / `change_volume` / `handle_shortcuts`。
 - 歌单选择栏新增「管理」按钮 → `show_playlist_manage_window`；在线歌单选择、ComboBox、创建歌单均改走 `switch_active_playlist`。
 - 本地/在线歌曲列表加搜索框 + 过滤 + 无结果态；列表项加 `resp.context_menu`（复制 BV/添加到歌单）。
 - 播放栏加「第 N/M 首」与金色 `notice` 提示；`logic` 调 `handle_shortcuts`。

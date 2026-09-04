@@ -10,7 +10,7 @@
 //! - **歌词**：切歌时后台线程 `LyricsProvider::fetch`，回传 `Option<Lyrics>`，按 bvid 丢弃过期结果。
 //!
 //! 文件分工：
-//! - `mod.rs`：结构与生命周期、跨模块小工具（`current_item` / `logged_in` / `notice` …）。
+//! - `mod.rs`：结构与生命周期、跨模块小工具（`current_bvid` / `logged_in` / `notice` …）。
 //! - `messages.rs`：后台线程消息（`AsyncMsg` + `spawn_*` 派发 + `handle_msg`）。
 //! - `player.rs`：播放控制（上下曲/seek/音量/移除）+ 键盘快捷键。
 //! - `playlists.rs`：歌单管理（切换/删除/重命名/添加到歌单）。
@@ -30,7 +30,7 @@ use crate::modules::audio::{AudioEngine, PlaybackStatus};
 use crate::modules::bilibili::{BiliClient, FavFolder, FavItem};
 use crate::modules::lyrics::{LrcLine, Lyrics};
 use crate::modules::storage;
-use crate::state::{PlaybackState, Playlist, Settings};
+use crate::state::{PlaybackState, Playlist, QueueItem, Settings};
 use crate::tray;
 use crate::app::ui::toast::{show_toasts, Toast, ToastKind};
 use eframe::egui::{self, Pos2};
@@ -52,8 +52,8 @@ pub struct MusicApp {
     // 播放列表（歌单）
     playlists: Vec<Playlist>,
     active_playlist: usize,
-    // 当前播放曲目（在 active 播放列表中的下标）
-    current_track: Option<usize>,
+    // 当前播放曲目的 bvid（播放列表 = 当前选中歌单的内容，不再有独立队列）。
+    current_bvid: Option<String>,
     // 寻求拖拽
     seek_dragging: bool,
     seek_preview: f64,
@@ -160,6 +160,14 @@ impl MusicApp {
         // 启动时应用已保存的音量。
         audio.set_volume(settings.volume);
         let playlists = storage::load_playlists();
+        // 清掉历史版本「点播即隐式加入在线歌单」行为残留的脏数据：
+        // 在线歌单只是收藏夹引用，歌曲列表永远由 B 站接口拉取，不应有本地积累。
+        let mut playlists = playlists;
+        for pl in playlists.iter_mut() {
+            if pl.is_online() && !pl.songs.is_empty() {
+                pl.songs.clear();
+            }
+        }
         let mut covers = CoverCache::new(cc.egui_ctx.clone());
         let mut state = PlaybackState::default();
         state.volume = settings.volume;
@@ -183,7 +191,7 @@ impl MusicApp {
             settings,
             playlists,
             active_playlist: restored_active,
-            current_track: None,
+            current_bvid: None,
             seek_dragging: false,
             seek_preview: 0.0,
             login_visible: false,
@@ -248,10 +256,9 @@ impl MusicApp {
 
     // ---- 跨模块小工具 ----
 
-    /// 当前播放曲目（active 歌单中的条目）。
-    pub(crate) fn current_item(&self) -> Option<&QueueItem> {
-        let pl = self.playlists.get(self.active_playlist)?;
-        self.current_track.and_then(|i| pl.songs.get(i))
+    /// 当前播放曲目的 bvid。
+    pub(crate) fn current_bvid(&self) -> Option<&str> {
+        self.current_bvid.as_deref()
     }
 
     /// 是否已登录（读取缓存字段，不锁 `bili`——`bili` 锁会被后台网络解析长时间持有，
@@ -316,8 +323,6 @@ impl MusicApp {
         false
     }
 }
-
-use crate::state::QueueItem;
 
 impl eframe::App for MusicApp {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {

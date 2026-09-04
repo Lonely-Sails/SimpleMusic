@@ -102,7 +102,7 @@ impl MusicApp {
 
                 for (i, item) in &visible {
                     let i = *i;
-                    let selected = self.current_track == Some(i);
+                    let selected = self.current_bvid().map(|b| b == item.bvid).unwrap_or(false);
                     let (rect, resp) = ui.allocate_exact_size(
                         Vec2::new(ui.available_width(), row_h),
                         Sense::click(),
@@ -241,7 +241,8 @@ impl MusicApp {
                         remove = Some(i);
                     }
                 }
-                for (i, _) in actions {
+                for (i, item) in actions {
+                    let _ = item;
                     self.play_track(i);
                 }
                 if let Some(i) = remove {
@@ -338,10 +339,7 @@ impl MusicApp {
                     });
                 }
                 for item in &fav_items {
-                    let selected = self
-                        .current_item()
-                        .map(|c| c.bvid == item.bvid)
-                        .unwrap_or(false);
+                    let selected = self.current_bvid().map(|b| b == item.bvid).unwrap_or(false);
                     let (rect, resp) = ui.allocate_exact_size(
                         Vec2::new(ui.available_width(), row_h),
                         Sense::click(),
@@ -459,8 +457,9 @@ impl MusicApp {
                         play = Some(item.bvid.clone());
                     }
                 }
-                if let Some(bvid) = play {
-                    self.spawn_play_resolve(bvid);
+                if let Some(item) = play {
+                    // 播放列表 = 当前选中的在线歌单（收藏夹条目），直接点播。
+                    self.play_bvid(item);
                 }
             });
     }
