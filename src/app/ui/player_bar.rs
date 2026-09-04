@@ -482,7 +482,7 @@ mod tests {
     #[test]
     fn progress_row_fills_and_centers_slider() {
         let ctx = egui::Context::default();
-        crate::fonts::install_fonts(&ctx);
+        crate::fonts::install_embedded_fonts(&ctx);
         let screen = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1000.0, 200.0));
         let mut input = egui::RawInput::default();
         input.screen_rect = Some(screen);
@@ -542,7 +542,7 @@ mod tests {
     #[test]
     fn progress_slider_disabled_without_audio() {
         let ctx = egui::Context::default();
-        crate::fonts::install_fonts(&ctx);
+        crate::fonts::install_embedded_fonts(&ctx);
         let screen = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1000.0, 200.0));
         let mut input = egui::RawInput::default();
         input.screen_rect = Some(screen);
@@ -569,7 +569,7 @@ mod tests {
     #[test]
     fn slider_handle_is_smaller_and_row_height_unchanged() {
         let ctx = egui::Context::default();
-        crate::fonts::install_fonts(&ctx);
+        crate::fonts::install_embedded_fonts(&ctx);
         crate::theme::apply(&ctx);
         let screen = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1000.0, 200.0));
         let mut input = egui::RawInput::default();

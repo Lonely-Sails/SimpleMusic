@@ -3336,6 +3336,7 @@ dependencies = [
  "rodio",
  "serde",
  "serde_json",
+ "skrifa",
  "symphonia",
  "tray-icon",
 ]

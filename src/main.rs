@@ -176,14 +176,14 @@ fn main() -> eframe::Result<()> {
         "SimpleMusic",
         native_options,
         Box::new(move |cc| {
-            // 注册中文字体（内嵌 Noto Sans SC）。
+            // 注册字体：文字优先系统字体（图标恒用内嵌 Phosphor）。
             let font_choice = fonts::install_fonts(&cc.egui_ctx);
             match font_choice {
-                fonts::FontChoice::Embedded => {
-                    println!("[font] 使用内嵌 Noto Sans SC + Phosphor 图标字体");
-                }
                 fonts::FontChoice::System(p) => {
-                    println!("[font] 内嵌失败，回退系统字体: {}", p.display());
+                    println!("[font] 界面字体: {}（图标用内嵌 Phosphor）", p.display());
+                }
+                fonts::FontChoice::Embedded => {
+                    println!("[font] 界面字体: 内嵌 Noto Sans SC（未探测到系统字体）+ 内嵌 Phosphor 图标");
                 }
             }
             // 应用深色淡雅主题。

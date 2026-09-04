@@ -645,7 +645,7 @@ mod search_field_tests {
             let ctx = egui::Context::default();
             // 生产同款字体：eframe 关闭了 default_fonts feature，无头测试必须
             // 显式安装内嵌字体，否则零字形 galley 会让光标定位全部坍缩到 0。
-            crate::fonts::install_fonts(&ctx);
+            crate::fonts::install_embedded_fonts(&ctx);
             Self {
                 ctx,
                 text: String::new(),

@@ -72,7 +72,7 @@ src/
 │   ├── window.rs      窗口控制 + 系统托盘事件
 │   └── ui/            界面组件（标题栏/状态栏/歌单/歌曲列表/播放条/设置/登录/桌面歌词…）
 ├── util/              纯函数工具（格式化/随机数/搜索过滤，带单测）
-├── fonts.rs           CJK 字体加载（内嵌 Noto Sans SC + 系统字体兜底）
+├── fonts.rs           字体加载（文字优先系统字体 + 内嵌 Noto Sans SC 兜底；图标恒用内嵌 Phosphor）
 ├── state.rs           PlaybackState / Settings / 歌单模型
 ├── cover.rs           封面异步下载 + 缩略图缓存
 ├── theme.rs           主题色板与按钮样式
@@ -100,7 +100,7 @@ src/
 - **音频链路**：`BiliClient::resolve_stream` 取 dash 音频流（优先最高码率，未签名请求失败自动补 WBI 签名重试）→ 按 `required_headers`（UA/Referer/Cookie）流式下载 → symphonia (AAC/MP4) 解码 → rodio 输出；播放线程与 UI 线程用 mpsc 命令通道解耦，进度/错误经共享状态轮询；无输出设备绝不 panic，进入错误状态展示。
 - **歌词匹配**：`LyricsProvider::fetch` 生成多组候选查询（"上传者+标题"/"标题"），对 LRCLIB 结果按标题相似度 + 上传者命中 + 时长接近打分取最优（阈值 40 分），全失败再走精确 `/get`；LRC 解析支持多时间标签/BOM/CRLF/`[offset:]`，同步引擎二分定位当前句。
 - **异步模型**：所有阻塞网络/IO 在后台 `std::thread` 执行，结果经单个 `mpsc` 回主线程；`BiliClient` 以 `Arc<Mutex<..>>` 共享，`AudioEngine` 仅在 UI 线程持有。
-- **中文字体**：编译期内嵌 Noto Sans SC Regular（约 16MB）并注册进 egui 字体族；若资产被移除，运行期自动探测系统 CJK 字体（Windows msyh/simhei、macOS PingFang、Linux noto/wqy）。
+- **字体**：界面**文字**优先使用系统字体（Windows 微软雅黑、macOS 苹方、Linux Noto CJK/文泉驿等），加载前用 skrifa（egui 同款解析器）校验文件可解析且覆盖拉丁/汉字，探测失败回退内嵌 Noto Sans SC（中文界面在无中文字体的纯英文系统上也不变豆腐块）；界面**图标**恒用编译期内嵌的 Phosphor 图标字体，不依赖系统字形。环境变量：`SIMPLEMUSIC_EMBEDDED_FONTS=1` 强制全内嵌、`SIMPLEMUSIC_FONT=/path/to.ttf` 手动指定字体文件。
 
 ## 已知限制
 

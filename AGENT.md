@@ -14,7 +14,7 @@
 cd /data/dsh/home/SimpleMusic
 source .toolchain/env.sh          # 设置 RUSTUP_HOME / CARGO_HOME / PATH / CC / 链接器 等
 cargo check                       # 编译检查（默认 tray feature）
-cargo test --no-default-features  # 单测（当前 144 个，全部离线；为什么加 flag 见下）
+cargo test --no-default-features  # 单测（当前 163 个，全部离线；为什么加 flag 见下）
 cargo run -- --smoke              # 无窗口模块自检，打印 SMOKE_OK 退出（会走少量网络，失败不阻断）
 cargo run                         # 真实 GUI 启动（需要显示环境）
 ```
@@ -29,7 +29,13 @@ cargo run                         # 真实 GUI 启动（需要显示环境）
   `cargo build --no-default-features` 跳过托盘，GUI 其余功能不受影响）；
   **macOS/Windows 用系统原生托盘（NSStatusItem / Shell_NotifyIcon），无需 GTK、无额外线程**，
   图标由 `MusicApp::new` 在主线程创建（macOS 要求事件循环运行中创建）。
-- 内嵌字体 `assets/NotoSansSC-Regular.otf`（约 16MB）+ `assets/Phosphor.ttf`（图标字体，约 0.5MB，MIT）编译期 `include_bytes!` 进二进制。
+- **图标字体** `assets/Phosphor.ttf`（约 0.5MB，MIT）编译期 `include_bytes!` 进二进制，恒定注册；
+  **文字字体**运行时优先加载系统字体（Windows 微软雅黑 / macOS 苹方 / Linux Noto CJK、
+  文泉驿等），加载前用 skrifa（epaint 同款解析器）校验「可解析 + 覆盖拉丁/汉字」——egui
+  对解析失败的字体直接 panic，必须前置校验；探测失败回退内嵌 `assets/NotoSansSC-Regular.otf`
+  （仍保留作 CJK 兜底）。环境变量：`SIMPLEMUSIC_EMBEDDED_FONTS=1` 强制全内嵌（旧行为）、
+  `SIMPLEMUSIC_FONT=/path/to.ttf` 手动指定字体文件。无头测试一律用
+  `fonts::install_embedded_fonts`（度量不随宿主系统字体漂移）。
 - 已有 git 仓库（分支 `main`）：改动用增量编辑，提交信息用中文、说明动机；`SimpleMusic.zip`
   手动备份包与 `.toolchain/`、`.sysroot/`、`target/` 均已在 `.gitignore` 中排除。
 
@@ -78,7 +84,7 @@ src/
 ├── theme.rs      主题色板 + 按钮/样式辅助（BG_*/TEXT_*/ACCENT 等语义常量）
 ├── icons.rs      界面图标：内嵌 Phosphor 图标字体（PUA 码点，画到 rect 中心），不依赖 emoji/系统字形
 ├── cover.rs      封面缩略图：后台线程下载 + image 解码（不在主线程解码）→ egui 纹理缓存（LRU，失败 30 分钟冷却）
-├── fonts.rs      字体：内嵌 Noto Sans SC（CJK）+ Phosphor（图标，MIT），均编译期 include_bytes!
+├── fonts.rs      字体：文字优先系统字体（运行时探测 + skrifa 校验），内嵌 Noto Sans SC 兜底；图标恒用内嵌 Phosphor
 └── tray.rs       系统托盘（feature=tray）：Linux=独立 GTK 线程+libappindicator；macOS/Win=主线程原生托盘；无 feature 时是 no-op 桩
 ```
 
@@ -210,7 +216,8 @@ src/
   两个无头测试的坑，后续写类似测试必看：
   1. **必须装字体**：本项目 eframe 关了 `default_fonts`，无头 `Context::default()`
      字体表是空的 → 零字形 galley → 光标定位坍缩到 0，任何依赖光标位置的断言都会
-     诡异失败。测试里调 `crate::fonts::install_fonts(&ctx)`（生产同款内嵌字体）。
+     诡异失败。测试里调 `crate::fonts::install_embedded_fonts(&ctx)`（强制内嵌字体，度量不随宿主
+      机器的系统字体漂移；生产入口 `install_fonts` 优先系统字体）。
   2. **模拟打字要复刻 egui-winit 的投递**：Key press+release 与 `Event::Text` 必须
      同帧（见 egui-winit `on_keyboard_input`：push 完 Key 紧接着 push Text）；拆成
      多帧的话 release 帧的 Key 会先于 Text 消费，插入位置就错了。
