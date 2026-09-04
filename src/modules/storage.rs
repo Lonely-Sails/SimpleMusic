@@ -278,6 +278,66 @@ pub fn save_playlists_to(path: &Path, playlists: &[Playlist]) -> std::io::Result
     fs::write(path, text)
 }
 
+// ---------------------------------------------------------------------------
+// 歌词缓存持久化
+// ---------------------------------------------------------------------------
+
+/// 歌词缓存文件完整路径：`~/.cache/simple-music/lyrics.json`（与音频缓存同根）。
+pub fn lyrics_cache_path() -> PathBuf {
+    let mut p = cache_dir();
+    p.push("lyrics.json");
+    p
+}
+
+/// 读取歌词缓存；文件不存在/损坏时返回空表（缓存未命中语义，绝不报错打断启动）。
+pub fn load_lyrics_cache() -> BTreeMap<String, crate::modules::lyrics::LyricsCacheEntry> {
+    load_lyrics_cache_from(&lyrics_cache_path())
+}
+
+/// 从指定路径读取歌词缓存（测试用）。
+pub fn load_lyrics_cache_from(
+    path: &Path,
+) -> BTreeMap<String, crate::modules::lyrics::LyricsCacheEntry> {
+    let text = match fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(_) => return BTreeMap::new(),
+    };
+    serde_json::from_str(&text).unwrap_or_default()
+}
+
+/// 保存歌词缓存到默认路径（目录不存在自动创建；失败由调用方静默处理）。
+pub fn save_lyrics_cache(
+    cache: &BTreeMap<String, crate::modules::lyrics::LyricsCacheEntry>,
+) -> std::io::Result<()> {
+    save_lyrics_cache_to(&lyrics_cache_path(), cache)
+}
+
+/// 保存歌词缓存到指定路径（测试用）。
+pub fn save_lyrics_cache_to(
+    path: &Path,
+    cache: &BTreeMap<String, crate::modules::lyrics::LyricsCacheEntry>,
+) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let text = serde_json::to_string_pretty(cache)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    fs::write(path, text)
+}
+
+/// 缓存目录：`$HOME/.cache/simple-music`（与音频缓存同根；未设置 HOME 回退当前目录）。
+pub fn cache_dir() -> PathBuf {
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.is_empty() {
+            let mut p = PathBuf::from(home);
+            p.push(".cache");
+            p.push("simple-music");
+            return p;
+        }
+    }
+    PathBuf::from(".cache/simple-music")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -444,5 +504,69 @@ mod tests {
         let p = playlists_path();
         assert_eq!(p.file_name().unwrap(), "playlists.json");
         assert_eq!(p.parent().unwrap().file_name().unwrap(), "simple-music");
+    }
+
+    // ---- 歌词缓存持久化 ----
+
+    fn sample_cache_entry(tag: &str) -> crate::modules::lyrics::LyricsCacheEntry {
+        use crate::modules::lyrics::{LrcSearchResult, Lyrics, LyricsCacheEntry};
+        LyricsCacheEntry {
+            selected: Some(Lyrics {
+                lrc: Some(format!("[00:01.00]第一句{tag}")),
+                plain: format!("第一句{tag}"),
+                source: Some(LrcSearchResult {
+                    id: 1,
+                    track_name: format!("晴天{tag}"),
+                    artist_name: "周杰伦".into(),
+                    album_name: "叶惠美".into(),
+                    duration: 269.0,
+                    instrumental: false,
+                    plain_lyrics: String::new(),
+                    synced_lyrics: String::new(),
+                }),
+            }),
+            candidates: vec![],
+            saved_at_unix: 1_700_000_000,
+        }
+    }
+
+    #[test]
+    fn test_lyrics_cache_roundtrip_and_miss() {
+        use crate::modules::lyrics::{cache_key, cache_lookup, LyricsCacheEntry};
+        let path = std::env::temp_dir().join("sm-test-lyrics-cache.json");
+        let _ = fs::remove_file(&path);
+        // 无文件 = 空缓存。
+        assert!(load_lyrics_cache_from(&path).is_empty());
+
+        let mut cache = BTreeMap::new();
+        cache.insert(cache_key("BV1GJ411x7h7"), sample_cache_entry("A"));
+        cache.insert(
+            cache_key("BV1xx411c7mD"),
+            LyricsCacheEntry {
+                selected: None,
+                candidates: vec![],
+                saved_at_unix: 0,
+            },
+        );
+        save_lyrics_cache_to(&path, &cache).expect("写歌词缓存失败");
+
+        let back = load_lyrics_cache_from(&path);
+        assert_eq!(back.len(), 2);
+        let hit = cache_lookup(&back, "BV1GJ411x7h7").expect("按 bvid 命中");
+        assert_eq!(hit.selected.as_ref().unwrap().lrc.as_deref(), Some("[00:01.00]第一句A"));
+        // 坏文件静默降级为空缓存。
+        fs::write(&path, "{not json").unwrap();
+        assert!(load_lyrics_cache_from(&path).is_empty());
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_lyrics_cache_path_layout() {
+        let p = lyrics_cache_path();
+        assert_eq!(p.file_name().unwrap(), "lyrics.json");
+        // 与音频缓存同根：~/.cache/simple-music。
+        let parent = p.parent().unwrap();
+        assert_eq!(parent.file_name().unwrap(), "simple-music");
+        assert!(parent.to_string_lossy().contains(".cache"));
     }
 }

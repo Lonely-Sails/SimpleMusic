@@ -51,7 +51,32 @@ impl MusicApp {
     }
 
     /// 应用一份歌词候选（歌词选择弹窗点选时调用）：重设当前歌词与时间轴/纯文本行。
+    ///
+    /// **用户显式手选是持久化时机**：把该候选写进歌词缓存的 `selected`
+    /// （按当前曲 bvid 键控），下次播放同曲零网络直接生效；落盘在后台线程。
     pub(crate) fn apply_lyrics(&mut self, li: &Lyrics) {
+        self.apply_lyrics_inner(li);
+        if let Some(bvid) = self.current_bvid().map(|b| b.to_string()) {
+            let cache = self.lyrics_cache.clone();
+            let ly = li.clone();
+            // 缓存表更新 + 落盘都在后台线程（磁盘 IO 不进 UI 线程）。
+            std::thread::spawn(move || {
+                if let Ok(mut m) = cache.lock() {
+                    lyrics::cache_update_selected(&mut m, &bvid, ly);
+                    let _ = crate::modules::storage::save_lyrics_cache(&m);
+                }
+            });
+        }
+    }
+
+    /// 仅应用歌词（自动抓取回放路径用）：抓取线程已把结果写进缓存，
+    /// 这里只更新 UI 状态，不再落盘（避免重复 IO）。
+    pub(crate) fn apply_lyrics_only(&mut self, li: &Lyrics) {
+        self.apply_lyrics_inner(li);
+    }
+
+    /// 应用歌词的公共部分：更新当前歌词与时间轴/纯文本行。
+    fn apply_lyrics_inner(&mut self, li: &Lyrics) {
         self.current_lyrics = Some(li.clone());
         self.lyrics_lines = li.lrc_lines();
         self.lyrics_plain = li

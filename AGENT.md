@@ -114,7 +114,21 @@ src/
 `resolve_stream`（DASH 音频流，未签名被风控自动补 WBI 重试）→ 带 `required_headers`(UA/Referer/Cookie) 流式下载到缓存 `~/.cache/simple-music/audio/<md5(bvid)>.m4s`（二次秒开）→ symphonia(AAC/MP4) 解码 → rodio 输出；CDN 403 自动换备用地址；无输出设备绝不 panic，进错误状态。
 
 ### 歌词链路
-切歌 → 后台 `spawn_lyrics_fetch`（歌词线程，绝不阻塞播放解析）→ 先调 `BiliClient::detect_music(bvid, cid)` 问 **B 站「识别音乐」**（`/x/player/v2` 的 `bgm_info` → `/x/web-interface/view/detail/tag` 的 `tag_type=bgm` TAG，拿 `MA…` music_id 后换 `/x/copyright-music-publicity/bgm/detail` 的官方曲名/歌手，全程无需登录）→ 把官方词作为 `SongHint`（附视频时长）传给 `LyricsProvider::fetch_all_with_hint` → 按候选查询（提示词最优先，视频标题清洗词兜底，去重后 ≤5 条）依次尝试 **vkeys.cn 聚合源**（QQ 音乐 `mid` 优先 → 网易云 `id`，取回 LRC 原文，翻译 `trans`/`tlyric` 按时间戳并入同行）→ 全部未命中再回退 **LRCLIB**（搜索 + 精确 GET + 相似度打分阈值 40；有提示时精确 GET 也用官方词）→ 打分用 `match_score_with_hint`（提示曲名/歌手匹配加分 + **视频时长 vs 候选时长接近加分**）→ `Lyrics{lrc, plain}` 按 bvid 回主线程；同步歌词用二分定位当前句，无同步时按进度近似取纯文本行。识别音乐是纯增强：`detect_music` 失败返回 `None`，歌词链路照旧走标题搜索。
+切歌 → 后台 `spawn_lyrics_fetch`（歌词线程，绝不阻塞播放解析）→ **先查本地歌词缓存**
+（`~/.cache/simple-music/lyrics.json`，按 bvid 的 md5 键控；命中 `selected`/`candidates`
+即零网络回放，**用户手选的歌词优先于自动结果**）→ 未命中再调 `BiliClient::detect_music(bvid, cid)` 问
+**B 站「识别音乐」**（`/x/player/v2` 的 `bgm_info` → `/x/web-interface/view/detail/tag` 的 `tag_type=bgm` TAG，
+拿 `MA…` music_id 后换 `/x/copyright-music-publicity/bgm/detail` 的官方曲名/歌手，全程无需登录）→
+把官方词作为 `SongHint`（附视频时长）传给 `LyricsProvider::fetch_all_with_hint` →
+按候选查询（提示词最优先，视频标题清洗词兜底，去重后 ≤5 条）依次尝试 **vkeys.cn 聚合源**
+（QQ 音乐 `mid` 优先 → 网易云 `id`，取回 LRC 原文，翻译 `trans`/`tlyric` 按时间戳并入同行）→
+全部未命中再回退 **LRCLIB**（搜索 + 精确 GET + 相似度打分阈值 40；有提示时精确 GET 也用官方词）→
+打分用 `match_score_with_hint`（提示曲名/歌手匹配加分 + **视频时长 vs 候选时长接近加分**）→
+抓取成功（非空）写回歌词缓存并当场落盘（后台线程）；`LyricsFetched{key, candidates, selected}` 按 bvid 回主线程
+（`selected` = 缓存的当前生效歌词或第一候选），主线程只 `apply_lyrics_only` 更新 UI、不再落盘；
+**用户在「T」弹窗手选**走 `apply_lyrics`（应用 + 写缓存 `selected` + 后台落盘），下次播放同曲直接生效；
+同步歌词用二分定位当前句，无同步时按进度近似取纯文本行。
+识别音乐是纯增强：`detect_music` 失败返回 `None`，歌词链路照旧走标题搜索。
 
 ---
 
@@ -126,6 +140,7 @@ src/
 ~/.config/simple-music/playlists.json   所有歌单（本地 + 在线引用）
 ~/.config/simple-music/playlist.json    旧版单队列文件（读取时自动迁移，随后删除）
 ~/.cache/simple-music/audio/            音频缓存（按 bvid 的 md5，损坏自动重下）
+~/.cache/simple-music/lyrics.json       歌词缓存（按 bvid 的 md5：上次生效歌词 + 全部候选）
 ```
 
 - 设置每 5 秒兜底保存 + 退出保存；歌单变更 `queue_dirty` 后 2 秒防抖保存。
@@ -174,7 +189,24 @@ src/
 
 ## 6. 近期改动（本轮已实现）
 
-本轮（优化：歌词搜索接入 B 站「识别音乐」，提升命中率）：
+本轮（新增：歌词本地缓存 + 手选歌词持久化，二次播放零网络）：
+
+- **`lyrics.rs` 缓存条目**：`LyricsCacheEntry{selected, candidates, saved_at_unix}` +
+  纯函数 `cache_key`（bvid 的 md5，与音频缓存同方案）/`cache_lookup`/`cache_store_fetch`/
+  `cache_update_selected`；`Lyrics` 加 serde derive（可直接 JSON 落盘）。
+  磁盘读写统一放 `storage.rs`（`load/save_lyrics_cache[_from/_to]`，
+  `~/.cache/simple-music/lyrics.json`，坏文件静默降级为空缓存）。
+- **歌词线程（`spawn_lyrics_fetch`）**：先查缓存——`selected` 或 `candidates` 任一存在
+  即直接回放（零网络，用户上次手选优先）；未命中才走识别音乐 + 多源搜索，
+  抓取成功（非空）写回缓存并当场落盘（本就是后台线程，失败静默只丢缓存不丢功能；
+  空结果不缓存，源补录后还能自动命中）。
+- **手选持久化（`apply_lyrics`）**：「T」弹窗点选 = 显式副作用，写缓存 `selected` +
+  后台落盘；自动抓取回放走 `apply_lyrics_only`（不重复落盘）。
+  `LyricsFetched` 消息新增 `selected` 字段。
+- 验证：148 个离线单测全绿（新增 4 个缓存测试），`cargo check`（默认 tray）通过，
+  `--smoke`（no-default-features）OK。
+
+上一轮（优化：歌词搜索接入 B 站「识别音乐」，提升命中率）：
 
 - **动机**：B 站视频标题噪音大（【4K】【燃剪】xxx 4K修复版…），仅靠标题清洗搜歌词
   经常命中翻唱/remix 甚至搜不到；B 站自己有「识别音乐」标注（官方曲库），直接拿来当查询词。

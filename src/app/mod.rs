@@ -28,13 +28,14 @@ pub mod window;
 use crate::cover::CoverCache;
 use crate::modules::audio::{AudioEngine, PlaybackStatus};
 use crate::modules::bilibili::{BiliClient, FavFolder, FavItem};
-use crate::modules::lyrics::{LrcLine, Lyrics};
+use crate::modules::lyrics::{LrcLine, Lyrics, LyricsCacheEntry};
 use crate::modules::storage;
 use crate::state::{PlaybackState, Playlist, QueueItem, Settings};
 use crate::tray;
 use crate::app::ui::toast::{show_toasts, Toast, ToastKind};
 use eframe::egui::{self, Pos2};
 use messages::AsyncMsg;
+use std::collections::BTreeMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -99,6 +100,10 @@ pub struct MusicApp {
     lyrics_lines: Vec<LrcLine>,
     lyrics_plain: Vec<String>,
     lyrics_next_line: String,
+    /// 歌词本地缓存（按 bvid 的 md5 键控）：上次生效歌词 + 全部候选 + 手动选择。
+    /// 启动时从 `~/.config/simple-music/lyrics.json` 加载；歌词线程查命中/写抓取
+    /// 结果、UI 线程写用户手选，落盘统一在后台线程（临时表快照）。
+    lyrics_cache: Arc<Mutex<BTreeMap<String, LyricsCacheEntry>>>,
     // 桌面歌词
     lyrics_pos: Option<Pos2>,
     last_pass_through_applied: Option<bool>,
@@ -229,6 +234,7 @@ impl MusicApp {
             lyrics_lines: Vec::new(),
             lyrics_plain: Vec::new(),
             lyrics_next_line: String::new(),
+            lyrics_cache: Arc::new(Mutex::new(storage::load_lyrics_cache())),
             lyrics_pos: None,
             last_pass_through_applied: None,
             last_lyrics_frame: None,

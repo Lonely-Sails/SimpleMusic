@@ -52,9 +52,12 @@ pub(crate) enum AsyncMsg {
         result: Result<(QueueItem, StreamUrl), String>,
     },
     /// 一首歌的歌词候选已取回（按 bvid 装配，多源候选供「歌词选择」弹窗）。
+    /// `selected` 是当前生效的歌词：本地缓存命中时即用户上次手选/上次抓取结果，
+    /// 全新抓取时为第一候选；None = 无歌词。
     LyricsFetched {
         key: String,
         candidates: Vec<Lyrics>,
+        selected: Option<Lyrics>,
     },
 }
 
@@ -277,23 +280,62 @@ impl MusicApp {
 
     // ---- 歌词派发 ----
 
-    /// 后台拉取歌词：先问 B 站「识别音乐」（官方曲库标注）拿 SongHint，
-    /// 再用提示词优先搜索 vkeys/LRCLIB；识别失败则回退纯标题搜索。
+    /// 后台拉取歌词：**先查本地缓存**（命中 = 零网络直接回放上次生效歌词），
+    /// 未命中再问 B 站「识别音乐」（官方曲库标注）拿 SongHint，
+    /// 用提示词优先搜索 vkeys/LRCLIB；抓取成功写回缓存。
     ///
     /// 放在歌词线程而非播放解析线程：识别最多 2~3 个额外请求，绝不能拖慢出声。
     /// `cid` 来自 QueueItem（解析播放时回填）；=0 时 `detect_music` 内部跳过
     /// player/v2、只探测 BGM TAG，旧歌单条目也能受益。
-    pub(crate) fn spawn_lyrics_fetch(&self, key: String, title: String, uploader: String, duration_secs: f64, cid: i64) {
+    pub(crate) fn spawn_lyrics_fetch(
+        &self,
+        key: String,
+        title: String,
+        uploader: String,
+        duration_secs: f64,
+        cid: i64,
+    ) {
         let bili = self.bili.clone();
+        let cache = self.lyrics_cache.clone();
         let tx = self.tx.clone();
         std::thread::spawn(move || {
+            // 1) 缓存命中：selected 或 candidates 任一存在即直接回放（零网络）。
+            let cached = cache.lock().ok().and_then(|m| {
+                lyrics::cache_lookup(&m, &key).cloned()
+            });
+            if let Some(entry) = cached {
+                if entry.selected.is_some() || !entry.candidates.is_empty() {
+                    let _ = tx.send(AsyncMsg::LyricsFetched {
+                        key,
+                        candidates: entry.candidates,
+                        selected: entry.selected,
+                    });
+                    return;
+                }
+            }
+
+            // 2) 未命中：识别音乐 → 多源搜索。
             let hint = bili
                 .lock()
                 .ok()
                 .and_then(|b| b.detect_music(&key, cid))
                 .map(|m| hint_from_bili(m, duration_secs));
-            let candidates = lyrics::LyricsProvider::fetch_all_with_hint(&title, &uploader, hint.as_ref());
-            let _ = tx.send(AsyncMsg::LyricsFetched { key, candidates });
+            let candidates =
+                lyrics::LyricsProvider::fetch_all_with_hint(&title, &uploader, hint.as_ref());
+            // 3) 抓取成功写回缓存（空结果不缓存：以后源覆盖了这首歌还能自动补上）。
+            let selected = candidates.first().cloned();
+            if !candidates.is_empty() {
+                if let Ok(mut m) = cache.lock() {
+                    lyrics::cache_store_fetch(&mut m, &key, selected.clone(), candidates.clone());
+                    // 落盘就在本线程做（本就是后台线程）；失败静默，只丢缓存不丢功能。
+                    let _ = crate::modules::storage::save_lyrics_cache(&m);
+                }
+            }
+            let _ = tx.send(AsyncMsg::LyricsFetched {
+                key,
+                candidates,
+                selected,
+            });
         });
     }
 
@@ -458,17 +500,24 @@ impl MusicApp {
                     }
                 }
             }
-            AsyncMsg::LyricsFetched { key, candidates } => {
+            AsyncMsg::LyricsFetched {
+                key,
+                candidates,
+                selected,
+            } => {
                 let is_current = self.current_bvid().map(|b| b == key).unwrap_or(false);
                 if is_current {
                     self.lyrics_candidates = candidates.clone();
-                    if let Some(first) = candidates.first() {
-                        self.apply_lyrics(first);
-                    } else {
-                        self.current_lyrics = None;
-                        self.lyrics_lines.clear();
-                        self.lyrics_plain.clear();
-                        self.update_lyrics_line();
+                    // 优先应用「当前生效歌词」（缓存命中时是用户上次手选的），否则第一候选。
+                    // 抓取线程已持久化 selected，这里只更新 UI 状态（apply_lyrics_only）。
+                    match selected.or_else(|| candidates.first().cloned()) {
+                        Some(li) => self.apply_lyrics_only(&li),
+                        None => {
+                            self.current_lyrics = None;
+                            self.lyrics_lines.clear();
+                            self.lyrics_plain.clear();
+                            self.update_lyrics_line();
+                        }
                     }
                 }
             }
