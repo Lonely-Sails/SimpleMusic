@@ -33,7 +33,7 @@ use crate::modules::storage;
 use crate::state::{PlaybackState, Playlist, QueueItem, Settings};
 use crate::tray;
 use crate::app::ui::toast::{show_toasts, Toast, ToastKind};
-use eframe::egui::{self, Pos2};
+use eframe::egui;
 use messages::AsyncMsg;
 use std::collections::BTreeMap;
 use std::sync::atomic::AtomicBool;
@@ -104,8 +104,7 @@ pub struct MusicApp {
     /// 启动时从 `~/.config/simple-music/lyrics.json` 加载；歌词线程查命中/写抓取
     /// 结果、UI 线程写用户手选，落盘统一在后台线程（临时表快照）。
     lyrics_cache: Arc<Mutex<BTreeMap<String, LyricsCacheEntry>>>,
-    // 桌面歌词
-    lyrics_pos: Option<Pos2>,
+    // 桌面歌词（浮窗位置存 settings.lyrics_pos，见 ui/lyrics_viewport.rs）
     last_pass_through_applied: Option<bool>,
     /// 上次推送给浮窗的内容指纹（当前句/下一句/字号/锁定），用于按需重绘浮窗。
     last_lyrics_frame: Option<(String, String, f32, bool)>,
@@ -235,7 +234,6 @@ impl MusicApp {
             lyrics_plain: Vec::new(),
             lyrics_next_line: String::new(),
             lyrics_cache: Arc::new(Mutex::new(storage::load_lyrics_cache())),
-            lyrics_pos: None,
             last_pass_through_applied: None,
             last_lyrics_frame: None,
             tx,

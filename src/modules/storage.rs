@@ -370,12 +370,14 @@ mod tests {
             audio_quality: crate::state::AudioQuality::High,
             volume: 0.8,
             active_playlist: 2,
+            lyrics_pos: Some([1920.0, 1040.0]),
         };
         let text = serde_json::to_string_pretty(&s).expect("序列化失败");
         let back: Settings = serde_json::from_str(&text).expect("反序列化失败");
         assert_eq!(back, s);
         assert!(text.contains("desktop_lyrics_enabled"));
         assert!(text.contains("\"active_playlist\": 2"));
+        assert!(text.contains("\"lyrics_pos\""));
     }
 
     #[test]

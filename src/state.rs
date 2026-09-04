@@ -252,6 +252,13 @@ pub struct Settings {
     /// 上次打开的歌单下标（重启后恢复；歌单数量变化时会被钳制）。
     #[serde(default)]
     pub active_playlist: usize,
+    /// 桌面歌词浮窗位置（屏幕坐标 `[x, y]`，`None` = 首次由系统默认决定）。
+    /// 浮窗每次上报当前位置时更新并随设置落盘，重启后恢复到关闭前的位置。
+    /// 存 `[f32; 2]` 而非 egui 的 `Pos2`：项目未启用 eframe 的 serde feature，
+    /// `Pos2` 不实现 Serialize，且数据模型层不应反向依赖 egui。
+    /// 仅 X11 下可靠；Wayland 上窗口位置由合成器决定，恢复可能被忽略。
+    #[serde(default)]
+    pub lyrics_pos: Option<[f32; 2]>,
 }
 
 fn default_volume() -> f32 {
@@ -268,6 +275,7 @@ impl Default for Settings {
             audio_quality: AudioQuality::default(),
             volume: 0.8,
             active_playlist: 0,
+            lyrics_pos: None,
         }
     }
 }
@@ -391,5 +399,24 @@ mod tests {
     #[test]
     fn test_play_mode_default() {
         assert_eq!(PlayMode::default(), PlayMode::Sequence);
+    }
+
+    #[test]
+    fn settings_old_json_without_lyrics_pos_still_loads() {
+        // 旧版 config.json 没有 lyrics_pos 字段，必须可反序列化（serde default = None）。
+        let old = r#"{"desktop_lyrics_enabled":true,"lyrics_locked":false,"font_scale":1.2}"#;
+        let s: Settings = serde_json::from_str(old).unwrap();
+        assert!(s.desktop_lyrics_enabled);
+        assert_eq!(s.lyrics_pos, None);
+    }
+
+    #[test]
+    fn settings_lyrics_pos_roundtrip() {
+        let mut s = Settings::default();
+        assert_eq!(s.lyrics_pos, None);
+        s.lyrics_pos = Some([123.5, -8.0]);
+        let json = serde_json::to_string(&s).unwrap();
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.lyrics_pos, Some([123.5, -8.0]));
     }
 }

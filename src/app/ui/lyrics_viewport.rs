@@ -16,7 +16,8 @@
 //! 浮窗内的交互结果通过共享 `egui::Context` 的 data 槽（`IdTypeMap`）回传：
 //!
 //! - 关闭按钮点击 → 写 `CLOSE_SLOT`，主线程下帧读取并关闭开关；
-//! - 首次绘制捕获窗口位置 → 写 `POS_SLOT`，主线程读取用于持久化。
+//! - 每次绘制上报当前窗口位置 → 写 `POS_SLOT`，主线程读走写进 `Settings.lyrics_pos`
+//!   持久化（随设置的每 5 秒兜底 + 退出保存落盘），下次启动自动恢复到关闭前的位置。
 //!
 //! 约定：锁定时（鼠标穿透）永远透明；未锁定时仅鼠标悬浮才绘制背景卡片（含外圈柔光）；
 //! 大号歌词文本用多次偏移重绘近似描边阴影。
@@ -39,8 +40,19 @@ pub(crate) fn lyrics_viewport_id() -> ViewportId {
 
 /// data 槽：浮窗「关闭」请求（bool）。
 const CLOSE_SLOT: &str = "simple_music_lyrics_close";
-/// data 槽：浮窗首次绘制时的窗口位置（Pos2）。
+/// data 槽：浮窗重绘时上报的当前窗口位置（Pos2，外框左上角屏幕坐标）。
 const POS_SLOT: &str = "simple_music_lyrics_pos";
+
+/// 是否运行在原生 Wayland 会话（winit 在设置了 `WAYLAND_DISPLAY` 时优先选 Wayland 后端）。
+/// xdg_shell 协议下客户端拿不到也设置不了窗口全局位置——位置记录/恢复都无意义，
+/// 且若上报到的是 (0,0) 之类的占位值会污染跨会话（如切回 X11）的正确记录。
+fn wayland_session_from(env: Option<&str>) -> bool {
+    env.map(|v| !v.trim().is_empty()).unwrap_or(false)
+}
+
+fn wayland_session() -> bool {
+    wayland_session_from(std::env::var("WAYLAND_DISPLAY").ok().as_deref())
+}
 
 impl MusicApp {
     /// 桌面歌词浮窗内容变化时由 `logic` 调用：只唤醒浮窗 viewport 重绘，
@@ -59,10 +71,15 @@ impl MusicApp {
             ctx.data_mut(|d| d.remove_temp::<bool>(Id::new(CLOSE_SLOT)));
             self.settings.desktop_lyrics_enabled = false;
         }
-        // 首次位置捕获：deferred 闭包写入 POS_SLOT，这里读走用于持久化。
-        if self.lyrics_pos.is_none() {
-            if let Some(p) = ctx.data(|d| d.get_temp::<Pos2>(Id::new(POS_SLOT))) {
-                self.lyrics_pos = Some(p);
+        // 实时位置回传：浮窗每次重绘都上报当前位置（外框左上角），这里读走写进
+        // `settings.lyrics_pos`，随设置的「每 5 秒兜底 + 退出保存」落盘，重启后恢复；
+        // 本会话内关掉再开浮窗也直接回到该位置。读后即删，槽位只在浮窗真正重绘过时
+        // 才有值，主线程不会拿旧值覆盖新拖动的位置。
+        if let Some(p) = ctx.data(|d| d.get_temp::<Pos2>(Id::new(POS_SLOT))) {
+            ctx.data_mut(|d| d.remove_temp::<Pos2>(Id::new(POS_SLOT)));
+            let pos = [p.x, p.y];
+            if self.settings.lyrics_pos.as_ref() != Some(&pos) {
+                self.settings.lyrics_pos = Some(pos);
             }
         }
 
@@ -81,8 +98,11 @@ impl MusicApp {
             .with_resizable(false)
             .with_mouse_passthrough(locked)
             .with_inner_size(LYRICS_VIEWPORT_SIZE);
-        if let Some(p) = self.lyrics_pos {
-            builder = builder.with_position(p);
+        // 恢复上次记录的位置（见模块注释：仅 X11 有意义，原生 Wayland 忽略窗口位置）。
+        if !wayland_session() {
+            if let Some([x, y]) = self.settings.lyrics_pos {
+                builder = builder.with_position(Pos2::new(x, y));
+            }
         }
 
         // 每帧重建闭包（捕获最新文本/字号），但只在浮窗需要重绘时才执行。
@@ -94,8 +114,10 @@ impl MusicApp {
             viewport_id,
             builder,
             move |ui: &mut egui::Ui, _class: egui::ViewportClass| {
-                // 首次绘制：上报窗口位置（供主线程持久化）。
-                if ui.ctx().data(|d| d.get_temp::<Pos2>(Id::new(POS_SLOT))).is_none() {
+                // 每次重绘都上报当前位置（外框左上角）：拖动由系统处理，移动结束至少
+                // 触发一次重绘（ConfigureNotify），最终位置必被上报；主线程读走后随
+                // 设置持久化，重启后恢复。Wayland 拿不到窗口全局位置，跳过上报。
+                if !wayland_session() {
                     if let Some(p) = ui.ctx().input(|i| i.viewport().outer_rect.map(|r| r.min)) {
                         ui.ctx().data_mut(|d| d.insert_temp(Id::new(POS_SLOT), p));
                     }
@@ -193,5 +215,22 @@ impl MusicApp {
                 }
             },
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wayland_session_from;
+
+    #[test]
+    fn wayland_session_detects_env_var() {
+        // 设置了 WAYLAND_DISPLAY（非空）= 原生 Wayland 会话，位置记录/恢复跳过。
+        assert!(wayland_session_from(Some("wayland-0")));
+        assert!(wayland_session_from(Some("wayland-1")));
+        // 空串/纯空白视同未设置（winit 不会选中 Wayland 后端）。
+        assert!(!wayland_session_from(Some("")));
+        assert!(!wayland_session_from(Some("  ")));
+        // 未设置 = X11（或无显示环境），位置功能正常。
+        assert!(!wayland_session_from(None));
     }
 }
