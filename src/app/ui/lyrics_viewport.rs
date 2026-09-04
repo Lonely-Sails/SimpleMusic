@@ -20,16 +20,22 @@
 //!   持久化（随设置的每 5 秒兜底 + 退出保存落盘），下次启动自动恢复到关闭前的位置。
 //!
 //! 约定：锁定时（鼠标穿透）永远透明；未锁定时仅鼠标悬浮才绘制背景卡片（含外圈柔光）；
-//! 大号歌词文本用多次偏移重绘近似描边阴影。
+//! 大号歌词文本用单向柔影（垂直方向逐层衰减）保证任意桌面背景上的可读性——刻意
+//! 避免四周描边式的硬黑边。
 //!
 //! ## 歌词切换过渡动画
 //!
 //! 当前歌行推进到下一行时不是瞬时替换，而是旧行淡出并继续上移、新行从下方淡入升起
-//! （cubic_out 缓动，约 0.4s），下一行预览同步交叉淡化。过渡状态（上一帧渲染的文本 +
-//! 过渡起点时间）存在共享 `Context` 的 data 槽里——deferred 闭包是 `Fn`，不能持可变
-//! 状态，但所有 viewport 共享同一个 `egui::Context`，`IdTypeMap` 即跨调用内存。
+//! （quadratic_out 缓动，约 0.45s，滑动距离刻意收窄到 10px），下一行预览同步交叉淡化。
+//! 帧率抖动时观感依然平滑：位移小 + 缓动前段平缓，掉一帧只挪 0.5px。过渡状态（上一帧
+//! 渲染的文本 + 过渡起点时间）存在共享 `Context` 的 data 槽里——deferred 闭包是 `Fn`，
+//! 不能持可变状态，但所有 viewport 共享同一个 `egui::Context`，`IdTypeMap` 即跨调用内存。
 //! 动画期间闭包内 `request_repaint_after(16ms)` 只唤醒浮窗自身 viewport（约 60fps），
 //! 过渡结束自动停止，空闲时浮窗仍完全静止，不影响主窗口重绘节奏。
+//!
+//! 每帧的文本布局只做一次：`layout_no_wrap` 用 `Color32::PLACEHOLDER` 拿到不带
+//! 真实颜色的 galley，柔影层与主体层复用同一 galley 以不同 fallback 颜色
+//! `painter.galley` 绘制——动画期间每帧最多 2 次布局查询（当前行 + 下一行）。
 
 use crate::{icons, theme};
 use eframe::egui::{
@@ -44,11 +50,16 @@ use super::widgets::fit_text;
 const LYRICS_VIEWPORT_SIZE: Vec2 = Vec2::new(800.0, 104.0);
 
 /// 歌词切换过渡动画时长。
-const SWITCH_DURATION: f32 = 0.4;
+const SWITCH_DURATION: f32 = 0.45;
 /// 过渡期间歌词垂直滑动的距离（px）：新行从下方滑入，旧行向上滑出。
-const SWITCH_SLIDE: f32 = 14.0;
+/// 刻意收窄——位移小则掉帧不可见（30fps 下每帧仅约 0.5px）。
+const SWITCH_SLIDE: f32 = 10.0;
 /// 过渡动画的目标帧间隔（约 60fps）。
 const ANIM_FRAME_INTERVAL: f32 = 1.0 / 60.0;
+
+/// 当前行文字的柔影阶梯：`(垂直偏移 px, 不透明度系数)`。只沿垂直方向逐层衰减，
+/// 模拟柔和投影；四周描边式的偏移组合会显出硬黑边（描边感），刻意不用。
+const TEXT_SHADOW_STEPS: [(f32, f32); 3] = [(1.5, 0.26), (3.0, 0.14), (4.6, 0.06)];
 
 /// 桌面歌词 viewport 的稳定 id。
 pub(crate) fn lyrics_viewport_id() -> ViewportId {
@@ -185,10 +196,10 @@ impl MusicApp {
 
                 // 默认全透明：只有「解锁 + 鼠标悬浮」时才绘制背景卡片（含外圈柔光），
                 // 让歌词无边框地浮在桌面上；锁定（鼠标穿透）时不会触发 hover，永远透明。
-                // 悬停提示仅用背景亮度变化，不加描边。
+                // 悬停提示仅用背景亮度变化 + 大扩散低透明度的柔光，不加描边。
                 let show_bg = response.hovered() && !locked;
                 if show_bg {
-                    for (expand, alpha) in [(6.0, 26), (3.0, 40)] {
+                    for (expand, alpha) in [(10.0, 14), (4.0, 30)] {
                         ui.painter().rect_filled(
                             rect.expand(expand),
                             theme::CORNER,
@@ -236,10 +247,11 @@ impl MusicApp {
 
                 // ── 歌词切换过渡 ──
                 // 每行独立过渡：文本相对上一帧变化时，旧行转为淡出方并重启计时，
-                // cubic_out 缓动驱动交叉淡化 + 上滑。过渡期间 request_repaint_after
-                // 只唤醒本 viewport（约 60fps），空闲时零重绘。
+                // quadratic_out 缓动驱动交叉淡化 + 上滑。过渡期间 request_repaint_after
+                // 只唤醒本 viewport（约 60fps），空闲时零重绘。这里只取绘制所需的
+                // outgoing 文本与进度，不整状态克隆（免每帧两次 String 拷贝）。
                 let now = Instant::now();
-                let (cur_fade, next_fade) = ui.ctx().data_mut(|d| {
+                let (cur_outgoing, cur_p, next_outgoing, next_p) = ui.ctx().data_mut(|d| {
                     let st = d.get_temp_mut_or::<(LineFade, LineFade)>(
                         Id::new(TRANSITION_SLOT),
                         (
@@ -249,26 +261,29 @@ impl MusicApp {
                     );
                     st.0.update(&current, now);
                     st.1.update(&next, now);
-                    (st.0.clone(), st.1.clone())
+                    (
+                        st.0.outgoing.clone(),
+                        st.0.progress(now),
+                        st.1.outgoing.clone(),
+                        st.1.progress(now),
+                    )
                 });
-                let cur_p = cur_fade.progress(now);
-                let next_p = next_fade.progress(now);
                 if cur_p < 1.0 || next_p < 1.0 {
                     ui.ctx().request_repaint_after(std::time::Duration::from_secs_f32(
                         ANIM_FRAME_INTERVAL,
                     ));
                 }
-                let cur_ease = egui::emath::easing::cubic_out(cur_p);
-                let next_ease = egui::emath::easing::cubic_out(next_p);
+                let cur_ease = egui::emath::easing::quadratic_out(cur_p);
+                let next_ease = egui::emath::easing::quadratic_out(next_p);
 
                 // 当前行：新行从下方 SWITCH_SLIDE px 淡入升起，旧行淡出并继续上移。
                 // 「等待播放」占位只随 incoming 层淡入（outgoing 为空 = 首帧没有
                 // 可淡出的内容，不凭空放出占位文本）。
-                if !cur_fade.outgoing.is_empty() && cur_ease < 1.0 {
+                if !cur_outgoing.is_empty() && cur_ease < 1.0 {
                     draw_current_layer(
                         ui.painter(),
                         center,
-                        &cur_fade.outgoing,
+                        &cur_outgoing,
                         font.clone(),
                         1.0 - cur_ease,
                         -SWITCH_SLIDE * cur_ease,
@@ -289,7 +304,7 @@ impl MusicApp {
                     draw_next_layer(
                         ui.painter(),
                         center,
-                        &next_fade.outgoing,
+                        &next_outgoing,
                         next_font.clone(),
                         1.0 - next_ease,
                         -SWITCH_SLIDE * 0.5 * next_ease,
@@ -308,8 +323,11 @@ impl MusicApp {
     }
 }
 
-/// 绘制一行当前歌词（含描边阴影）；`alpha` 为过渡透明度，`dy` 为相对锚点的
+/// 绘制一行当前歌词（含单向柔影）；`alpha` 为过渡透明度，`dy` 为相对锚点的
 /// 垂直偏移（负=上移）。`text` 为空表示「等待播放」占位层（18px 固定字号）。
+///
+/// 柔影只沿垂直方向逐层衰减（见 [`TEXT_SHADOW_STEPS`]），并用同一 galley 以不同
+/// 颜色复用绘制：一次布局、多次着色，动画期间布局查询开销恒定。
 fn draw_current_layer(
     painter: &egui::Painter,
     center: Pos2,
@@ -321,10 +339,9 @@ fn draw_current_layer(
     if alpha <= f32::EPSILON {
         return;
     }
-    let anchor = center + Vec2::new(0.0, -12.0 + dy);
     if text.is_empty() {
         painter.text(
-            anchor,
+            center + Vec2::new(0.0, -12.0 + dy),
             Align2::CENTER_CENTER,
             "桌面歌词（等待播放…）",
             FontId::proportional(18.0),
@@ -332,23 +349,20 @@ fn draw_current_layer(
         );
         return;
     }
-    let shadow_alpha = ((120.0 * alpha).round() as u8).max(1);
-    for (dx, dy) in [(-1.5, 0.0), (1.5, 0.0), (0.0, -1.5), (0.0, 1.5)] {
-        painter.text(
-            anchor + Vec2::new(dx, dy),
-            Align2::CENTER_CENTER,
-            text,
-            font.clone(),
-            Color32::from_black_alpha(shadow_alpha),
+    // PLACEHOLDER：布局时不带真实颜色，tessellator 会用 `Painter::galley` 的
+    // fallback_color 替换——同一 galley 可被柔影/主体以不同透明度复用绘制。
+    let galley = painter.layout_no_wrap(text.to_owned(), font, Color32::PLACEHOLDER);
+    // galley 以左上角定位，此处换算回原来的 CENTER_CENTER 锚点语义。
+    let anchor = center + Vec2::new(0.0, -12.0 + dy) - galley.size() / 2.0;
+    let shadow_alpha = |k: f32| ((255.0 * k * alpha).round() as u8).max(1);
+    for (offset, k) in TEXT_SHADOW_STEPS {
+        painter.galley(
+            anchor + Vec2::new(0.0, offset),
+            galley.clone(),
+            Color32::from_black_alpha(shadow_alpha(k)),
         );
     }
-    painter.text(
-        anchor,
-        Align2::CENTER_CENTER,
-        text,
-        font,
-        theme::LYRIC_CURRENT.gamma_multiply(alpha),
-    );
+    painter.galley(anchor, galley, theme::LYRIC_CURRENT.gamma_multiply(alpha));
 }
 
 /// 绘制下一行歌词预览（无描边）；`alpha` 为过渡透明度，`dy` 为相对锚点的
@@ -405,7 +419,11 @@ mod tests {
         let t2 = t1 + Duration::from_millis(100);
         f.update("第二句", t2);
         assert_eq!(f.outgoing, "第一句");
-        assert!((f.progress(t2) - 0.25).abs() < 1e-4, "过渡中不应重置计时");
+        let expected = 0.1 / SWITCH_DURATION;
+        assert!(
+            (f.progress(t2) - expected).abs() < 1e-4,
+            "过渡中不应重置计时"
+        );
 
         // 过渡中途再变（快速歌词）：淡出方换成上次渲染的文本，计时重置。
         let t3 = t2 + Duration::from_millis(50);
