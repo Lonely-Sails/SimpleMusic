@@ -59,6 +59,8 @@ pub(crate) enum AsyncMsg {
         candidates: Vec<Lyrics>,
         selected: Option<Lyrics>,
     },
+    /// 系统字体扫描完成（设置页「界面字体」选择器的候选列表）。
+    FontsScanned(Vec<crate::fonts::SystemFont>),
 }
 
 impl MusicApp {
@@ -172,6 +174,22 @@ impl MusicApp {
                 Err(_) => (None, None),
             };
             let _ = tx.send(AsyncMsg::UserInfo { uname, face });
+        });
+    }
+
+    /// 后台扫描系统字体（设置页「界面字体」候选列表）。
+    /// 只扫一次（`font_scan_started` 幂等）；阻塞 IO 在后台线程，结果经
+    /// [`AsyncMsg::FontsScanned`] 回主线程。
+    pub(crate) fn spawn_font_scan(&mut self) {
+        if self.font_scan_started {
+            return;
+        }
+        self.font_scan_started = true;
+        self.font_scanning = true;
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let fonts = crate::fonts::scan_system_fonts();
+            let _ = tx.send(AsyncMsg::FontsScanned(fonts));
         });
     }
 
@@ -520,6 +538,10 @@ impl MusicApp {
                         }
                     }
                 }
+            }
+            AsyncMsg::FontsScanned(fonts) => {
+                self.font_list = fonts;
+                self.font_scanning = false;
             }
         }
     }

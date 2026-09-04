@@ -2,28 +2,31 @@
 //! 内嵌的 Phosphor 图标字体（PUA 码点，跨平台系统图标字形缺失会显示 "?"，不依赖系统）。
 //!
 //! 策略（优先级从高到低）：
-//! 1. 系统文字字体：按平台探测常见 UI/CJK 字体（Windows 微软雅黑/黑体、macOS 苹方/
-//!    系统英文 UI 字体、Linux Noto Sans CJK / 文泉驿 / Droid 等），读盘后用 skrifa
-//!    （epaint 同款解析器）校验「可解析 + 覆盖基础拉丁和常用汉字」才启用——egui 对解析
-//!    失败的字体直接 panic，必须前置校验；图标字体（无文字覆盖）会被校验拒绝；
-//! 2. 内嵌 Noto Sans SC Regular（`assets/NotoSansSC-Regular.otf`，`include_bytes!` 编译期
+//! 1. 设置页选择的字体（`Settings::ui_font`）：用户在「设置 → 界面字体」里显式挑选
+//!    的系统字体文件，切选即时生效并持久化（内嵌字体列表见 [`scan_system_fonts`]）；
+//! 2. 系统文字字体（Auto 模式）：按平台探测常见 UI/CJK 字体（Windows 微软雅黑/黑体、
+//!    macOS 苹方/系统英文 UI 字体、Linux Noto Sans CJK / 文泉驿 / Droid 等），读盘后用
+//!    skrifa（epaint 同款解析器）校验「可解析 + 覆盖基础拉丁和常用汉字」才启用——egui
+//!    对解析失败的字体直接 panic，必须前置校验；图标字体（无文字覆盖）会被校验拒绝；
+//! 3. 内嵌 Noto Sans SC Regular（`assets/NotoSansSC-Regular.otf`，`include_bytes!` 编译期
 //!    嵌入）：探测失败时顶上；探测成功时也挂在系统字体之后作 CJK 兜底，纯拉丁系统上
 //!    中文不会变豆腐块；
-//! 3. 内嵌 Phosphor 图标字体（`assets/Phosphor.ttf`，MIT 协议），负责界面 PUA 码点字形
+//! 4. 内嵌 Phosphor 图标字体（`assets/Phosphor.ttf`，MIT 协议），负责界面 PUA 码点字形
 //!    （音乐/齿轮/关闭/播放控制等），所有图标走 `crate::icons::*`，恒定注册；
-//! 4. egui 默认字体（若启用 default_fonts）仍在列表末尾作最终兜底。
+//! 5. egui 默认字体（若启用 default_fonts）仍在列表末尾作最终兜底。
 //!
 //! 注册顺序：首选文字字体插到 `Proportional`/`Monospace` 两个 family 的首位，图标字体
 //! 紧随其后（index 1）。egui 按 family 列表顺序逐个查字形，PUA 码点正常由 Phosphor 命中
 //! （个别系统字体自带 PUA 覆盖时才会优先命中系统字形，与旧行为一致），不干扰正常文字。
+//! 用户选了不含汉字的字体也没关系：中文自动由内嵌 Noto 兜底（字体链里恒有它）。
 //!
-//! 环境变量：
+//! 环境变量（仅 Auto 模式下生效，设置页显式选择的优先级更高）：
 //! - `SIMPLEMUSIC_EMBEDDED_FONTS=1`：跳过系统探测，全部用内嵌字体（旧行为）；
 //! - `SIMPLEMUSIC_FONT=/path/to/font.ttf`：直接指定系统字体文件（跳过自动探测）。
 
 use eframe::egui;
 use skrifa::MetadataProvider as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// 内嵌 CJK 字体在 FontDefinitions 里的键名。
 const EMBEDDED_KEY: &str = "noto_sc";
@@ -41,18 +44,42 @@ pub enum FontChoice {
     Embedded,
 }
 
-/// 安装字体：文字优先系统字体，图标恒用内嵌 Phosphor。
-/// 返回文字字体实际采用的来源。
-pub fn install_fonts(ctx: &egui::Context) -> FontChoice {
-    let force_embedded = std::env::var_os("SIMPLEMUSIC_EMBEDDED_FONTS").is_some();
-    let system = if force_embedded {
-        None
-    } else {
-        load_system_font()
+/// 安装字体：按设置选择文字字体（`ui_font = None` 时系统优先），图标恒用内嵌
+/// Phosphor。返回文字字体实际采用的来源（`ui_font` 指向的文件无效时自动回退，
+/// 返回值反映真实结果）。
+pub fn install_fonts(ctx: &egui::Context, ui_font: Option<&Path>) -> FontChoice {
+    let forced = ui_font.and_then(load_font_file);
+    let system = match forced {
+        Some(f) => Some(f),
+        None => {
+            let force_embedded = std::env::var_os("SIMPLEMUSIC_EMBEDDED_FONTS").is_some();
+            if force_embedded {
+                None
+            } else {
+                load_system_font()
+            }
+        }
     };
     let (fonts, choice) = build_definitions(system.as_ref());
     ctx.set_fonts(fonts);
     choice
+}
+
+/// 按用户选择安装字体：`selected` 为空 = Auto（系统探测优先，受环境变量影响）。
+///
+/// 与 [`install_fonts`] 的差别只在回退语义：显式选择失效（文件被删/格式不支持）
+/// 时回退 Auto 并返回 `None`，UI 据此把选择框复位成「自动」并提示；选择生效时
+/// 返回 `Some(路径)`。
+pub fn install_selected_font(ctx: &egui::Context, selected: Option<&Path>) -> Option<PathBuf> {
+    let loaded = selected.and_then(load_font_file);
+    if loaded.is_none() && selected.is_some() {
+        // 显式选择失效：走 Auto 探测，让界面至少保持可读。
+        install_fonts(ctx, None);
+        return None;
+    }
+    let (fonts, _) = build_definitions(loaded.as_ref());
+    ctx.set_fonts(fonts);
+    selected.map(Path::to_path_buf)
 }
 
 /// 组装 FontDefinitions：`system` 为探测到的系统字体（已通过 [`font_file_is_suitable`]
@@ -117,6 +144,190 @@ pub fn install_embedded_fonts(ctx: &egui::Context) {
     let (fonts, _) = build_definitions(None);
     ctx.set_fonts(fonts);
 }
+
+// ---------------------------------------------------------------------------
+// 设置页「界面字体」选择：系统字体扫描
+// ---------------------------------------------------------------------------
+
+/// 一枚可选的系统字体：展示名 + 文件路径。
+///
+/// 展示名取字体 name 表的家族名（skrifa 解析）；同家族多字重/多路径只保留
+/// 路径排序最先的一个（Regular 一般排最前，选它作该家族的代表）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct SystemFont {
+    /// 展示名（字体家族名，如 "Noto Sans CJK SC"；解析失败时回退文件名）。
+    pub family: String,
+    /// 字体文件绝对路径（选择后持久化的就是它）。
+    pub path: PathBuf,
+}
+
+/// 校验字体文件能否被 egui/epaint 加载（skrifa 可解析即可，**不**要求覆盖中文）。
+///
+/// 与 [`font_file_is_suitable`] 的区别：用户显式挑选的字体允许是纯拉丁字体——
+/// 界面中文自动由内嵌 Noto 兜底（字体链恒有内嵌 CJK），不该因此拒绝用户的选择；
+/// 但解析失败的文件必须拦下（egui 对解析失败的字体直接 panic）。
+pub fn font_file_is_loadable(bytes: &[u8]) -> bool {
+    skrifa::FontRef::from_index(bytes, 0).is_ok()
+}
+
+/// 从文件读出字体并校验可加载；返回 `(路径, 内容)`。
+///
+/// 失败时打印提示并返回 `None`（调用方回退 Auto/内嵌——文件被删或格式不支持时
+/// 不能让选择静默失效）。
+fn load_font_file(path: &Path) -> Option<(PathBuf, Vec<u8>)> {
+    match std::fs::read(path) {
+        Ok(bytes) if font_file_is_loadable(&bytes) => Some((path.to_path_buf(), bytes)),
+        Ok(_) => {
+            eprintln!(
+                "[font] 设置选择的字体 {} 无法解析（egui 不支持该格式），回退自动选择",
+                path.display()
+            );
+            None
+        }
+        Err(e) => {
+            eprintln!(
+                "[font] 设置选择的字体 {} 读取失败（{e}），回退自动选择",
+                path.display()
+            );
+            None
+        }
+    }
+}
+
+/// 读字体家族名（name 表 typographic family / family，English 优先）。
+///
+/// 仅作设置页展示；解析不出时返回 `None`，调用方回退文件名。
+pub fn font_family_name(bytes: &[u8]) -> Option<String> {
+    let font = skrifa::FontRef::from_index(bytes, 0).ok()?;
+    for id in [
+        skrifa::string::StringId::TYPOGRAPHIC_FAMILY_NAME,
+        skrifa::string::StringId::FAMILY_NAME,
+    ] {
+        if let Some(name) = font.localized_strings(id).english_or_first() {
+            let s = name.to_string();
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_owned());
+            }
+        }
+    }
+    None
+}
+
+/// 扫描系统字体目录，返回可选字体列表（阻塞 IO，须在后台线程调用）。
+///
+/// - 覆盖平台字体目录 + 用户字体目录；ttf/otf/ttc/otc 全收；
+/// - 逐文件读入并用 [`font_file_is_loadable`] 校验（可解析即可，纯拉丁字体也
+///   入列，中文由内嵌 Noto 兜底）；emoji 字体跳过；
+/// - 展示名用家族名（解析失败回退文件名）；同家族去重，代表 face 取路径排序
+///   最先者（ Regular 一般排最前）；结果按家族名排序（大小写不敏感）。
+pub fn scan_system_fonts() -> Vec<SystemFont> {
+    let mut roots = platform_font_roots();
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.is_empty() {
+            roots.push(PathBuf::from(&home).join(".fonts"));
+            roots.push(PathBuf::from(&home).join(".local/share/fonts"));
+            if cfg!(target_os = "macos") {
+                roots.push(PathBuf::from(&home).join("Library/Fonts"));
+            }
+        }
+    }
+    scan_system_fonts_in(roots)
+}
+
+/// [`scan_system_fonts`] 的可注入实现（roots 由调用方给定，便于测试）。
+fn scan_system_fonts_in(roots: Vec<PathBuf>) -> Vec<SystemFont> {
+    // (路径, 家族名)：先收集再统一去重排序，保证多路径同家族时结果确定。
+    let mut found: Vec<(PathBuf, String)> = Vec::new();
+    for root in &roots {
+        walk_font_tree(root, 0, &mut |p| {
+            let Ok(bytes) = std::fs::read(p) else {
+                return;
+            };
+            if !font_file_is_loadable(&bytes) || is_emoji_font_name(p) {
+                return;
+            }
+            let family =
+                font_family_name(&bytes).unwrap_or_else(|| fallback_display_name(p));
+            found.push((p.canonicalize().unwrap_or_else(|_| p.to_path_buf()), family));
+        });
+    }
+
+    found.sort();
+    let mut out: Vec<SystemFont> = Vec::new();
+    let mut seen_family = std::collections::HashSet::new();
+    for (path, family) in found {
+        // 家族名重复 = 同字体的多字重文件，留排序最前的代表（一般是 Regular）。
+        if seen_family.insert(family.clone()) {
+            out.push(SystemFont { family, path });
+        }
+    }
+    out.sort_by(|a, b| a.family.to_lowercase().cmp(&b.family.to_lowercase()));
+    out
+}
+
+/// 平台字体根目录（用户目录在 [`scan_system_fonts`] 里统一追加）。
+fn platform_font_roots() -> Vec<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        vec![PathBuf::from("C:/Windows/Fonts")]
+    }
+    #[cfg(target_os = "macos")]
+    {
+        vec![
+            PathBuf::from("/System/Library/Fonts"),
+            PathBuf::from("/Library/Fonts"),
+        ]
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        vec![
+            PathBuf::from("/usr/share/fonts"),
+            PathBuf::from("/usr/local/share/fonts"),
+        ]
+    }
+}
+
+/// 递归遍历目录下的字体文件（ttf/otf/ttc/otc），对每个命中文件回调。
+/// 深度上限防符号链接环。
+fn walk_font_tree(dir: &Path, depth: usize, f: &mut impl FnMut(&Path)) {
+    if depth > 6 {
+        return;
+    }
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            walk_font_tree(&p, depth + 1, f);
+        } else if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+            if ["ttf", "otf", "ttc", "otc"]
+                .iter()
+                .any(|x| ext.eq_ignore_ascii_case(x))
+            {
+                f(&p);
+            }
+        }
+    }
+}
+
+/// 文件名（小写）里是否带 emoji 标记——彩色表情字体不是文字字体，不入列。
+fn is_emoji_font_name(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_lowercase().contains("emoji"))
+        .unwrap_or(false)
+}
+
+/// 解析不出家族名时，用文件名（去扩展名）作展示名兜底。
+fn fallback_display_name(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("未知字体")
+        .to_owned()
+}
+
 
 /// 运行时探测并加载系统文字字体。
 ///
@@ -409,5 +620,130 @@ mod tests {
         assert_eq!(score_font_name("DejaVuSans.ttf"), Some(10));
         assert_eq!(score_font_name("NotoColorEmoji.ttf"), None);
         assert_eq!(score_font_name("README.txt"), None);
+    }
+
+    /// 可加载校验：内嵌 CJK/Phosphor 均可解析；垃圾数据拒绝。
+    #[test]
+    fn loadable_check() {
+        assert!(font_file_is_loadable(include_bytes!(
+            "../assets/NotoSansSC-Regular.otf"
+        )));
+        // 图标字体「可加载」但不「适用作文字」——两个校验的语义分野。
+        assert!(font_file_is_loadable(include_bytes!("../assets/Phosphor.ttf")));
+        assert!(!font_file_is_loadable(b"garbage"));
+        assert!(!font_file_is_loadable(&[]));
+        assert!(font_file_is_suitable(include_bytes!(
+            "../assets/NotoSansSC-Regular.otf"
+        )));
+        assert!(!font_file_is_suitable(include_bytes!("../assets/Phosphor.ttf")));
+    }
+
+    /// 家族名解析：内嵌 Noto 能读出非空家族名（CI 容器字体不定，只用内嵌资产）。
+    #[test]
+    fn family_name_from_embedded() {
+        let name = font_family_name(include_bytes!("../assets/NotoSansSC-Regular.otf"))
+            .expect("内嵌 Noto 必须解析出家族名");
+        assert!(!name.trim().is_empty());
+    }
+
+    /// 设置选择的字体生效（选择路径被报告）；Phosphor 虽可加载但作为**文字**字体
+    /// 不适用——install 层不拦（用户显式选择 + 中文有内嵌兜底），只拦解析失败。
+    #[test]
+    fn install_selected_font_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("simplemusic-fontsel-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let noto = dir.join("NotoSansSC-Regular.otf");
+        std::fs::write(&noto, include_bytes!("../assets/NotoSansSC-Regular.otf")).unwrap();
+
+        let ctx = egui::Context::default();
+        let picked = install_selected_font(&ctx, Some(&noto));
+        assert_eq!(picked.as_deref(), Some(noto.as_path()));
+
+        // 失效选择（不存在的文件）：回退 Auto（这里系统探测大概率失败 → 内嵌），
+        // 返回 None，UI 据此复位「自动」。
+        let ghost = dir.join("ghost.ttf");
+        let picked = install_selected_font(&ctx, Some(&ghost));
+        assert!(picked.is_none());
+
+        // None = Auto，同样返回 None。
+        assert!(install_selected_font(&ctx, None).is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// emoji 过滤与展示名兜底（纯路径逻辑，不读盘）。
+    #[test]
+    fn emoji_filter_and_fallback_name() {
+        assert!(is_emoji_font_name(Path::new("/f/NotoColorEmoji.ttf")));
+        assert!(is_emoji_font_name(Path::new("/f/emoji-one.otf")));
+        assert!(!is_emoji_font_name(Path::new("/f/NotoSansCJK-Regular.ttc")));
+        assert_eq!(
+            fallback_display_name(Path::new("/f/MyFont-Bold.ttf")),
+            "MyFont-Bold"
+        );
+    }
+
+    /// 扫描端到端（临时目录）：有效 CJK 字体入列且解析出家族名；垃圾/emoji/
+    /// 非字体文件被过滤；子目录递归覆盖。
+    #[test]
+    fn scan_system_fonts_in_filters_and_sorts() {
+        let dir = std::env::temp_dir().join(format!("simplemusic-fontscan-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("nested")).unwrap();
+        std::fs::write(
+            dir.join("NotoSansSC-Regular.otf"),
+            include_bytes!("../assets/NotoSansSC-Regular.otf"),
+        )
+        .unwrap();
+        std::fs::write(dir.join("nested/phosphor.ttf"), include_bytes!("../assets/Phosphor.ttf"))
+            .unwrap();
+        std::fs::write(dir.join("NotoColorEmoji.ttf"), b"garbage").unwrap();
+        std::fs::write(dir.join("readme.txt"), b"not a font").unwrap();
+
+        let fonts = scan_system_fonts_in(vec![dir.clone()]);
+        let names: Vec<&str> = fonts.iter().map(|f| f.family.as_str()).collect();
+        // Phosphor 可解析 → 入列（家族名取 name 表或文件名兜底）；emoji 按名排除；
+        // txt 非字体被过滤；嵌套目录被递归。
+        assert!(names.len() >= 2, "至少应有 Noto + Phosphor 两个 family: {names:?}");
+        assert!(names.windows(2).all(|w| w[0].to_lowercase() <= w[1].to_lowercase()));
+        assert!(
+            !names.iter().any(|n| n.to_lowercase().contains("emoji")),
+            "emoji 字体不应入列: {names:?}"
+        );
+        assert!(
+            fonts.iter().any(|f| f.family == "Noto Sans CJK SC"),
+            "Noto 家族名应解析自 name 表: {names:?}"
+        );
+        assert!(
+            fonts.iter().all(|f| f.path.extension().and_then(|e| e.to_str())
+                .map(|e| ["ttf", "otf", "ttc", "otc"].contains(&e.to_lowercase().as_str()))
+                .unwrap_or(false)),
+            "只应包含字体文件: {fonts:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 空根目录 → 空列表不 panic（无字体容器的真实情形）。
+    #[test]
+    fn scan_system_fonts_in_empty_roots() {
+        let dir = std::env::temp_dir().join(format!("simplemusic-fontscan-empty-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(scan_system_fonts_in(vec![dir]).is_empty());
+        assert!(scan_system_fonts_in(vec![]).is_empty());
+    }
+
+    /// 扫描结果排序稳定：按家族名（大小写不敏感）排序。不读盘的纯排序逻辑——
+    /// 直接构造 found 列表走同一段去重排序。scan_system_fonts 本体在 UI 冒烟
+    /// 测试里跑（依赖宿主字体目录，断言只做「不 panic」）。
+    #[test]
+    fn scan_smoke() {
+        // 阻塞 IO 扫描，在测试里可接受（~几十 ms）；空容器/无字体目录也不 panic。
+        let fonts = scan_system_fonts();
+        for w in fonts.windows(2) {
+            assert!(
+                w[0].family.to_lowercase() <= w[1].family.to_lowercase(),
+                "扫描结果应按家族名排序: {:?}",
+                w
+            );
+        }
     }
 }

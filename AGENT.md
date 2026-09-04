@@ -30,12 +30,18 @@ cargo run                         # 真实 GUI 启动（需要显示环境）
   **macOS/Windows 用系统原生托盘（NSStatusItem / Shell_NotifyIcon），无需 GTK、无额外线程**，
   图标由 `MusicApp::new` 在主线程创建（macOS 要求事件循环运行中创建）。
 - **图标字体** `assets/Phosphor.ttf`（约 0.5MB，MIT）编译期 `include_bytes!` 进二进制，恒定注册；
-  **文字字体**运行时优先加载系统字体（Windows 微软雅黑 / macOS 苹方 / Linux Noto CJK、
-  文泉驿等），加载前用 skrifa（epaint 同款解析器）校验「可解析 + 覆盖拉丁/汉字」——egui
-  对解析失败的字体直接 panic，必须前置校验；探测失败回退内嵌 `assets/NotoSansSC-Regular.otf`
-  （仍保留作 CJK 兜底）。环境变量：`SIMPLEMUSIC_EMBEDDED_FONTS=1` 强制全内嵌（旧行为）、
-  `SIMPLEMUSIC_FONT=/path/to.ttf` 手动指定字体文件。无头测试一律用
-  `fonts::install_embedded_fonts`（度量不随宿主系统字体漂移）。
+  **文字字体**由设置 `Settings::ui_font`（`UiFont` 枚举）决定：`Auto` 系统探测优先
+  （Windows 微软雅黑 / macOS 苹方 / Linux Noto CJK、文泉驿等）、`Embedded` 强制内嵌
+  Noto Sans SC、`Specific(路径)` 用户在设置页挑选的系统字体（设置 → 界面字体，切选
+  即时生效，候选列表由后台线程 `spawn_font_scan` 扫描回填 `font_list`，选择走
+  `AsyncMsg::FontsScanned`）。加载前用 skrifa（epaint 同款解析器）校验——egui 对解析
+  失败的字体直接 panic，必须前置校验；注意两级校验语义：`font_file_is_suitable`
+  （Auto 探测用：可解析 + 覆盖拉丁/汉字）与 `font_file_is_loadable`（用户显式选择用：
+  可解析即可，纯拉丁也放行，中文由恒在字体链里的内嵌 Noto 兜底）。探测失败回退内嵌
+  `assets/NotoSansSC-Regular.otf`（仍保留作 CJK 兜底）。环境变量（仅 Auto 模式）：
+  `SIMPLEMUSIC_EMBEDDED_FONTS=1` 强制全内嵌（旧行为）、`SIMPLEMUSIC_FONT=/path/to.ttf`
+  手动指定字体文件。无头测试一律用 `fonts::install_embedded_fonts`（度量不随宿主
+  系统字体漂移）。
 - 已有 git 仓库（分支 `main`）：改动用增量编辑，提交信息用中文、说明动机；`SimpleMusic.zip`
   手动备份包与 `.toolchain/`、`.sysroot/`、`target/` 均已在 `.gitignore` 中排除。
 
@@ -145,7 +151,7 @@ src/
 ## 3. 数据与持久化（Linux 路径）
 
 ```
-~/.config/simple-music/config.json      设置（桌面歌词开关/锁定/字号/位置/音量/音质/播放模式）
+~/.config/simple-music/config.json      设置（桌面歌词开关/锁定/字号/位置/界面字体/音量/音质/播放模式）
 ~/.config/simple-music/session.json     B 站登录态 Cookie（权限 0600，Debug 已脱敏）
 ~/.config/simple-music/playlists.json   所有歌单（本地 + 在线引用）
 ~/.config/simple-music/playlist.json    旧版单队列文件（读取时自动迁移，随后删除）

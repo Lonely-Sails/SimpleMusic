@@ -30,7 +30,7 @@ use crate::modules::audio::{AudioEngine, PlaybackStatus};
 use crate::modules::bilibili::{BiliClient, FavFolder, FavItem};
 use crate::modules::lyrics::{LrcLine, Lyrics, LyricsCacheEntry};
 use crate::modules::storage;
-use crate::state::{PlaybackState, Playlist, QueueItem, Settings};
+use crate::state::{PlaybackState, Playlist, QueueItem, Settings, UiFont};
 use crate::tray;
 use crate::app::ui::toast::{show_toasts, Toast, ToastKind};
 use eframe::egui;
@@ -121,6 +121,11 @@ pub struct MusicApp {
     keepalive_stop: Arc<AtomicBool>,
     // 搜索过滤
     search_text: String,
+    // 界面字体选择（设置页）：候选列表（后台扫描回填）/ 扫描状态 / 选择框过滤词。
+    font_list: Vec<crate::fonts::SystemFont>,
+    font_scan_started: bool,
+    font_scanning: bool,
+    font_filter: String,
     // 歌单管理
     playlist_mgmt_open: bool,
     renaming_idx: Option<usize>,
@@ -244,6 +249,10 @@ impl MusicApp {
             was_minimized: false,
             keepalive_stop: Arc::new(AtomicBool::new(false)),
             search_text: String::new(),
+            font_list: Vec::new(),
+            font_scan_started: false,
+            font_scanning: false,
+            font_filter: String::new(),
             playlist_mgmt_open: false,
             renaming_idx: None,
             rename_text: String::new(),
@@ -291,6 +300,37 @@ impl MusicApp {
 }
 
     // ---- 跨模块小工具 ----
+
+    /// 应用设置中的界面字体（设置页切选时调用）：重建字体表**即时生效**，
+    /// 无需重启；持久化交给设置落盘机制（每 5s 兜底 + 退出保存）。
+    ///
+    /// 显式选择的文件失效（被删/格式不支持）时回退自动探测并弹 toast 说明；
+    /// 返回值表示该选择是否成功生效（UI 据此复位选择框）。
+    pub(crate) fn apply_font_setting(&mut self, ctx: &egui::Context, font: &UiFont) -> bool {
+        let choice = match font {
+            UiFont::Auto => {
+                crate::fonts::install_fonts(ctx, None);
+                true
+            }
+            UiFont::Embedded => {
+                crate::fonts::install_embedded_fonts(ctx);
+                true
+            }
+            UiFont::Specific(path) => {
+                match crate::fonts::install_fonts(ctx, Some(std::path::Path::new(path))) {
+                    crate::fonts::FontChoice::System(p) => p == std::path::Path::new(path),
+                    crate::fonts::FontChoice::Embedded => false,
+                }
+            }
+        };
+        if !choice {
+            self.error(format!(
+                "字体 {} 不可用（读取失败或格式不支持），已回退自动选择",
+                font.path().unwrap_or("")
+            ));
+        }
+        choice
+    }
 
     /// 当前播放曲目的 bvid。
     pub(crate) fn current_bvid(&self) -> Option<&str> {

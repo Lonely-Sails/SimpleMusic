@@ -176,8 +176,13 @@ fn main() -> eframe::Result<()> {
         "SimpleMusic",
         native_options,
         Box::new(move |cc| {
-            // 注册字体：文字优先系统字体（图标恒用内嵌 Phosphor）。
-            let font_choice = fonts::install_fonts(&cc.egui_ctx);
+            // 先读设置（可能指定了界面字体），再注册字体：选择在首帧渲染前生效。
+            let settings = Settings::load().unwrap_or_default();
+            // 注册字体：设置选择优先，Auto 时文字优先系统字体（图标恒用内嵌 Phosphor）。
+            let font_choice = fonts::install_fonts(
+                &cc.egui_ctx,
+                settings.ui_font.path().map(std::path::Path::new),
+            );
             match font_choice {
                 fonts::FontChoice::System(p) => {
                     println!("[font] 界面字体: {}（图标用内嵌 Phosphor）", p.display());
@@ -188,7 +193,6 @@ fn main() -> eframe::Result<()> {
             }
             // 应用深色淡雅主题。
             theme::apply(&cc.egui_ctx);
-            let settings = Settings::load().unwrap_or_default();
             Ok(Box::new(app::MusicApp::new(cc, settings, tray)))
         }),
     )

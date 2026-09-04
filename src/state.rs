@@ -233,6 +233,48 @@ impl Default for AudioQuality {
 // 用户设置
 // ---------------------------------------------------------------------------
 
+/// 界面字体选择（设置页「界面字体」）。
+///
+/// - `Auto`：系统探测优先（`fonts::load_system_font`），失败回退内嵌 Noto；
+/// - `Embedded`：强制内嵌 Noto Sans SC（观感跨机器一致）；
+/// - `Specific`：用户在设置页挑选的系统字体文件（存绝对路径字符串）。
+///
+/// 持久化为带 tag 的枚举；旧配置没有该字段时 `#[serde(default)]` 落到 Auto。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "path", rename_all = "snake_case")]
+pub enum UiFont {
+    /// 自动：系统探测优先。
+    Auto,
+    /// 强制内嵌 Noto Sans SC。
+    Embedded,
+    /// 指定系统字体文件（绝对路径）。
+    Specific(String),
+}
+
+impl Default for UiFont {
+    fn default() -> Self {
+        UiFont::Auto
+    }
+}
+
+impl UiFont {
+    pub const fn label(&self) -> &'static str {
+        match self {
+            UiFont::Auto => "自动（系统优先）",
+            UiFont::Embedded => "内嵌 Noto Sans SC",
+            UiFont::Specific(_) => "自定义",
+        }
+    }
+
+    /// Specific 时返回字体文件路径。
+    pub fn path(&self) -> Option<&str> {
+        match self {
+            UiFont::Specific(p) => Some(p),
+            _ => None,
+        }
+    }
+}
+
 /// 用户设置（持久化到 ~/.config/simple-music/config.json，由 modules::storage 负责）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
@@ -252,6 +294,9 @@ pub struct Settings {
     /// 上次打开的歌单下标（重启后恢复；歌单数量变化时会被钳制）。
     #[serde(default)]
     pub active_playlist: usize,
+    /// 界面字体选择（设置页可选自动/内嵌/任意系统字体；详见 [`UiFont`]）。
+    #[serde(default)]
+    pub ui_font: UiFont,
     /// 桌面歌词浮窗位置（屏幕坐标 `[x, y]`，`None` = 首次由系统默认决定）。
     /// 浮窗每次上报当前位置时更新并随设置落盘，重启后恢复到关闭前的位置。
     /// 存 `[f32; 2]` 而非 egui 的 `Pos2`：项目未启用 eframe 的 serde feature，
@@ -275,6 +320,7 @@ impl Default for Settings {
             audio_quality: AudioQuality::default(),
             volume: 0.8,
             active_playlist: 0,
+            ui_font: UiFont::Auto,
             lyrics_pos: None,
         }
     }
@@ -418,5 +464,50 @@ mod tests {
         let json = serde_json::to_string(&s).unwrap();
         let back: Settings = serde_json::from_str(&json).unwrap();
         assert_eq!(back.lyrics_pos, Some([123.5, -8.0]));
+    }
+
+    #[test]
+    fn settings_old_json_without_ui_font_loads_as_auto() {
+        // 旧版 config.json 没有 ui_font 字段 → serde default 落到 Auto。
+        let old = r#"{"desktop_lyrics_enabled":false,"lyrics_locked":false,"font_scale":1.0}"#;
+        let s: Settings = serde_json::from_str(old).unwrap();
+        assert_eq!(s.ui_font, UiFont::Auto);
+    }
+
+    #[test]
+    fn ui_font_roundtrip_all_variants() {
+        for f in [
+            UiFont::Auto,
+            UiFont::Embedded,
+            UiFont::Specific("/usr/share/fonts/x.ttf".into()),
+        ] {
+            let json = serde_json::to_string(&f).unwrap();
+            let back: UiFont = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, f, "roundtrip 失败: {json}");
+        }
+        // 序列化形态（tag/content 布局，便于人工排查配置文件）。
+        // 注意：Auto/Embedded 无 content 字段，serde 省略 "path" 键。
+        assert_eq!(
+            serde_json::to_string(&UiFont::Auto).unwrap(),
+            r#"{"kind":"auto"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&UiFont::Embedded).unwrap(),
+            r#"{"kind":"embedded"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&UiFont::Specific("/a.ttf".into())).unwrap(),
+            r#"{"kind":"specific","path":"/a.ttf"}"#
+        );
+    }
+
+    #[test]
+    fn ui_font_label_and_path_accessors() {
+        assert_eq!(UiFont::Auto.label(), "自动（系统优先）");
+        assert_eq!(UiFont::Embedded.label(), "内嵌 Noto Sans SC");
+        assert_eq!(UiFont::Specific("/x.ttf".into()).label(), "自定义");
+        assert_eq!(UiFont::Specific("/x.ttf".into()).path(), Some("/x.ttf"));
+        assert_eq!(UiFont::Auto.path(), None);
+        assert_eq!(UiFont::Embedded.path(), None);
     }
 }
