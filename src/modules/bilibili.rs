@@ -148,15 +148,6 @@ impl StreamUrl {
     }
 }
 
-/// 播放来源：收藏列表里的本地条目，或直接粘贴的 B 站视频链接。
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum PlaySource {
-    /// 收藏夹/历史记录里的条目（可含用户备注）。
-    Favorite { bvid: String, note: Option<String> },
-    /// 用户手动粘贴的视频链接。
-    VideoLink { url: String },
-}
-
 /// 收藏夹（文件夹）。
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FavFolder {
@@ -372,8 +363,6 @@ struct PlayerBgmInfo {
 #[derive(Debug, Deserialize)]
 struct BgmTagItem {
     #[serde(default)]
-    tag_name: String,
-    #[serde(default)]
     music_id: String,
     #[serde(default)]
     tag_type: String,
@@ -462,8 +451,6 @@ pub struct Dash {
     pub video: Vec<DashStream>,
     #[serde(default)]
     pub audio: Vec<DashStream>,
-    #[serde(default)]
-    pub duration: i64,
 }
 
 /// DASH 流条目（公开供诊断/probe 使用）。
@@ -481,20 +468,9 @@ pub struct DashStream {
     #[serde(default)]
     pub bandwidth: i64,
     #[serde(default)]
-    pub codecid: i64,
-    #[serde(default)]
     pub codecs: Option<String>,
     #[serde(default)]
     pub size: Option<i64>,
-}
-
-impl DashStream {
-    /// 备用地址 + 主地址兜底列表。
-    pub fn all_urls(&self) -> Vec<String> {
-        let mut v = self.backup_url.clone();
-        v.push(self.base_url.clone());
-        v
-    }
 }
 
 // 实际响应同时包含 `baseUrl` 与 `base_url`（B 站双写），serde 对 rename+alias 的
@@ -516,7 +492,6 @@ struct DashStreamRaw {
     #[serde(rename = "backup_url")]
     backup_url_snake: Option<Vec<String>>,
     bandwidth: i64,
-    codecid: i64,
     codecs: Option<String>,
     size: Option<i64>,
 }
@@ -543,7 +518,6 @@ impl From<DashStreamRaw> for DashStream {
             base_url,
             backup_url,
             bandwidth: r.bandwidth,
-            codecid: r.codecid,
             codecs: r.codecs,
             size: r.size,
         }
@@ -681,19 +655,6 @@ pub enum QrPoll {
     },
 }
 
-impl QrPoll {
-    /// B 站 poll 接口的 code -> 状态。
-    pub fn from_code(code: i64) -> Option<Self> {
-        match code {
-            0 => None, // Success 需要携带 cookies，由 poll_login 构造
-            86038 => Some(QrPoll::Expired),
-            86090 => Some(QrPoll::WaitingConfirm),
-            86101 => Some(QrPoll::WaitingScan),
-            _ => None,
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // 客户端
 // ---------------------------------------------------------------------------
@@ -758,7 +719,7 @@ impl BiliClient {
 
     // ---- 会话管理 ----
 
-    /// 当前会话快照。
+    /// 当前会话快照（诊断/探针用：查看 buvid 等设备指纹；不要打印 cookie 值）。
     pub fn session(&self) -> &BiliSession {
         &self.session
     }
@@ -1584,7 +1545,6 @@ mod tests {
             base_url: format!("https://x/{id}"),
             backup_url: Vec::new(),
             bandwidth,
-            codecid: 0,
             codecs: None,
             size: None,
         }

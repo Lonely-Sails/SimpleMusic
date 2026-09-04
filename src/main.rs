@@ -1,18 +1,9 @@
 //! SimpleMusic —— 基于 Rust + eframe/egui 的原生桌面音乐播放器（无 WebView）。
-// 各模块保留的公共 API 面（如 PlaybackState::advance/seek/progress 及 BiliClient 的部分诊断方法）
-// 已被单测覆盖或供后续扩展使用，允许保留死代码；接入完全后仍可收紧。
-#![allow(dead_code)]
+//!
+//! 本文件是薄壳：命令行解析、`--smoke` 模块自检与 eframe 启动；
+//! 全部应用逻辑在库目标 `simple_music`（见 `lib.rs` 的模块地图）。
 
-mod app;
-mod util;
-mod cover;
-mod fonts;
-mod icons;
-mod theme;
-mod tray;
-mod modules;
-mod state;
-
+use simple_music::{app, fonts, modules, state, theme, tray};
 use state::Settings;
 
 /// 简易命令行/环境变量解析（保持依赖少，不引入 clap）。
@@ -119,9 +110,9 @@ fn run_smoke() -> i32 {
         None => println!("[smoke] Settings::load: OK（无配置，使用默认）"),
     }
 
-    // 3. 播放队列。
-    let queue = modules::storage::load_playlist();
-    println!("[smoke] Playlist::load: OK（{} 条）", queue.len());
+    // 3. 歌单。
+    let playlists = modules::storage::load_playlists();
+    println!("[smoke] Playlists::load: OK（{} 个歌单）", playlists.len());
 
     // 4. AudioEngine（构建、不播）。
     let engine = modules::audio::AudioEngine::new();

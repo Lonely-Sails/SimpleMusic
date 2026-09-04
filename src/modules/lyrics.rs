@@ -576,25 +576,8 @@ pub fn match_score_with_hint(
     s
 }
 
-/// 从候选里按 [`match_score`] 选出最优（首个并列者胜）；候选为空返回 `None`。
-pub fn best_match<'a>(
-    candidates: &'a [LrcSearchResult],
-    title: &str,
-    uploader: &str,
-) -> Option<&'a LrcSearchResult> {
-    let mut best: Option<&LrcSearchResult> = None;
-    let mut best_score = i64::MIN;
-    for c in candidates {
-        let sc = match_score(c, title, uploader);
-        if sc > best_score {
-            best_score = sc;
-            best = Some(c);
-        }
-    }
-    best
-}
-
-/// 带提示的最优候选（[`best_match`] 的打分换成 [`match_score_with_hint`]）。
+/// 带提示的最优候选（打分用 [`match_score_with_hint`]，首个并列者胜；候选为空
+/// 返回 `None`）。`hint = None` 时与旧 [`match_score`] 选优语义完全一致。
 pub fn best_match_with_hint<'a>(
     candidates: &'a [LrcSearchResult],
     title: &str,
@@ -697,35 +680,27 @@ pub struct LyricsProvider;
 impl LyricsProvider {
     /// 拉取歌词：先查 vkeys.cn 聚合源（QQ 音乐优先 → 网易云），再回退 LRCLIB。
     ///
-    /// 等价于 [`fetch_all`](LyricsProvider::fetch_all) 的第一个候选（最优先命中）。
-    /// 全链路失败返回 `None`（网络错误、无命中、无歌词）。
+    /// 等价于 [`fetch_all_with_hint`](LyricsProvider::fetch_all_with_hint)（`hint=None`）
+    /// 的第一个候选（最优先命中）。全链路失败返回 `None`（网络错误、无命中、无歌词）。
     pub fn fetch(title: &str, uploader: &str) -> Option<Lyrics> {
-        Self::fetch_all(title, uploader).into_iter().next()
-    }
-
-    /// 带歌曲提示的歌词拉取（推荐）：`hint` 来自 B 站「识别音乐」+ 稿件时长，
-    /// 用于生成更准的查询词并校准打分；`None` 时与 [`fetch`](Self::fetch) 等价。
-    pub fn fetch_with_hint(title: &str, uploader: &str, hint: Option<&SongHint>) -> Option<Lyrics> {
-        Self::fetch_all_with_hint(title, uploader, hint)
+        Self::fetch_all_with_hint(title, uploader, None)
             .into_iter()
             .next()
     }
 
     /// 拉取**全部**歌词候选（供「歌词选择」弹窗使用）。
     ///
-    /// 收集顺序与 [`fetch`](LyricsProvider::fetch) 的优先级一致：
+    /// 收集顺序与候选优先级一致：
     /// 1. 每条查询：vkeys QQ 音乐最佳命中 → 网易云最佳命中；
     /// 2. 每条查询：LRCLIB 搜索的最佳命中（得分达标）；
     /// 3. LRCLIB 精确 GET（歌名 + 艺术家）。
     ///
     /// 按歌词内容去重（不同来源命中同一份歌词时只保留第一个），
     /// 无任何命中返回空数组。
-    pub fn fetch_all(title: &str, uploader: &str) -> Vec<Lyrics> {
-        Self::fetch_all_with_hint(title, uploader, None)
-    }
-
-    /// [`fetch_all`](Self::fetch_all) 的带提示版本（查询与打分见
-    /// [`search_queries_with_hint`] / [`match_score_with_hint`]）。
+    ///
+    /// `hint` 来自 B 站「识别音乐」+ 稿件时长（见 [`SongHint`]），用于生成更准的
+    /// 查询词并校准打分（查询与打分见 [`search_queries_with_hint`] /
+    /// [`match_score_with_hint`]）；`None` 时按 title/uploader 原样搜索。
     pub fn fetch_all_with_hint(
         title: &str,
         uploader: &str,
@@ -1697,7 +1672,7 @@ mod tests {
                 synced_lyrics: String::new(),
             },
         ];
-        let best = best_match(&candidates, "晴天", "周杰伦").unwrap();
+        let best = best_match_with_hint(&candidates, "晴天", "周杰伦", None).unwrap();
         assert_eq!(best.id, 1);
     }
 

@@ -2,7 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
-/// 全局播放状态（由 AudioEngine 更新，UI 只读）。
+/// 全局播放状态（UI 侧镜像：由 `AudioEngine` 的 `PlaybackStatus` 每帧同步，
+/// UI 只读渲染；进度/时长的唯一事实源在音频引擎）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlaybackState {
     pub playing: bool,
@@ -28,41 +29,6 @@ impl Default for PlaybackState {
             title: "未在播放".to_string(),
             artist: "SimpleMusic".to_string(),
             current_lrc_line: String::new(),
-        }
-    }
-}
-
-impl PlaybackState {
-    /// 前进 `dt` 秒，遇到结尾自动停止并回到起点（供无循环播放语义使用）。
-    pub fn advance(&mut self, dt: f64) {
-        if !self.playing {
-            return;
-        }
-        self.position_secs += dt.max(0.0);
-        if self.duration_secs > 0.0 && self.position_secs >= self.duration_secs {
-            self.position_secs = self.duration_secs;
-            self.playing = false;
-        }
-    }
-
-    /// 跳转：把位置限制在 [0, duration] 内；未知时长时只限制下界。
-    /// 返回实际生效的位置。
-    pub fn seek(&mut self, secs: f64) -> f64 {
-        let max = if self.duration_secs > 0.0 {
-            self.duration_secs
-        } else {
-            f64::INFINITY
-        };
-        self.position_secs = secs.clamp(0.0, max);
-        self.position_secs
-    }
-
-    /// 播放进度 0.0 ~ 1.0（时长未知时返回 0.0）。
-    pub fn progress(&self) -> f32 {
-        if self.duration_secs > 0.0 {
-            (self.position_secs / self.duration_secs).clamp(0.0, 1.0) as f32
-        } else {
-            0.0
         }
     }
 }
@@ -258,14 +224,6 @@ impl Default for UiFont {
 }
 
 impl UiFont {
-    pub const fn label(&self) -> &'static str {
-        match self {
-            UiFont::Auto => "自动（系统优先）",
-            UiFont::Embedded => "内嵌 Noto Sans SC",
-            UiFont::Specific(_) => "自定义",
-        }
-    }
-
     /// Specific 时返回字体文件路径。
     pub fn path(&self) -> Option<&str> {
         match self {
@@ -341,58 +299,6 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_advance_moves_position_and_stops_at_end() {
-        let mut st = PlaybackState {
-            playing: true,
-            duration_secs: 10.0,
-            ..Default::default()
-        };
-        st.advance(3.5);
-        assert_eq!(st.position_secs, 3.5);
-        assert!(st.playing);
-
-        st.advance(20.0);
-        assert_eq!(st.position_secs, 10.0);
-        assert!(!st.playing, "播完应自动停止");
-    }
-
-    #[test]
-    fn test_seek_clamps_to_bounds() {
-        let mut st = PlaybackState {
-            playing: true,
-            duration_secs: 100.0,
-            ..Default::default()
-        };
-        assert_eq!(st.seek(-5.0), 0.0);
-        assert_eq!(st.seek(150.0), 100.0);
-        assert_eq!(st.seek(42.0), 42.0);
-
-        // 时长未知时只限制下界。
-        let mut unknown = PlaybackState::default();
-        assert_eq!(unknown.seek(-1.0), 0.0);
-        assert_eq!(unknown.seek(30.0), 30.0);
-    }
-
-    #[test]
-    fn test_advance_ignored_when_paused() {
-        let mut st = PlaybackState::default();
-        st.advance(5.0);
-        assert_eq!(st.position_secs, 0.0);
-    }
-
-    #[test]
-    fn test_progress_bounds() {
-        let mut st = PlaybackState {
-            position_secs: 50.0,
-            duration_secs: 200.0,
-            ..Default::default()
-        };
-        assert_eq!(st.progress(), 0.25);
-        st.duration_secs = 0.0;
-        assert_eq!(st.progress(), 0.0);
-    }
 
     #[test]
     fn queue_item_old_json_without_cover_url_still_loads() {
@@ -502,10 +408,7 @@ mod tests {
     }
 
     #[test]
-    fn ui_font_label_and_path_accessors() {
-        assert_eq!(UiFont::Auto.label(), "自动（系统优先）");
-        assert_eq!(UiFont::Embedded.label(), "内嵌 Noto Sans SC");
-        assert_eq!(UiFont::Specific("/x.ttf".into()).label(), "自定义");
+    fn ui_font_path_accessors() {
         assert_eq!(UiFont::Specific("/x.ttf".into()).path(), Some("/x.ttf"));
         assert_eq!(UiFont::Auto.path(), None);
         assert_eq!(UiFont::Embedded.path(), None);

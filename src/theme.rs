@@ -30,8 +30,6 @@ pub const BG_TRACK: Color32 = Color32::from_rgb(0x2A, 0x33, 0x3E);
 pub const ACCENT: Color32 = Color32::from_rgb(0x7F, 0xA8, 0xC9);
 /// 点缀色 hover 亮一档
 pub const ACCENT_HOVER: Color32 = Color32::from_rgb(0x8F, 0xB8, 0xD0);
-/// 点缀色按下/深色
-pub const ACCENT_DEEP: Color32 = Color32::from_rgb(0x6E, 0x9B, 0xB8);
 /// 辅助强调色（淡金，极少使用）
 pub const GOLD: Color32 = Color32::from_rgb(0xC9, 0xA8, 0x7C);
 

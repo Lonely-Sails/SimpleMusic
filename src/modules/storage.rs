@@ -70,20 +70,6 @@ impl BiliSession {
             .collect::<Vec<_>>()
             .join("; ")
     }
-
-    /// 从 Set-Cookie 头（形如 `SESSDATA=xxx; Path=/; HttpOnly`）解析并合并。
-    /// `expires_hint_days` 仅用于标记，当前不解析过期时间。
-    pub fn absorb_set_cookie(&mut self, set_cookie: &str) {
-        let first = set_cookie.split(';').next().unwrap_or("");
-        let Some((k, v)) = first.split_once('=') else {
-            return;
-        };
-        let k = k.trim();
-        if k.is_empty() {
-            return;
-        }
-        self.set(k, v.trim());
-    }
 }
 
 /// 会话文件完整路径：`~/.config/simple-music/session.json`。
@@ -184,39 +170,12 @@ pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
 }
 
 /// 播放队列文件完整路径：`~/.config/simple-music/playlist.json`。
+/// 已被 playlists.json 取代，仅保留路径常量用于**旧文件迁移**（见
+/// [`load_playlists`]）；读取/写入一律走歌单 API。
 pub fn playlist_path() -> PathBuf {
     let mut p = config_dir();
     p.push("playlist.json");
     p
-}
-
-/// 读取播放队列；文件不存在或损坏时返回空队列（播放列表无损重建，不打断用户）。
-pub fn load_playlist() -> Vec<QueueItem> {
-    load_playlist_from(&playlist_path())
-}
-
-/// 从指定路径读取播放队列；文件不存在或损坏时返回空队列。
-pub fn load_playlist_from(path: &Path) -> Vec<QueueItem> {
-    let text = match fs::read_to_string(path) {
-        Ok(t) => t,
-        Err(_) => return Vec::new(),
-    };
-    serde_json::from_str::<Vec<QueueItem>>(&text).unwrap_or_default()
-}
-
-/// 保存播放队列（目录不存在会自动创建；失败静默返回错误，由调用方决定是否告警）。
-pub fn save_playlist(queue: &[QueueItem]) -> std::io::Result<()> {
-    save_playlist_to(&playlist_path(), queue)
-}
-
-/// 把播放队列写入指定路径（目录不存在会自动创建）。
-pub fn save_playlist_to(path: &Path, queue: &[QueueItem]) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let text = serde_json::to_string_pretty(queue)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    fs::write(path, text)
 }
 
 // ---------------------------------------------------------------------------
@@ -444,18 +403,6 @@ mod tests {
     }
 
     #[test]
-    fn test_absorb_set_cookie() {
-        let mut s = BiliSession::default();
-        s.absorb_set_cookie("SESSDATA=abc,def%2Cghi; Path=/; Domain=.bilibili.com; Secure; HttpOnly; SameSite=None");
-        s.absorb_set_cookie("buvid3=xyz; Max-Age=31536000");
-        assert_eq!(s.get("SESSDATA"), Some("abc,def%2Cghi"));
-        assert_eq!(s.get("buvid3"), Some("xyz"));
-        s.absorb_set_cookie("not-a-cookie");
-        assert_eq!(s.cookies.len(), 2);
-        assert!(!s.logged_in(), "只有 SESSDATA、无 DedeUserID 不算已登录");
-    }
-
-    #[test]
     fn test_session_path_layout() {
         let p = session_path();
         assert_eq!(p.file_name().unwrap(), "session.json");
@@ -467,20 +414,6 @@ mod tests {
         let p = playlist_path();
         assert_eq!(p.file_name().unwrap(), "playlist.json");
         assert_eq!(p.parent().unwrap().file_name().unwrap(), "simple-music");
-    }
-
-    #[test]
-    fn test_playlist_save_load_roundtrip() {
-        use crate::state::QueueItem;
-        let path = std::env::temp_dir().join("sm-test-playlist-roundtrip.json");
-        let items = vec![
-            QueueItem::new("BV1xx411c7mD", "字幕君交流场所", "碧诗", 2055.0),
-            QueueItem::new("BV1GJ411x7h7", "晴天", "周杰伦", 269.0),
-        ];
-        crate::modules::storage::save_playlist_to(&path, &items).expect("写队列失败");
-        let back = crate::modules::storage::load_playlist_from(&path);
-        assert_eq!(back, items);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]

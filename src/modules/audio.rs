@@ -27,12 +27,10 @@
 //!    `modules::bilibili::StreamUrl`（下载头 `required_headers` 已内含），第二个参数是
 //!    **缓存键**（用 bvid，重复播放同一视频可秒开）。本地文件用
 //!    `engine.play_file(path)`。
-//! 2. 轮询：每帧 `engine.status()`（或初始化时缓存 `status_arc()` 后
-//!    `lock().clone()`），把 `position_secs/duration_secs/playing/volume` 映射进
+//! 2. 轮询：每帧 `engine.status()`，把 `position_secs/duration_secs/playing/volume` 映射进
 //!    `PlaybackState`；`loading=true` 时建议禁用进度条拖动。
 //! 3. 曲终感知：轮询到 `finished == true` 后调 `engine.take_finished()`（读后清除），
-//!    再 `play_stream` 下一首；或 `engine.set_on_finished(Arc::new(|| …))` 注册回调
-//!    （在播放线程触发，UI 里需自行转发到 egui 线程）。
+//!    再 `play_stream` 下一首。
 //! 4. 音量：`engine.set_volume(0.0..=1.0)`；seek：`engine.seek(secs)`（引擎会按
 //!    duration 钳制；`loading` 期间的 pause/seek 会被忽略）。
 //! 5. 错误展示：`status.error` 非 None 时直接展示该文案（下载失败/解码失败/无设备
@@ -830,7 +828,6 @@ fn open_output() -> Result<(rodio::OutputStream, Sink), String> {
 fn worker_loop(
     rx: Receiver<Command>,
     status: Arc<Mutex<PlaybackStatus>>,
-    on_finished: Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>,
     cache_dir: PathBuf,
     initial_volume: f32,
 ) {
@@ -959,7 +956,6 @@ fn worker_loop(
                 let base_ms = sess.shared.base_ms.load(Ordering::Relaxed);
                 let frames = sess.shared.emitted.load(Ordering::Relaxed);
                 let pos = base_ms as f64 / 1000.0 + frames as f64 / sess.sample_rate as f64;
-                let mut call_cb = false;
                 set_status(&status, |s| {
                     if !s.playing {
                         return; // 暂停/已停：位置冻结，不做曲终判定
@@ -971,15 +967,8 @@ fn worker_loop(
                         if s.duration_secs > 0.0 {
                             s.position_secs = s.duration_secs;
                         }
-                        call_cb = true;
                     }
                 });
-                if call_cb {
-                    let cb = on_finished.lock().ok().and_then(|g| g.clone());
-                    if let Some(cb) = cb {
-                        cb();
-                    }
-                }
             }
         }
     }
@@ -1068,7 +1057,6 @@ enum LoadErr {
 pub struct AudioEngine {
     tx: Sender<Command>,
     status: Arc<Mutex<PlaybackStatus>>,
-    on_finished: Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>,
     worker: Option<std::thread::JoinHandle<()>>,
     cache_dir: PathBuf,
 }
@@ -1089,22 +1077,18 @@ impl AudioEngine {
     pub fn with_cache_dir(cache_dir: PathBuf) -> Self {
         let (tx, rx) = mpsc::channel();
         let status = Arc::new(Mutex::new(PlaybackStatus::default()));
-        let on_finished: Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>> =
-            Arc::new(Mutex::new(None));
         let worker = {
             let rx = rx;
             let status = status.clone();
-            let cb = on_finished.clone();
             let dir = cache_dir.clone();
             std::thread::Builder::new()
                 .name("simple-music-audio".into())
-                .spawn(move || worker_loop(rx, status, cb, dir, 0.8))
+                .spawn(move || worker_loop(rx, status, dir, 0.8))
                 .ok()
         };
         Self {
             tx,
             status,
-            on_finished,
             worker,
             cache_dir,
         }
@@ -1136,19 +1120,6 @@ impl AudioEngine {
     /// 播放本地音频文件（wav/mp3/m4a…，由 symphonia feature 决定）。
     pub fn play_file(&self, path: &Path) {
         self.submit(Command::Play(PlayRequest::from_file(path)));
-    }
-
-    /// 兼容旧占位接口：按裸 URL 播放（不带 B 站必需头，通常仅对无需鉴权的
-    /// 直链有效；B 站音源请用 [`AudioEngine::play_stream`]）。
-    pub fn play(&mut self, url: &str) {
-        self.submit(Command::Play(PlayRequest {
-            cache_key: url.to_string(),
-            urls: vec![url.to_string()],
-            headers: Vec::new(),
-            expected_size: None,
-            bandwidth: None,
-            local_file: None,
-        }));
     }
 
     // ---- 控制命令 ----
@@ -1185,16 +1156,6 @@ impl AudioEngine {
         self.status.lock().map(|s| s.clone()).unwrap_or_default()
     }
 
-    /// 共享状态句柄（想避免每帧 clone 时使用；锁的持有时间要短）。
-    pub fn status_arc(&self) -> Arc<Mutex<PlaybackStatus>> {
-        self.status.clone()
-    }
-
-    /// 当前播放位置（秒）；未知/状态锁不可用时返回 None（兼容旧占位接口）。
-    pub fn position_secs(&self) -> Option<f64> {
-        self.status.lock().ok().map(|s| s.position_secs)
-    }
-
     /// 是否在加载（下载/解码准备）中。
     pub fn is_loading(&self) -> bool {
         self.status.lock().map(|s| s.loading).unwrap_or(false)
@@ -1211,14 +1172,6 @@ impl AudioEngine {
             .lock()
             .map(|mut s| std::mem::take(&mut s.finished))
             .unwrap_or(false)
-    }
-
-    /// 注册曲终回调（播放线程触发；如需操作 UI 请在回调里转发到 egui 线程，
-    /// 例如 `ctx.request_repaint()` + 共享标志位）。
-    pub fn set_on_finished(&self, cb: Arc<dyn Fn() + Send + Sync>) {
-        if let Ok(mut g) = self.on_finished.lock() {
-            *g = Some(cb);
-        }
     }
 
     fn submit(&self, cmd: Command) {

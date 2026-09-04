@@ -65,23 +65,6 @@ pub fn install_fonts(ctx: &egui::Context, ui_font: Option<&Path>) -> FontChoice 
     choice
 }
 
-/// 按用户选择安装字体：`selected` 为空 = Auto（系统探测优先，受环境变量影响）。
-///
-/// 与 [`install_fonts`] 的差别只在回退语义：显式选择失效（文件被删/格式不支持）
-/// 时回退 Auto 并返回 `None`，UI 据此把选择框复位成「自动」并提示；选择生效时
-/// 返回 `Some(路径)`。
-pub fn install_selected_font(ctx: &egui::Context, selected: Option<&Path>) -> Option<PathBuf> {
-    let loaded = selected.and_then(load_font_file);
-    if loaded.is_none() && selected.is_some() {
-        // 显式选择失效：走 Auto 探测，让界面至少保持可读。
-        install_fonts(ctx, None);
-        return None;
-    }
-    let (fonts, _) = build_definitions(loaded.as_ref());
-    ctx.set_fonts(fonts);
-    selected.map(Path::to_path_buf)
-}
-
 /// 组装 FontDefinitions：`system` 为探测到的系统字体（已通过 [`font_file_is_suitable`]
 /// 校验），否则回退内嵌 Noto Sans SC。纯函数，便于无头测试。
 /// 返回 `(字体表, 文字字体实际来源)`。
@@ -644,31 +627,6 @@ mod tests {
         let name = font_family_name(include_bytes!("../assets/NotoSansSC-Regular.otf"))
             .expect("内嵌 Noto 必须解析出家族名");
         assert!(!name.trim().is_empty());
-    }
-
-    /// 设置选择的字体生效（选择路径被报告）；Phosphor 虽可加载但作为**文字**字体
-    /// 不适用——install 层不拦（用户显式选择 + 中文有内嵌兜底），只拦解析失败。
-    #[test]
-    fn install_selected_font_roundtrip() {
-        let dir = std::env::temp_dir().join(format!("simplemusic-fontsel-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let noto = dir.join("NotoSansSC-Regular.otf");
-        std::fs::write(&noto, include_bytes!("../assets/NotoSansSC-Regular.otf")).unwrap();
-
-        let ctx = egui::Context::default();
-        let picked = install_selected_font(&ctx, Some(&noto));
-        assert_eq!(picked.as_deref(), Some(noto.as_path()));
-
-        // 失效选择（不存在的文件）：回退 Auto（这里系统探测大概率失败 → 内嵌），
-        // 返回 None，UI 据此复位「自动」。
-        let ghost = dir.join("ghost.ttf");
-        let picked = install_selected_font(&ctx, Some(&ghost));
-        assert!(picked.is_none());
-
-        // None = Auto，同样返回 None。
-        assert!(install_selected_font(&ctx, None).is_none());
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// emoji 过滤与展示名兜底（纯路径逻辑，不读盘）。

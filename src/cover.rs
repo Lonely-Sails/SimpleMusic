@@ -67,7 +67,7 @@ impl CoverCache {
         }
         let now = Instant::now();
         if let Some(failed_at) = self.failed.get(key) {
-            if now.saturating_duration_since(*failed_at) < FAILED_RETRY_AFTER {
+            if is_failed_active(*failed_at, now) {
                 return;
             }
             self.failed.remove(key); // 过期失败：允许重试
@@ -108,14 +108,6 @@ impl CoverCache {
                 }
             }
         }
-    }
-
-    /// 取解码后的图像（无则 None，供绘制占位判断）。会刷新最近访问时间。
-    pub fn image(&mut self, key: &str) -> Option<&ColorImage> {
-        self.images.get_mut(key).map(|e| {
-            e.2 = Instant::now();
-            &*e.0
-        })
     }
 
     /// 获取（或延迟创建）egui 纹理 id。

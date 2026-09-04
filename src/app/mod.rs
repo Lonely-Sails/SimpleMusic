@@ -91,7 +91,6 @@ pub struct MusicApp {
     play_seq: u64,
     // 在线歌单选择流程
     syncing_online: bool,
-    new_playlist_name: String,
     // 设置窗口
     settings_window_open: bool,
     // 歌词
@@ -231,7 +230,6 @@ impl MusicApp {
             import_seq: None,
             play_seq: 0,
             syncing_online: false,
-            new_playlist_name: String::new(),
             settings_window_open: false,
             current_lyrics: None,
             lyrics_candidates: Vec::new(),
