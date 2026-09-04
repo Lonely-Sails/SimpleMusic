@@ -13,13 +13,17 @@
 ```sh
 cd /data/dsh/home/SimpleMusic
 source .toolchain/env.sh          # 设置 RUSTUP_HOME / CARGO_HOME / PATH / CC / 链接器 等
-cargo check                       # 编译检查
-cargo test                        # 单测（当前 88 个，全部离线）
+cargo check                       # 编译检查（默认 tray feature）
+cargo test --no-default-features  # 单测（当前 133 个，全部离线；为什么加 flag 见下）
 cargo run -- --smoke              # 无窗口模块自检，打印 SMOKE_OK 退出（会走少量网络，失败不阻断）
 cargo run                         # 真实 GUI 启动（需要显示环境）
 ```
 
 - 工具链/依赖全部离线缓存于 `.toolchain/`；`.sysroot/` 是构建系统根（gcc/alsa/x11 库）。
+- **沙箱里跑测试必须 `--no-default-features`**：默认 `tray` feature 要链接 GTK3/libxdo，
+  沙箱没有这些库，`cargo test` 会在**链接期**报 `unable to find library -lgtk-3`——
+  注意 `cargo check` 是能过的，别被「check 绿了」骗去跑 test 再白白踩一次。
+  反过来，提交前 `cargo check`（默认 feature）也要跑：托盘相关代码只在默认 feature 下编译。
 - **系统托盘 feature**：默认启用 `tray`，跨平台（见 `src/tray.rs` 模块注释）：
   Linux 走独立 GTK 线程 + libappindicator（需系统装 GTK3；沙箱无 GTK 库，改用
   `cargo build --no-default-features` 跳过托盘，GUI 其余功能不受影响）；
@@ -43,7 +47,8 @@ src/
 ├── app/          应用层（原 app.rs 按职责拆分，均为 `impl MusicApp` 块）
 │   ├── mod.rs    MusicApp 结构 + new() + 跨模块小工具 + eframe::App 实现（ui/logic/on_exit）
 │   ├── messages.rs 后台线程消息 AsyncMsg + spawn_* 派发 + handle_msg
-│   ├── player.rs 播放控制（上下曲/seek/音量/移除）+ 快捷键 handle_shortcuts + clamp_seek/enqueue_dedup
+│   ├── player.rs 播放控制（上下曲/seek/音量/移除）+ 快捷键 handle_shortcuts + 播放列表快照
+│   │              playback_songs() + clamp_seek/enqueue_dedup
 │   ├── playlists.rs 歌单管理（切换/删除/重命名/添加到歌单/在线歌单定位）
 │   ├── lyrics.rs 歌词同步（update_lyrics_line + pick_plain_line_index）
 │   ├── window.rs 窗口关闭/隐藏（request_close）+ 系统托盘事件轮询 poll_tray_events
@@ -52,7 +57,7 @@ src/
 │       ├── widgets.rs        跨区域复用的 egui 小组件（transport_button/icon_button/spinner_arc/
 │       │                      封面占位/二维码/文本截断）
 │       ├── title_bar.rs      自定义标题栏 + 窗口控制按钮 + 缩放把手
-│       ├── status_bar.rs     状态栏（当前曲目/登录态/设置按钮）
+│       ├── status_bar.rs     状态栏（用户头像/昵称 + 登录态 + 设置按钮）
 │       ├── playlist_bar.rs   歌单选择栏 + 收藏夹选择弹窗 + 歌单管理窗口
 │       ├── song_list.rs      本地/在线歌曲列表（含右键菜单、搜索过滤）
 │       ├── import.rs         导入 B 站歌曲输入栏
@@ -86,6 +91,17 @@ src/
 - `BiliClient` 以 `Arc<Mutex<..>>` 跨线程共享（有锁中毒保护）；`AudioEngine` 仅在 UI 线程持有，命令经 mpsc 发往专用播放线程，状态经 `Arc<Mutex<PlaybackStatus>>` 轮询。
 - **桌面歌词浮窗**通过 `egui::Context::show_viewport_deferred`（延迟模式）渲染，**不与主窗口共享重绘节奏**：浮窗只在歌词文本变化或被 `request_repaint_of` 显式唤醒时才重绘，主窗口播放动画时不会连带浮窗——彻底解决多 viewport 卡顿。
 - UI 闭包里禁止直接做网络请求；需要结果就 `spawn_*` 一个后台线程 + 发消息。
+
+### 播放列表语义（改播放相关代码前必读）
+- **当前选中的歌单就是播放列表，没有独立的播放队列**。`MusicApp` 只有
+  `current_bvid: Option<String>`（按 bvid 记住正在播哪首），**绝不在播放时把歌写进歌单**。
+- 播放列表快照由 `app/player.rs::playback_songs()` 按需构建：本地歌单取 `songs`，
+  在线歌单取已加载的收藏夹条目 `fav_items`（在线歌单的 `songs` 永远为空，只是收藏夹引用）。
+  上下曲/随机/曲终自动切歌/列表高亮全部基于该快照，**按 bvid 定位，不按下标**——
+  下标在搜索过滤、删歌、列表刷新后会漂移，bvid 不会。
+- 入单只有两条显式路径：右键「添加到歌单」（`add_song_to_local_playlist`）和
+  链接导入「添加并播放」（`messages.rs::PlayReady` 分支，静默去重；在线歌单只读不入单）。
+- 启动时会自动清空在线歌单 `songs` 的历史残留（旧版隐式入列的脏数据，别删这段清理）。
 
 ### 播放链路
 `resolve_stream`（DASH 音频流，未签名被风控自动补 WBI 重试）→ 带 `required_headers`(UA/Referer/Cookie) 流式下载到缓存 `~/.cache/simple-music/audio/<md5(bvid)>.m4s`（二次秒开）→ symphonia(AAC/MP4) 解码 → rodio 输出；CDN 403 自动换备用地址；无输出设备绝不 panic，进错误状态。
@@ -122,7 +138,10 @@ src/
 8. **错误处理**：音频错误不 panic，写 `PlaybackStatus.error` 由 UI 展示；网络错误经 `AsyncMsg` 回 `ui_error`（红色）或 `notice`（金色轻提示，4 秒）。
 9. **文本宽度**：动态文案先 `truncate_label`/`fit_text` 再 `painter.text`。
 10. **单测**：纯函数（解析/打分/格式化/过滤）放 `#[cfg(test)] mod tests`，用 `cargo test` 离线跑；真实网络用 `#[ignore]` 标注。新增纯逻辑尽量带测试。
-11. **提交规范**：每完成一个功能/修复后 **立即提交**（`git add -A && git commit`），不要攒多个改动再一次性提交。提交消息格式：
+11. **UI 状态与数据解耦（当前曲目模式）**：凡是「UI 里选中的东西」跨帧/跨列表操作要记住时，**存稳定标识（如 bvid），不要存列表下标**——下标在过滤/删歌/刷新后静默漂移出 bug，标识找不到时按 `Option::None` 处理即可自然降级（如高亮消失）。
+12. **不要让「执行动作」顺手改数据**：旧版播放歌曲时隐式把歌写进歌单并落盘，造成在线歌单累积脏数据。副作用（入单/落盘/置 dirty）必须由用户的显式操作触发；新功能如果发现自己「顺手」改了用户数据，几乎一定是设计错了。
+13. **行为不变量改动要写迁移/清理**：改持久化语义时（如在线歌单不再存歌），在启动路径加一次性数据清理（见 `app/mod.rs::new` 对在线歌单 `songs` 的清空），并考虑旧文件兼容（`#[serde(default)]`）。
+14. **提交规范**：每完成一个功能/修复后 **立即提交**（`git add -A && git commit`），不要攒多个改动再一次性提交。提交消息格式：
     - 前缀：`修复：` / `优化：` / `重构：` / `更新：` / `新增：` / `移除：` 等，后接详细描述。
     - 示例：`修复：封面下载超时后无限转圈的问题` / `优化：标题栏外边距与默认窗口大小` / `重构：封面解码移出主线程` / `更新：AGENT.md 提交规范说明`。
     - 消息用中文，说明「改了什么 + 为什么改」，避免笼统的"更新代码"或"fix bug"。
@@ -142,13 +161,22 @@ src/
 - **歌单内搜索**：标题/UP 主实时过滤（本地与在线列表都有）。
 - **键盘快捷键**：`空格` 播放/暂停，`←/→` 快退/快进 5s，`↑/↓` 音量 ±5%，`N/P` 上下曲。
 - **右键菜单**：歌曲项复制 BV 号、添加到/收藏到其他本地歌单。
-- **播放位置提示**：播放栏「第 N/M 首」。
+- **歌词选择**：播放条「T」按钮弹出多源候选（vkeys/LRCLIB），点选切换（`apply_lyrics`）。
 
 ---
 
 ## 6. 近期改动（本轮已实现）
 
-本轮（重构：移除隐式播放队列，播放列表 = 当前选中歌单）：
+本轮（文档：沉淀播放列表重构的经验与踩坑）：
+
+- §1 补沙箱测试要点：`cargo test` 必须 `--no-default-features`（GTK 链接坑，`check` 却能过，
+  别被骗）；`cargo check`（默认 feature）也要跑以覆盖托盘代码；测试数更新为 133。
+- 新增「播放列表语义」小节（§2）+ 核心约定 3 条（§4：稳定标识替代下标、
+  副作用只由显式操作触发、持久化语义变更要带迁移清理）。
+- 修正文档与实现不符处：状态栏早就不显示当前曲目；播放栏「第 N/M 首」已不存在，
+  替换为歌词选择按钮的描述。
+
+上一轮（重构：移除隐式播放队列，播放列表 = 当前选中歌单）：
 
 - **移除内部播放队列**：原 `play_prepared` 在播放任何歌时都会把歌 `enqueue_dedup`
   进当前歌单的 `songs` 并落盘——点播在线收藏夹的歌会悄悄累积进收藏夹歌单（脏数据）。
@@ -219,7 +247,7 @@ src/
 - **缩放把手**：`show_resize_grip` 右下角拖拽缩放（`BeginResize(SouthEast)`）。
 - **系统托盘**：`src/tray.rs` 托盘图标（Linux=GTK 线程+libappindicator；macOS/Win=原生托盘），菜单「显示/隐藏 / 退出」。
 - **最小化到托盘**：关闭按钮隐藏窗口（托盘可用时），托盘菜单唤醒。
-- **状态栏**：`show_status_bar` 合并当前曲目 + 登录状态 + 设置按钮；登录后显示用户昵称
+- **状态栏**：`show_status_bar` 用户头像 + 登录状态 + 设置按钮；登录后显示用户昵称
   （nav 接口后台拉取，`MusicApp.uname`，未取到前回退显示 `UID <mid>`）。
 
 ---
@@ -227,12 +255,13 @@ src/
 ## 7. 已知限制 / 可能的下一步
 
 - 多 P 视频只取 P1（`video_info` 的 `pages` 未逐 P 展开）。
-- 不支持 av 号导入（`parse_bvid` 明确只认 BV）；队列是循环模式，无「顺序不循环」选项。
+- 不支持 av 号导入（`parse_bvid` 明确只认 BV）。
+- 切换歌单会停止当前播放（播放列表 = 选中歌单的直接推论）；没有跨歌单的播放队列。
+- 在线歌单只显示已加载页，搜索也只过滤已加载页。
 - 桌面歌词位置仅 X11 可持久化，Wayland 保持居中。
 - 无全局媒体快捷键（如系统级播放/暂停）、无音量静音键。
-- 本地播放列表项不可拖拽排序；歌单内歌曲不可移动/复制到其他歌单（目前只有右键「添加到其他歌单」= 复制式）。
+- 本地歌单内歌曲不可拖拽排序。
 - 无播放历史/最近播放记录。
-- 在线歌单分页加载，搜索只过滤已加载页。
 - 若要加功能，优先在 `app/ui/` 对应 `show_*` 方法所在文件内做增量；涉及跨线程新数据用 `AsyncMsg` 变体 + `messages.rs::handle_msg` 分支；新增纯逻辑放 `util/` 或对应文件内 `#[cfg(test)]`。
 
 ---
@@ -253,6 +282,7 @@ src/
 | 扫码登录弹窗 | `app/ui/login.rs::show_login_window` |
 | 快捷键 | `app/player.rs::handle_shortcuts` |
 | 播放控制（上下曲/seek/移除） | `app/player.rs` |
+| 播放列表快照/当前曲目定位 | `app/player.rs::playback_songs` / `current_bvid`（`app/mod.rs`） |
 | 歌单增删改/切换 | `app/playlists.rs` |
 | 歌词同步（当前句/下一句） | `app/lyrics.rs` |
 | 异步消息类型与分发 | `app/messages.rs::AsyncMsg` + `handle_msg` |
