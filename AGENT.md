@@ -14,7 +14,7 @@
 cd /data/dsh/home/SimpleMusic
 source .toolchain/env.sh          # 设置 RUSTUP_HOME / CARGO_HOME / PATH / CC / 链接器 等
 cargo check                       # 编译检查（默认 tray feature）
-cargo test --no-default-features  # 单测（当前 133 个，全部离线；为什么加 flag 见下）
+cargo test --no-default-features  # 单测（当前 144 个，全部离线；为什么加 flag 见下）
 cargo run -- --smoke              # 无窗口模块自检，打印 SMOKE_OK 退出（会走少量网络，失败不阻断）
 cargo run                         # 真实 GUI 启动（需要显示环境）
 ```
@@ -70,7 +70,7 @@ src/
 │   ├── rand.rs   rand_idx（Xorshift）
 │   └── filter.rs song_matches_query
 ├── modules/
-│   ├── bilibili.rs B 站客户端：扫码登录/收藏夹/BV 解析/playurl DASH 音频流（含 WBI 签名）
+│   ├── bilibili.rs B 站客户端：扫码登录/收藏夹/BV 解析/playurl DASH 音频流（含 WBI 签名）/识别音乐 detect_music
 │   ├── audio.rs    音频引擎：下载缓存(md5 键控) + symphonia 解码 + rodio 输出（专用线程）
 │   ├── lyrics.rs   vkeys.cn 聚合（QQ 音乐/网易云，中文覆盖高）+ LRCLIB 搜索/清洗/打分 + LRC 解析 + 时间轴同步
 │   └── storage.rs  配置/会话/歌单 JSON 持久化（BiliSession Debug 已脱敏）
@@ -114,7 +114,7 @@ src/
 `resolve_stream`（DASH 音频流，未签名被风控自动补 WBI 重试）→ 带 `required_headers`(UA/Referer/Cookie) 流式下载到缓存 `~/.cache/simple-music/audio/<md5(bvid)>.m4s`（二次秒开）→ symphonia(AAC/MP4) 解码 → rodio 输出；CDN 403 自动换备用地址；无输出设备绝不 panic，进错误状态。
 
 ### 歌词链路
-切歌 → 后台 `LyricsProvider::fetch(title, uploader)` → 按候选查询依次尝试 **vkeys.cn 聚合源**（QQ 音乐 `mid` 优先 → 网易云 `id`，取回 LRC 原文，翻译 `trans`/`tlyric` 按时间戳并入同行）→ 全部未命中再回退 **LRCLIB**（搜索 + 精确 GET + 相似度打分阈值 40）→ `Lyrics{lrc, plain}` 按 bvid 回主线程；同步歌词用二分定位当前句，无同步时按进度近似取纯文本行。
+切歌 → 后台 `spawn_lyrics_fetch`（歌词线程，绝不阻塞播放解析）→ 先调 `BiliClient::detect_music(bvid, cid)` 问 **B 站「识别音乐」**（`/x/player/v2` 的 `bgm_info` → `/x/web-interface/view/detail/tag` 的 `tag_type=bgm` TAG，拿 `MA…` music_id 后换 `/x/copyright-music-publicity/bgm/detail` 的官方曲名/歌手，全程无需登录）→ 把官方词作为 `SongHint`（附视频时长）传给 `LyricsProvider::fetch_all_with_hint` → 按候选查询（提示词最优先，视频标题清洗词兜底，去重后 ≤5 条）依次尝试 **vkeys.cn 聚合源**（QQ 音乐 `mid` 优先 → 网易云 `id`，取回 LRC 原文，翻译 `trans`/`tlyric` 按时间戳并入同行）→ 全部未命中再回退 **LRCLIB**（搜索 + 精确 GET + 相似度打分阈值 40；有提示时精确 GET 也用官方词）→ 打分用 `match_score_with_hint`（提示曲名/歌手匹配加分 + **视频时长 vs 候选时长接近加分**）→ `Lyrics{lrc, plain}` 按 bvid 回主线程；同步歌词用二分定位当前句，无同步时按进度近似取纯文本行。识别音乐是纯增强：`detect_music` 失败返回 `None`，歌词链路照旧走标题搜索。
 
 ---
 
@@ -163,7 +163,7 @@ src/
 - **播放列表语义**：**当前选中的歌单就是播放列表**，没有独立队列；播放时不隐式写歌进歌单，本地歌单只有显式「导入/添加/删除」才变化，在线歌单内容始终来自 B 站收藏夹接口（只读）。上下曲/随机/曲终自动切歌遍历选中歌单内容（本地取 `songs`，在线取已加载的 `fav_items`）。
 - **封面**：列表/播放条圆角缩略图，异步 + 内存缓存 + 占位图。
 - **桌面歌词**：透明置顶无边框悬浮窗，当前句+下一句预览，可拖动/锁定(鼠标穿透)/调字号，位置持久化（仅 X11）。
-- **歌词**：vkeys.cn 聚合源（QQ 音乐/网易云）自动搜索 + LRC 时间轴同步，翻译歌词并入；LRCLIB 兜底。
+- **歌词**：B 站「识别音乐」（bgm_info / BGM TAG → 官方曲库曲名歌手）生成优先查询词 + 视频时长校准打分；vkeys.cn 聚合源（QQ 音乐/网易云）自动搜索 + LRC 时间轴同步，翻译歌词并入；LRCLIB 兜底。
 - **歌单**：本地歌单增删改（管理窗口：重命名/删除，至少留一个）；在线歌单（B 站收藏夹引用，可删）。
 - **歌单内搜索**：标题/UP 主实时过滤（本地与在线列表都有）。
 - **键盘快捷键**：`空格` 播放/暂停，`←/→` 快退/快进 5s，`↑/↓` 音量 ±5%，`N/P` 上下曲。
@@ -174,7 +174,32 @@ src/
 
 ## 6. 近期改动（本轮已实现）
 
-本轮（修复：最小化后恢复界面卡死）：
+本轮（优化：歌词搜索接入 B 站「识别音乐」，提升命中率）：
+
+- **动机**：B 站视频标题噪音大（【4K】【燃剪】xxx 4K修复版…），仅靠标题清洗搜歌词
+  经常命中翻唱/remix 甚至搜不到；B 站自己有「识别音乐」标注（官方曲库），直接拿来当查询词。
+- **`bilibili.rs` 新增 `detect_music(bvid, cid) -> Option<MusicHint>`**：探测顺序
+  ① `/x/player/v2` 的 `bgm_info`（需 cid，`QueueItem.cid` 现在由解析播放时回填，
+  旧歌单条目 cid=0 自动跳过）② `/x/web-interface/view/detail/tag` 的 `tag_type=bgm` TAG
+  （只要 bvid）③ 拿 `MA…` id 换音乐开放平台 `bgm/detail` 的官方曲名/歌手/专辑
+  （`origin_artist` 优先，空则压平 `artists_list`；`BiliNameValue` 兼容字符串/对象两种形态）。
+  任一步失败返回 `None`，**识别是纯增强，绝不阻塞歌词获取**；实测三接口均无需登录、未风控。
+- **`lyrics.rs` 新增 `SongHint`**（title/artist/duration_secs）与提示版链路：
+  `search_queries_with_hint`（官方词插队最前 + 与标题派生词去重 ≤5 条）、
+  `match_score_with_hint`（提示曲名 +60/子串 +35，提示歌手 +30/子串 +15，
+  **视频时长 vs 候选时长**：≤3s +35 / ≤8s +20 / ≤15s +8 / >45s −10 —— 原曲向视频的强信号）、
+  `best_match_with_hint`、`LyricsProvider::fetch_with_hint/fetch_all_with_hint`
+  （LRCLIB 精确 GET 优先用官方词）。无提示时行为与旧版完全一致。
+- **接线**（`messages.rs` / `player.rs` / `state.rs`）：`QueueItem` 加 `#[serde(default)] cid`；
+  `resolve_playable`/`spawn_import` 回填 cid；`spawn_lyrics_fetch` 在**歌词线程**（不拖慢出声）
+  先 `detect_music` 再带提示搜索。歌词候选弹窗（`T` 按钮）无需改动，候选标签本就展示
+  来源曲名/歌手/专辑。
+- 验证：144 个离线单测全绿；`detect_music_live`（`#[ignore]`，`cargo test -- --ignored`）
+  实测 BV1M741177Kg → Other Side — MIYAVI，vkeys 用官方词搜到雅-MIYAVI 原曲；
+  `cargo check`（默认 tray feature）通过；`cargo run --no-default-features -- --smoke` OK
+  （沙箱 `cargo run --` 默认 feature 仍会因缺 GTK 链接失败，属预期）。
+
+上一轮（修复：最小化后恢复界面卡死）：
 
 - **根因**：上游 eframe/winit 已知缺陷——最小化后部分平台不再向应用投递
   `RedrawRequested`（Windows 隐藏/最小化窗口不投递；Wayland 合成器对不可见 surface

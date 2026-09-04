@@ -186,6 +186,36 @@ pub struct VideoDetail {
     pub pages: u64,
 }
 
+/// B 站「识别音乐」提示：来自官方曲库的版权/背景音乐标注，比视频标题干净得多。
+///
+/// 来源接口（按可靠性排序，`detect_music` 依次探测）：
+/// 1. `/x/player/v2` 的 `bgm_info`（UP 主挂载的官方 BGM 卡片，music_id 形如 `MA…`）；
+/// 2. `/x/web-interface/view/detail/tag` 中 `tag_type == "bgm"` 的 TAG
+///    （UP 主投稿时选择的「识别音乐/BGM」标签，同样带 `MA…` music_id）。
+///
+/// 两者都拿到 music_id 后再调 `/x/copyright-music-publicity/bgm/detail`（B 站音乐
+/// 开放平台曲库，无需登录、未风控）换取**官方曲名 + 歌手 + 专辑**——这正是歌词搜索
+/// 缺失的高质量查询词：视频标题常带「【4K】【燃剪】xxx 4K修复版」之类噪音，而这里的
+/// `music_title`/`origin_artist` 是曲库标准名。
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MusicHint {
+    /// 官方曲库歌曲名（如 "Unwelcome School"）。
+    pub title: String,
+    /// 歌手名（取 `origin_artist`，多个以 ` / ` 连接 `artists_list`）。
+    pub artist: String,
+    /// 专辑名（常与曲名相同，可为空）。
+    pub album: String,
+    /// 曲库 music_id（`MA…`，空表示未识别）。
+    pub music_id: String,
+}
+
+impl MusicHint {
+    /// 是否拿到了可用的识别结果（至少要有曲名）。
+    pub fn is_usable(&self) -> bool {
+        !self.title.trim().is_empty()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // WBI 签名（官方 web 前端用的 query 签名；部分接口/风控下必需）
 // ---------------------------------------------------------------------------
@@ -322,6 +352,82 @@ struct ViewResp {
     #[serde(default)]
     videos: i64,
     owner: Owner,
+}
+
+/// `/x/player/v2` 响应：只取 `bgm_info`（识别音乐卡），其余忽略。
+#[derive(Debug, Deserialize)]
+struct PlayerInfoResp {
+    #[serde(default)]
+    bgm_info: Option<PlayerBgmInfo>,
+}
+
+/// `bgm_info`：UP 主挂载的官方 BGM 信息（music_id 形如 `MA…`）。
+#[derive(Debug, Deserialize)]
+struct PlayerBgmInfo {
+    #[serde(default)]
+    music_id: String,
+}
+
+/// `view/detail/tag` 数组元素：普通 TAG 与 BGM TAG 同构，`music_id` 仅 bgm 有效。
+#[derive(Debug, Deserialize)]
+struct BgmTagItem {
+    #[serde(default)]
+    tag_name: String,
+    #[serde(default)]
+    music_id: String,
+    #[serde(default)]
+    tag_type: String,
+}
+
+/// B 站人名字段：兼容字符串与 `{"name": ".."}` 对象两种形态
+/// （`bgm/detail` 的 `artists_list` 返回对象数组）。
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(untagged)]
+pub enum BiliNameValue {
+    Str(String),
+    Obj {
+        #[serde(default)]
+        name: Option<String>,
+    },
+}
+
+impl BiliNameValue {
+    fn text(&self) -> String {
+        match self {
+            BiliNameValue::Str(s) => s.trim().to_string(),
+            BiliNameValue::Obj { name } => name.as_deref().unwrap_or("").trim().to_string(),
+        }
+    }
+}
+
+/// 音乐开放平台 `bgm/detail` 响应：官方曲名/歌手/专辑。
+#[derive(Debug, Deserialize)]
+struct CopyrightMusicDetail {
+    #[serde(default)]
+    music_title: String,
+    #[serde(default)]
+    album: String,
+    /// 原曲歌手（官方展示名，常为本地化写法如 "ミツキヨ"）。
+    #[serde(default)]
+    origin_artist: String,
+    /// `origin_artist` 为空时的兜底：歌手名列表（按官方原始写法）。
+    #[serde(default)]
+    artists_list: Vec<BiliNameValue>,
+}
+
+impl CopyrightMusicDetail {
+    /// 展示用歌手名：优先 `origin_artist`，否则压平 `artists_list` 为 "A / B"。
+    fn artist_display(&self) -> String {
+        if !self.origin_artist.trim().is_empty() {
+            return self.origin_artist.trim().to_string();
+        }
+        self.artists_list
+            .iter()
+            .map(BiliNameValue::text)
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" / ")
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1021,6 +1127,80 @@ impl BiliClient {
         self.resolve_stream_with_cid(bvid, detail.cid, quality)
     }
 
+    /// 识别视频的背景/插播音乐（B 站官方「识别音乐」数据），用于提升歌词搜索准确率。
+    ///
+    /// 探测顺序（任一成功即停止；`cid` 已知时免一次 view 请求）：
+    /// 1. `/x/player/v2?bvid=..&cid=..` → `data.bgm_info.music_id`；
+    /// 2. `/x/web-interface/view/detail/tag?bvid=..`（cid 缺省仅整个稿件）→
+    ///    `tag_type == "bgm"` 条目的 `music_id`；
+    /// 3. 拿到 `MA…` music_id 后调 `api.bilibili.com/x/copyright-music-publicity/bgm/detail`
+    ///    换官方曲名/歌手/专辑。
+    ///
+    /// 全链路失败（无音乐卡、接口挂了、被风控）返回 `None`，调用方照旧走标题搜索——
+    /// 识别只是增强，绝不阻塞歌词获取。
+    pub fn detect_music(&self, bvid: &str, cid: i64) -> Option<MusicHint> {
+        let music_id = self
+            .music_id_from_player(bvid, cid)
+            .or_else(|| self.music_id_from_bgm_tag(bvid))?;
+        let hint = self.music_detail(&music_id).ok()?;
+        if hint.is_usable() {
+            Some(hint)
+        } else {
+            None
+        }
+    }
+
+    /// 从 `/x/player/v2` 拿 `bgm_info.music_id`（UP 主挂载的 BGM 音乐卡）。
+    fn music_id_from_player(&self, bvid: &str, cid: i64) -> Option<String> {
+        if cid <= 0 {
+            return None;
+        }
+        let url = format!("https://api.bilibili.com/x/player/v2?bvid={bvid}&cid={cid}");
+        let env: ApiEnvelope<PlayerInfoResp> = self.get_json(&url, &[]).ok()?.1;
+        let data = env.data?;
+        let bgm = data.bgm_info?;
+        Self::valid_music_id(&bgm.music_id)
+    }
+
+    /// 从 `view/detail/tag` 拿 `tag_type == "bgm"` 的 TAG music_id。
+    fn music_id_from_bgm_tag(&self, bvid: &str) -> Option<String> {
+        let url = format!(
+            "https://api.bilibili.com/x/web-interface/view/detail/tag?bvid={bvid}"
+        );
+        let env: ApiEnvelope<Vec<BgmTagItem>> = self.get_json(&url, &[]).ok()?.1;
+        let data = env.data?;
+        data.into_iter()
+            .filter(|t| t.tag_type == "bgm")
+            .find_map(|t| Self::valid_music_id(&t.music_id))
+    }
+
+    /// music_id 校验：非空且以 `MA` 开头（曲库 id），否则视为无效。
+    fn valid_music_id(id: &str) -> Option<String> {
+        let id = id.trim();
+        if id.len() >= 3 && id.starts_with("MA") {
+            Some(id.to_string())
+        } else {
+            None
+        }
+    }
+
+    /// 曲库 `MA…` id → 官方曲名/歌手/专辑（音乐开放平台接口，无需登录）。
+    fn music_detail(&self, music_id: &str) -> BiliResult<MusicHint> {
+        let url = format!(
+            "https://api.bilibili.com/x/copyright-music-publicity/bgm/detail?music_id={music_id}"
+        );
+        let env: ApiEnvelope<CopyrightMusicDetail> = self.get_json(&url, &[])?.1;
+        let data = env.data.ok_or_else(|| {
+            BiliError::Local(format!("bgm/detail {music_id} 缺少 data"))
+        })?;
+        Ok(MusicHint {
+            title: data.music_title.trim().to_string(),
+            artist: data.artist_display(),
+            album: data.album.trim().to_string(),
+            music_id: music_id.to_string(),
+        })
+    }
+
     /// 解析音频流（已知 cid，免一次 view 请求）。
     ///
     /// 策略：先无签名请求 playurl；若被风控拒绝（code != 0 / 无 dash）则自动补 WBI
@@ -1294,6 +1474,107 @@ fn parse_query_params(url: &str) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- 识别音乐（detect_music 的解析/校验部分；网络探测用 #[ignore]）----
+
+    #[test]
+    fn valid_music_id_accepts_ma_prefix_only() {
+        assert_eq!(
+            BiliClient::valid_music_id("MA436038343856245020").as_deref(),
+            Some("MA436038343856245020")
+        );
+        // 旧音频区 au id / 空 / 短串 / 小写 / 非曲库 id 一律拒绝（曲库 id 实际为大写 MA 前缀）。
+        assert_eq!(BiliClient::valid_music_id("au123456"), None);
+        assert_eq!(BiliClient::valid_music_id(""), None);
+        assert_eq!(BiliClient::valid_music_id("MA"), None);
+        assert_eq!(BiliClient::valid_music_id("ma123"), None);
+        assert_eq!(
+            BiliClient::valid_music_id(" MA123 ").as_deref(),
+            Some("MA123")
+        );
+    }
+
+    #[test]
+    fn player_info_resp_parses_bgm_info() {
+        let json = r#"{"code":0,"message":"OK","data":{
+            "bgm_info":{"music_id":"MA436038343856245020",
+            "music_title":"Unwelcome school","jump_url":"https://x"}}}"#;
+        let env: ApiEnvelope<PlayerInfoResp> = serde_json::from_str(json).unwrap();
+        let bgm = env.data.unwrap().bgm_info.unwrap();
+        assert_eq!(bgm.music_id, "MA436038343856245020");
+    }
+
+    #[test]
+    fn player_info_resp_without_bgm_is_none() {
+        let json = r#"{"code":0,"message":"OK","data":{"aid":80433022}}"#;
+        let env: ApiEnvelope<PlayerInfoResp> = serde_json::from_str(json).unwrap();
+        assert!(env.data.unwrap().bgm_info.is_none());
+    }
+
+    #[test]
+    fn bgm_tag_picks_tag_type_bgm_music_id() {
+        let json = r#"{"code":0,"message":"OK","data":[
+            {"tag_id":15223081,"tag_name":"Never Gonna Give You Up","music_id":"","tag_type":"old_channel","jump_url":""},
+            {"tag_id":1,"tag_name":"被发现的神曲","music_id":"MA456128506519140428","tag_type":"bgm","jump_url":"https://x"}
+        ]}"#;
+        let env: ApiEnvelope<Vec<BgmTagItem>> = serde_json::from_str(json).unwrap();
+        let picked = env
+            .data
+            .unwrap()
+            .into_iter()
+            .filter(|t| t.tag_type == "bgm")
+            .find_map(|t| BiliClient::valid_music_id(&t.music_id))
+            .unwrap();
+        assert_eq!(picked, "MA456128506519140428");
+    }
+
+    #[test]
+    fn copyright_music_detail_parse_and_artist_fallback() {
+        // origin_artist 存在：直接用。
+        let json = r#"{"code":0,"message":"0","data":{
+            "music_title":"Unwelcome School","album":"Unwelcome School",
+            "origin_artist":"ミツキヨ",
+            "artists_list":[{"mid":1,"name":"ミツキヨ","identity":"演唱者"}]}}"#;
+        let env: ApiEnvelope<CopyrightMusicDetail> = serde_json::from_str(json).unwrap();
+        let d = env.data.unwrap();
+        assert_eq!(d.music_title, "Unwelcome School");
+        assert_eq!(d.artist_display(), "ミツキヨ");
+
+        // origin_artist 为空：压平 artists_list（对象数组）。
+        let json2 = r#"{"code":0,"data":{"music_title":"富士山下",
+            "origin_artist":"","artists_list":[{"name":"陈奕迅"},{"name":"泽日生"}]}}"#;
+        let env2: ApiEnvelope<CopyrightMusicDetail> = serde_json::from_str(json2).unwrap();
+        assert_eq!(env2.data.unwrap().artist_display(), "陈奕迅 / 泽日生");
+
+        // artists_list 为字符串数组也可。
+        let json3 = r#"{"code":0,"data":{"origin_artist":"","artists_list":["A","B"]}}"#;
+        let env3: ApiEnvelope<CopyrightMusicDetail> = serde_json::from_str(json3).unwrap();
+        assert_eq!(env3.data.unwrap().artist_display(), "A / B");
+    }
+
+    #[test]
+    fn music_hint_usable_requires_title() {
+        let mut h = MusicHint::default();
+        assert!(!h.is_usable());
+        h.title = "晴天".into();
+        assert!(h.is_usable());
+    }
+
+    /// 真网络探测（人工核对用，默认忽略）：
+    /// `cargo test -- --ignored detect_music_live`
+    #[test]
+    #[ignore = "真实网络请求，仅人工运行"]
+    fn detect_music_live() {
+        let client = BiliClient::new().expect("client");
+        // BV1M741177Kg（aid=89772773）：带官方 BGM 卡（player/v2 bgm_info 实测有值），
+        // 识别 → 曲库详情应得 Other Side — MIYAVI。
+        let hint = client
+            .detect_music("BV1M741177Kg", 153322313)
+            .expect("应识别到音乐");
+        println!("hint = {hint:?}");
+        assert_eq!(hint.title.to_lowercase(), "other side");
+        assert!(hint.artist.to_lowercase().contains("miyavi"));
+    }
 
     // ---- 音质选择 ----
 

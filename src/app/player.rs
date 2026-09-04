@@ -96,7 +96,13 @@ impl MusicApp {
         self.lyrics_plain.clear();
         self.lyrics_next_line.clear();
         self.update_lyrics_line();
-        self.spawn_lyrics_fetch(item.bvid, item.title, item.uploader);
+        self.spawn_lyrics_fetch(
+            item.bvid.clone(),
+            item.title.clone(),
+            item.uploader.clone(),
+            item.duration_secs,
+            item.cid,
+        );
     }
 
     /// 当前曲目在播放列表中的位置（按 bvid 定位；不在此列表时为 None）。

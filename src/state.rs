@@ -83,6 +83,10 @@ pub struct QueueItem {
     /// 封面 URL（B 站图床），旧版 playlist.json 无此字段时反序列化为空串。
     #[serde(default)]
     pub cover_url: String,
+    /// 第一分 P 的 cid（解析播放时回填）。歌词线程用它调 B 站「识别音乐」接口
+    /// 免去重复拉取 video_info；旧版 playlist.json 无此字段时反序列化为 0。
+    #[serde(default)]
+    pub cid: i64,
 }
 
 impl QueueItem {
@@ -99,6 +103,7 @@ impl QueueItem {
             uploader: uploader.into(),
             duration_secs: duration_secs.max(0.0),
             cover_url: String::new(),
+            cid: 0,
         }
     }
 

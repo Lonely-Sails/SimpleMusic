@@ -47,6 +47,28 @@ const VKEYS_NETEASE_LYRIC: &str = "https://api.vkeys.cn/v2/music/netease/lyric";
 /// fetch 接受的候选相似度下限：低于它认为没命中（转为尝试下一条查询 / 回退 GET）。
 const MIN_ACCEPT_SCORE: i64 = 40;
 
+/// 已知歌曲提示：来自 B 站「识别音乐」（官方曲库标注）等外部信号，用于
+/// ① 生成比视频标题更准的查询词；② 校准候选打分（标题/歌手/时长匹配度）。
+///
+/// 全字段可选式：`None` 提示时行为与旧版完全一致（按 title/uploader 搜索）。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SongHint {
+    /// 官方曲名（如 "Unwelcome School"），来自曲库而非视频标题。
+    pub title: String,
+    /// 官方歌手名。
+    pub artist: String,
+    /// 视频实际时长（秒，来自 B 站稿件信息）：官方歌曲时长与视频时长接近时
+    /// 强烈暗示候选正确（整曲/原曲向视频），差得远则可能是二创混剪。
+    pub duration_secs: f64,
+}
+
+impl SongHint {
+    /// 是否可用于生成查询（至少要有曲名）。
+    pub fn has_query(&self) -> bool {
+        !self.title.trim().is_empty()
+    }
+}
+
 // ===========================================================================
 // 数据模型
 // ===========================================================================
@@ -63,7 +85,7 @@ pub struct LrcLine {
 /// LRCLIB 返回的一条歌词结果（搜索数组元素与 GET 单对象同构）。
 ///
 /// 用宽松反序列化：缺失字段取默认值，避免结果只缺 `syncedLyrics` 时整条失败。
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LrcSearchResult {
     #[serde(default)]
     pub id: u64,
@@ -340,7 +362,7 @@ pub fn clean_title(title: &str) -> String {
     t.trim().to_lowercase()
 }
 
-/// 生成对 LRCLIB 依次尝试的有序候选查询（2~5 个），从最精确到最宽松。
+/// 生成对 vkeys/LRCLIB 依次尝试的有序候选查询（最多 5 个），从最精确到最宽松。
 ///
 /// 顺序：
 /// 1. `<uploader> <clean_title>`（若 uploader 像是艺术家名）
@@ -349,9 +371,34 @@ pub fn clean_title(title: &str) -> String {
 /// 4. 去掉所有标点的 bare 关键词
 /// 5. uploader 单独（作为艺术家名兜底）
 pub fn search_queries(title: &str, uploader: &str) -> Vec<String> {
-    let cleaned = clean_title(title);
-    let mut qs: Vec<String> = Vec::new();
+    search_queries_with_hint(title, uploader, None)
+}
 
+/// 带歌曲提示的查询生成（[`search_queries`] 的增强版）。
+///
+/// 有 `hint`（B 站「识别音乐」）时把官方词插到最前——官方曲名/歌手远比 B 站标题干净：
+/// - `<hint.artist> <hint.title>`（官方歌手 + 官方曲名，最精确）
+/// - `<hint.title>`（官方曲名）
+/// 其余视频标题派生的查询作为兜底（识别偶有偏差：识别的是 BGM 而非主曲、
+/// 或标注的是二创所用原曲）。
+pub fn search_queries_with_hint(
+    title: &str,
+    uploader: &str,
+    hint: Option<&SongHint>,
+) -> Vec<String> {
+    let mut qs: Vec<String> = Vec::new();
+    if let Some(h) = hint {
+        let ht = clean_title(&h.title);
+        let ha = clean_title(&h.artist);
+        if !ht.is_empty() {
+            if !ha.is_empty() {
+                qs.push(format!("{ha} {ht}"));
+            }
+            qs.push(ht);
+        }
+    }
+
+    let cleaned = clean_title(title);
     if let Some(u) = usable_uploader(uploader) {
         let cand = format!("{u} {cleaned}").trim().to_string();
         if !cand.is_empty() {
@@ -376,10 +423,29 @@ pub fn search_queries(title: &str, uploader: &str) -> Vec<String> {
         }
     }
 
-    qs.truncate(5);
+    // 去重（提示词与标题派生词可能相同）+ 截断到 5 条。
+    let mut qs = dedup_queries(qs, 5);
     if qs.is_empty() {
         qs.push(cleaned.trim().to_string());
     }
+    qs
+}
+
+/// 按原始顺序去重查询词（大小写不敏感比较）；已满 `max` 则截断。
+///
+/// 提示词与视频标题相同（如视频就叫《晴天》）时，两边会生成同一查询，
+/// 去重避免对搜索源发起重复请求。
+fn dedup_queries(mut qs: Vec<String>, max: usize) -> Vec<String> {
+    let mut seen: Vec<String> = Vec::with_capacity(qs.len());
+    qs.retain(|q| {
+        let key = q.trim().to_lowercase();
+        if key.is_empty() || seen.contains(&key) {
+            return false;
+        }
+        seen.push(key);
+        true
+    });
+    qs.truncate(max);
     qs
 }
 
@@ -457,6 +523,58 @@ pub fn match_score(candidate: &LrcSearchResult, title: &str, uploader: &str) -> 
     s
 }
 
+/// 带歌曲提示的打分（[`match_score`] + 提示校准项）。
+///
+/// 提示来自 B 站「识别音乐」（官方曲库标注），命中提示的候选额外加分：
+/// - 候选曲名 == 提示曲名（clean 后）+60；互为子串 +35；
+/// - 候选歌手 == 提示歌手 +30；互为子串 +15；
+/// - **时长接近**（视频时长 vs 候选歌曲时长）：差 ≤3s +35、≤8s +20、≤15s +8；
+///   差 >45s -10（识别对了曲名但候选是remix/live/翻唱时，时长通常是明显信号）。
+///
+/// 标题派生打分与提示打分并行叠加：视频标题与提示词都命中的候选稳居第一。
+pub fn match_score_with_hint(
+    candidate: &LrcSearchResult,
+    title: &str,
+    uploader: &str,
+    hint: Option<&SongHint>,
+) -> i64 {
+    let mut s = match_score(candidate, title, uploader);
+    let Some(h) = hint else {
+        return s;
+    };
+    let ht = clean_title(&h.title);
+    let ct = clean_title(&candidate.track_name);
+    if !ht.is_empty() && !ct.is_empty() {
+        if ct == ht {
+            s += 60;
+        } else if ct.contains(&ht) || ht.contains(&ct) {
+            s += 35;
+        }
+    }
+    let ha = clean_title(&h.artist);
+    let an = clean_title(&candidate.artist_name);
+    if !ha.is_empty() && !an.is_empty() {
+        if an == ha {
+            s += 30;
+        } else if an.contains(&ha) || ha.contains(&an) {
+            s += 15;
+        }
+    }
+    if h.duration_secs > 0.0 && candidate.duration > 0.0 {
+        let diff = (h.duration_secs - candidate.duration).abs();
+        if diff <= 3.0 {
+            s += 35;
+        } else if diff <= 8.0 {
+            s += 20;
+        } else if diff <= 15.0 {
+            s += 8;
+        } else if diff > 45.0 {
+            s -= 10;
+        }
+    }
+    s
+}
+
 /// 从候选里按 [`match_score`] 选出最优（首个并列者胜）；候选为空返回 `None`。
 pub fn best_match<'a>(
     candidates: &'a [LrcSearchResult],
@@ -467,6 +585,25 @@ pub fn best_match<'a>(
     let mut best_score = i64::MIN;
     for c in candidates {
         let sc = match_score(c, title, uploader);
+        if sc > best_score {
+            best_score = sc;
+            best = Some(c);
+        }
+    }
+    best
+}
+
+/// 带提示的最优候选（[`best_match`] 的打分换成 [`match_score_with_hint`]）。
+pub fn best_match_with_hint<'a>(
+    candidates: &'a [LrcSearchResult],
+    title: &str,
+    uploader: &str,
+    hint: Option<&SongHint>,
+) -> Option<&'a LrcSearchResult> {
+    let mut best: Option<&LrcSearchResult> = None;
+    let mut best_score = i64::MIN;
+    for c in candidates {
+        let sc = match_score_with_hint(c, title, uploader, hint);
         if sc > best_score {
             best_score = sc;
             best = Some(c);
@@ -491,6 +628,14 @@ impl LyricsProvider {
         Self::fetch_all(title, uploader).into_iter().next()
     }
 
+    /// 带歌曲提示的歌词拉取（推荐）：`hint` 来自 B 站「识别音乐」+ 稿件时长，
+    /// 用于生成更准的查询词并校准打分；`None` 时与 [`fetch`](Self::fetch) 等价。
+    pub fn fetch_with_hint(title: &str, uploader: &str, hint: Option<&SongHint>) -> Option<Lyrics> {
+        Self::fetch_all_with_hint(title, uploader, hint)
+            .into_iter()
+            .next()
+    }
+
     /// 拉取**全部**歌词候选（供「歌词选择」弹窗使用）。
     ///
     /// 收集顺序与 [`fetch`](LyricsProvider::fetch) 的优先级一致：
@@ -501,41 +646,63 @@ impl LyricsProvider {
     /// 按歌词内容去重（不同来源命中同一份歌词时只保留第一个），
     /// 无任何命中返回空数组。
     pub fn fetch_all(title: &str, uploader: &str) -> Vec<Lyrics> {
+        Self::fetch_all_with_hint(title, uploader, None)
+    }
+
+    /// [`fetch_all`](Self::fetch_all) 的带提示版本（查询与打分见
+    /// [`search_queries_with_hint`] / [`match_score_with_hint`]）。
+    pub fn fetch_all_with_hint(
+        title: &str,
+        uploader: &str,
+        hint: Option<&SongHint>,
+    ) -> Vec<Lyrics> {
         let client = http_client();
+        let queries = search_queries_with_hint(title, uploader, hint);
         let mut out: Vec<Lyrics> = Vec::new();
 
         // 1) vkeys.cn 聚合源（QQ 音乐 priority=1, 网易云 priority=0）
-        for q in search_queries(title, uploader) {
+        for q in &queries {
             let q = q.trim();
             if q.is_empty() {
                 continue;
             }
-            if let Some(ly) = vkeys_source_fetch(&client, VkSource::Qq, q, title, uploader) {
+            if let Some(ly) = vkeys_source_fetch(&client, VkSource::Qq, q, title, uploader, hint) {
                 push_unique_lyrics(&mut out, ly);
             }
-            if let Some(ly) = vkeys_source_fetch(&client, VkSource::Netease, q, title, uploader) {
+            if let Some(ly) = vkeys_source_fetch(&client, VkSource::Netease, q, title, uploader, hint)
+            {
                 push_unique_lyrics(&mut out, ly);
             }
         }
 
         // 2) LRCLIB 回退：搜索 + 精确 GET。
-        for q in search_queries(title, uploader) {
+        for q in &queries {
             let q = q.trim();
             if q.is_empty() {
                 continue;
             }
             if let Some(results) = search(&client, q) {
-                if let Some(best) = best_match(&results, title, uploader) {
-                    if match_score(best, title, uploader) >= MIN_ACCEPT_SCORE {
+                if let Some(best) = best_match_with_hint(&results, title, uploader, hint) {
+                    if match_score_with_hint(best, title, uploader, hint) >= MIN_ACCEPT_SCORE {
                         push_unique_lyrics(&mut out, lyrics_from(best));
                     }
                 }
             }
         }
-        let artist = usable_uploader(uploader).unwrap_or("");
-        let track = clean_title(title);
+        // 3) LRCLIB 精确 GET：优先用提示里的官方词（识别音乐时曲名/歌手最标准），
+        //    没有提示再退回视频标题清洗结果。
+        let (artist, track) = match hint {
+            Some(h) if h.has_query() => (
+                usable_uploader(&h.artist).unwrap_or("").to_string(),
+                clean_title(&h.title),
+            ),
+            _ => (
+                usable_uploader(uploader).unwrap_or("").to_string(),
+                clean_title(title),
+            ),
+        };
         if !track.is_empty() {
-            if let Some(res) = get(&client, artist, &track) {
+            if let Some(res) = get(&client, &artist, &track) {
                 push_unique_lyrics(&mut out, lyrics_from(&res));
             }
         }
@@ -694,12 +861,14 @@ impl VkSource {
 }
 
 /// 从 vkeys 单个源搜索并取回歌词；未命中/无歌词返回 `None`。
+#[allow(clippy::too_many_arguments)]
 fn vkeys_source_fetch(
     client: &reqwest::blocking::Client,
     src: VkSource,
     query: &str,
     title: &str,
     uploader: &str,
+    hint: Option<&SongHint>,
 ) -> Option<Lyrics> {
     let resp = client
         .get(src.search_url())
@@ -720,8 +889,8 @@ fn vkeys_source_fetch(
     if candidates.is_empty() {
         return None;
     }
-    let best = best_match(&candidates, title, uploader)?;
-    if match_score(best, title, uploader) < MIN_ACCEPT_SCORE {
+    let best = best_match_with_hint(&candidates, title, uploader, hint)?;
+    if match_score_with_hint(best, title, uploader, hint) < MIN_ACCEPT_SCORE {
         return None;
     }
     let best_idx = candidates.iter().position(|c| std::ptr::eq(c, best))?;
@@ -1284,6 +1453,139 @@ mod tests {
         // 明显是频道的 uploader 不作为 artist 前缀。
         let qs = search_queries("晴天", "某某官方频道");
         assert!(!qs[0].contains("某某官方频道 "));
+    }
+
+    // ---- 歌曲提示（识别音乐）参与查询生成与打分 ----
+
+    #[test]
+    fn hint_queries_lead_with_official_words() {
+        let hint = SongHint {
+            title: "Unwelcome School".into(),
+            artist: "ミツキヨ".into(),
+            duration_secs: 0.0,
+        };
+        let qs = search_queries_with_hint(
+            "【4K修复】【碧蓝档案】Unwelcome School 燃剪",
+            "某搬运频道",
+            Some(&hint),
+        );
+        // 官方词在最前，且视频标题的查询仍作兜底。
+        assert_eq!(qs[0], "ミツキヨ unwelcome school");
+        assert_eq!(qs[1], "unwelcome school");
+        assert!(qs.iter().any(|q| q.contains("燃剪")));
+    }
+
+    #[test]
+    fn hint_queries_dedup_and_fallback_without_hint() {
+        // 无提示 = 旧行为。
+        let plain = search_queries("晴天", "周杰伦");
+        let with_none = search_queries_with_hint("晴天", "周杰伦", None);
+        assert_eq!(plain, with_none);
+        // 提示与标题相同时不产生重复查询。
+        let hint = SongHint {
+            title: "晴天".into(),
+            artist: "周杰伦".into(),
+            duration_secs: 0.0,
+        };
+        let qs = search_queries_with_hint("晴天", "周杰伦", Some(&hint));
+        assert_eq!(qs[0], "周杰伦 晴天");
+        let uniq: std::collections::HashSet<_> = qs.iter().map(|s| s.to_lowercase()).collect();
+        assert_eq!(uniq.len(), qs.len(), "查询有重复: {qs:?}");
+    }
+
+    #[test]
+    fn hint_score_boosts_official_title_artist_and_duration() {
+        let hint = SongHint {
+            title: "晴天".into(),
+            artist: "周杰伦".into(),
+            duration_secs: 269.0,
+        };
+        let official = LrcSearchResult {
+            id: 1,
+            track_name: "晴天".to_string(),
+            artist_name: "周杰伦".to_string(),
+            album_name: "叶惠美".to_string(),
+            duration: 269.0,
+            instrumental: false,
+            plain_lyrics: "故事的小黄花".to_string(),
+            synced_lyrics: "[00:01.00]故事的小黄花".to_string(),
+        };
+        // 同曲名的翻唱（歌手不同、时长差很多）：提示打分应拉开差距。
+        let cover = LrcSearchResult {
+            id: 2,
+            track_name: "晴天".to_string(),
+            artist_name: "某翻唱歌手".to_string(),
+            album_name: String::new(),
+            duration: 180.0,
+            instrumental: false,
+            plain_lyrics: "故事的小黄花".to_string(),
+            synced_lyrics: "[00:01.00]故事的小黄花".to_string(),
+        };
+        let s_official = match_score_with_hint(&official, "【高清】晴天 周杰伦", "Music频道", Some(&hint));
+        let s_cover = match_score_with_hint(&cover, "【高清】晴天 周杰伦", "Music频道", Some(&hint));
+        assert!(s_official > s_cover + 30, "{s_official} vs {s_cover}");
+        // 无提示时两者平手（曲名相同、同步歌词相同）。
+        let s0_official = match_score(&official, "晴天", "Music频道");
+        let s0_cover = match_score(&cover, "晴天", "Music频道");
+        assert_eq!(s0_official, s0_cover);
+    }
+
+    #[test]
+    fn hint_score_duration_tiers() {
+        let mk = |dur: f64| LrcSearchResult {
+            duration: dur,
+            track_name: "晴天".into(),
+            artist_name: "周杰伦".into(),
+            ..Default::default()
+        };
+        let hint = |vid: f64| SongHint {
+            title: "晴天".into(),
+            artist: "周杰伦".into(),
+            duration_secs: vid,
+        };
+        let h = hint(269.0);
+        // 分层：≤3s > ≤8s > ≤15s。
+        let a = match_score_with_hint(&mk(269.0), "晴天", "", Some(&h));
+        let b = match_score_with_hint(&mk(274.0), "晴天", "", Some(&h));
+        let c = match_score_with_hint(&mk(281.0), "晴天", "", Some(&h));
+        assert!(a > b && b > c, "{a} {b} {c}");
+        // 同曲名同歌手的两个候选（如原曲 vs remix）：时长接近者胜出。
+        let close = match_score_with_hint(&mk(270.0), "晴天", "", Some(&h));
+        let far = match_score_with_hint(&mk(400.0), "晴天", "", Some(&h));
+        assert!(close > far, "close={close} far={far}");
+    }
+
+    #[test]
+    fn best_match_with_hint_picks_official_version() {
+        let hint = SongHint {
+            title: "Unwelcome School".into(),
+            artist: "Mitsukiyo".into(),
+            duration_secs: 122.0,
+        };
+        let candidates = vec![
+            LrcSearchResult {
+                id: 2,
+                track_name: "Unwelcome School (Remix)".to_string(),
+                artist_name: "某Remixer".to_string(),
+                album_name: String::new(),
+                duration: 95.0,
+                instrumental: false,
+                plain_lyrics: "x".to_string(),
+                synced_lyrics: String::new(),
+            },
+            LrcSearchResult {
+                id: 1,
+                track_name: "Unwelcome School".to_string(),
+                artist_name: "Mitsukiyo".to_string(),
+                album_name: "Blue Archive".to_string(),
+                duration: 122.0,
+                instrumental: false,
+                plain_lyrics: "y".to_string(),
+                synced_lyrics: "[00:01.00]y".to_string(),
+            },
+        ];
+        let best = best_match_with_hint(&candidates, "碧蓝档案神曲燃剪", "搬运", Some(&hint)).unwrap();
+        assert_eq!(best.id, 1);
     }
 
     #[test]

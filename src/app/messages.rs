@@ -4,8 +4,8 @@
 //! - `spawn_*`：在后台 `std::thread` 执行阻塞网络/IO，结果经 `mpsc` 发回主线程。
 //! - [`handle_msg`](MusicApp::handle_msg)：主线程每帧排空通道后的消息处理。
 
-use crate::modules::bilibili::{BiliClient, FavFolder, FavItem, QrPoll, StreamUrl};
-use crate::modules::lyrics::{self, Lyrics};
+use crate::modules::bilibili::{BiliClient, FavFolder, FavItem, MusicHint, QrPoll, StreamUrl};
+use crate::modules::lyrics::{self, Lyrics, SongHint};
 use crate::state::{AudioQuality, QueueItem};
 use crate::app::player::enqueue_dedup;
 use std::sync::atomic::Ordering as AtomicOrdering;
@@ -266,6 +266,9 @@ impl MusicApp {
                     detail.info.duration_secs,
                     detail.info.cover_url.clone().unwrap_or_default(),
                 );
+                // cid 一并带上（歌词线程「识别音乐」用）。
+                let mut item = item;
+                item.cid = detail.cid;
                 Ok((item, stream))
             })();
             let _ = tx.send(AsyncMsg::PlayReady { seq, result });
@@ -274,10 +277,22 @@ impl MusicApp {
 
     // ---- 歌词派发 ----
 
-    pub(crate) fn spawn_lyrics_fetch(&self, key: String, title: String, uploader: String) {
+    /// 后台拉取歌词：先问 B 站「识别音乐」（官方曲库标注）拿 SongHint，
+    /// 再用提示词优先搜索 vkeys/LRCLIB；识别失败则回退纯标题搜索。
+    ///
+    /// 放在歌词线程而非播放解析线程：识别最多 2~3 个额外请求，绝不能拖慢出声。
+    /// `cid` 来自 QueueItem（解析播放时回填）；=0 时 `detect_music` 内部跳过
+    /// player/v2、只探测 BGM TAG，旧歌单条目也能受益。
+    pub(crate) fn spawn_lyrics_fetch(&self, key: String, title: String, uploader: String, duration_secs: f64, cid: i64) {
+        let bili = self.bili.clone();
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let candidates = lyrics::LyricsProvider::fetch_all(&title, &uploader);
+            let hint = bili
+                .lock()
+                .ok()
+                .and_then(|b| b.detect_music(&key, cid))
+                .map(|m| hint_from_bili(m, duration_secs));
+            let candidates = lyrics::LyricsProvider::fetch_all_with_hint(&title, &uploader, hint.as_ref());
             let _ = tx.send(AsyncMsg::LyricsFetched { key, candidates });
         });
     }
@@ -479,14 +494,25 @@ fn resolve_playable(
             .resolve_stream_with_cid(bvid, detail.cid, quality)
             .map_err(|e| e.to_string())?
     };
-    let item = QueueItem::new_with_cover(
+    let mut item = QueueItem::new_with_cover(
         bvid,
         detail.info.title,
         detail.info.uploader,
         detail.info.duration_secs,
         detail.info.cover_url.clone().unwrap_or_default(),
     );
+    // 回填 cid：歌词线程用它调「识别音乐」接口，免去重复 video_info 请求。
+    item.cid = detail.cid;
     Ok((item, stream))
+}
+
+/// B 站「识别音乐」结果 → 歌词搜索提示（附视频时长作为时长匹配参考）。
+fn hint_from_bili(h: MusicHint, video_duration_secs: f64) -> SongHint {
+    SongHint {
+        title: h.title,
+        artist: h.artist,
+        duration_secs: video_duration_secs,
+    }
 }
 
 /// 收藏夹列表刷新后应保留的选中 id：之前选中的收藏夹仍存在则保留，
