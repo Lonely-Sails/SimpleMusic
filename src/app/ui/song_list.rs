@@ -12,7 +12,9 @@ use eframe::egui::{
     self, Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Vec2,
 };
 use super::MusicApp;
-use super::widgets::{icon_button, paint_cover_image, paint_placeholder_cover, truncate_label};
+use super::widgets::{
+    paint_cover_image, paint_placeholder_cover, song_search_field, truncate_label,
+};
 
 /// 歌曲列表内容相对滚动区/窗口两边的水平留白（滚动条贴右，内容左右留白）。
 const LIST_PAD_X: f32 = 14.0;
@@ -53,19 +55,9 @@ impl MusicApp {
                         .color(theme::TEXT_PRIMARY),
                 );
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_space(LIST_PAD_X);
-                if !query.is_empty() {
-                    if icon_button(ui, 24.0, icons::cross, "清空搜索").clicked() {
-                        self.search_text.clear();
-                    }
-                }
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.search_text)
-                        .hint_text("搜索标题 / UP 主")
-                        .desired_width(180.0),
-                );
-            });
+            // 固定 id_salt 的搜索框：输入时不再失焦/打断中文输入法，清空按钮
+            // 常驻占位不挤动布局；点击「×」在组件内就地清空（见 widgets::song_search_field）。
+            song_search_field(ui, &mut self.search_text);
         });
         ui.add_space(10.0);
 
@@ -299,19 +291,8 @@ impl MusicApp {
                         .color(theme::TEXT_PRIMARY),
                 );
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_space(LIST_PAD_X);
-                if !query.is_empty() {
-                    if icon_button(ui, 24.0, icons::cross, "清空搜索").clicked() {
-                        self.search_text.clear();
-                    }
-                }
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.search_text)
-                        .hint_text("搜索标题 / UP 主")
-                        .desired_width(180.0),
-                );
-            });
+            // 固定 id_salt 的搜索框（同 show_local_songs，见 widgets::song_search_field）。
+            song_search_field(ui, &mut self.search_text);
         });
         ui.add_space(10.0);
 

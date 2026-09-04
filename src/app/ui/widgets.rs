@@ -2,7 +2,7 @@
 //!
 //! 所有函数均为无 `self` 的纯 egui 组件，供其他 `ui/*.rs` 文件调用。
 
-use crate::theme;
+use crate::{icons, theme};
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontId, Painter, Pos2, Rect, Sense, Stroke, Vec2,
 };
@@ -55,6 +55,64 @@ pub fn icon_button(
     painter.rect_filled(rect, theme::CORNER, bg);
     icon(&painter, rect.shrink(size * 0.24), theme::TEXT_SECONDARY);
     resp.on_hover_text(tooltip)
+}
+
+/// 全局唯一的歌单搜索框 id（跨帧稳定）。
+///
+/// egui 的 `TextEdit` 不给 `id_salt` 时用 `ui.next_auto_id()`（同 Ui 内自增的盐），
+/// id 会随**同一 Ui 里排在它前面的控件数量**变化：清空按钮这类条件控件一旦插入
+/// （输入第一个字后就会出现），搜索框的 id 就整体漂移——egui 按 Id 记忆焦点，
+/// id 变了等于焦点没了。
+pub(crate) const SONG_SEARCH_ID_SALT: &str = "song_search_field";
+
+/// 歌单歌曲列表顶部的搜索框（本地/在线列表共用）。
+///
+/// 输入在 `text` 里就地编辑；点「×」就地清空。返回输入框自身的
+/// [`egui::Response`]（调用方一般无需使用，测试/联动用）。
+///
+/// 修复两件事（都是打第一个字时触发的）：
+///
+/// 1. **焦点丢失 / 中文输入法被打断**：之前的输入框用自动 id（`next_auto_id()`，
+///    同 Ui 内自增盐），输入第一个字后「清空搜索」按钮插到它前面 → 自动 id 漂移
+///    → egui 按 Id 记忆的焦点失效 → 输入框失焦。中文输入法组合期间预编辑串一进
+///    文本就触发同样链条，egui-winit 检测到无焦点文本框即 `set_ime_allowed(false)`，
+///    组合被系统取消、拼音残留在框里。现在固定 `id_salt`（见
+///    [`SONG_SEARCH_ID_SALT`]），id 与前置控件增减无关。
+/// 2. **布局跳动**：清空按钮常驻占位 24px（无文字时分配同样空间但不绘制、不可点），
+///    按钮出现/消失不再横向推动输入框；也避免输入框被挤动后，原本点在输入框上的
+///    第二次点击落进突然出现的「×」把搜索词清空。
+pub(crate) fn song_search_field(ui: &mut egui::Ui, text: &mut String) -> egui::Response {
+    let has_query = !text.trim().is_empty();
+    let mut field_resp: Option<egui::Response> = None;
+    // 右到左布局：占位/按钮贴最右，输入框在其左侧。占位尺寸与按钮一致，
+    // 输入框的几何因此与有无搜索词完全无关。
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let (rect, resp) = ui.allocate_exact_size(Vec2::splat(24.0), Sense::click());
+        if has_query {
+            let painter = ui.painter();
+            let bg = if resp.is_pointer_button_down_on() {
+                theme::BG_ACTIVE
+            } else if resp.hovered() {
+                theme::BG_HOVER
+            } else {
+                theme::BG_CARD
+            };
+            painter.rect_filled(rect, theme::CORNER, bg);
+            icons::cross(painter, rect.shrink(24.0 * 0.24), theme::TEXT_SECONDARY);
+            if resp.clicked() {
+                text.clear();
+            }
+            resp.on_hover_text("清空搜索");
+        }
+        let r = ui.add(
+            egui::TextEdit::singleline(text)
+                .id_salt(egui::Id::new(SONG_SEARCH_ID_SALT))
+                .hint_text("搜索标题 / UP 主")
+                .desired_width(180.0),
+        );
+        field_resp = Some(r);
+    });
+    field_resp.expect("with_layout 闭包必然执行")
 }
 
 // ---------------------------------------------------------------------------
@@ -566,3 +624,245 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod search_field_tests {
+    use super::*;
+    use eframe::egui::{Event, ImeEvent, Modifiers, PointerButton};
+
+    /// 驱动 `song_search_field` 的多帧模拟器（复刻 vol_popup_tests 的做法）。
+    struct Sim {
+        ctx: egui::Context,
+        text: String,
+        t: f64,
+        /// 最近一帧输入框的矩形与 id（由组件返回的 Response 提供）。
+        rect: Rect,
+        id: egui::Id,
+    }
+
+    impl Sim {
+        fn new() -> Self {
+            let ctx = egui::Context::default();
+            // 生产同款字体：eframe 关闭了 default_fonts feature，无头测试必须
+            // 显式安装内嵌字体，否则零字形 galley 会让光标定位全部坍缩到 0。
+            crate::fonts::install_fonts(&ctx);
+            Self {
+                ctx,
+                text: String::new(),
+                t: 0.0,
+                rect: Rect::ZERO,
+                id: egui::Id::NULL,
+            }
+        }
+
+        /// 跑一帧，处理输入事件。
+        fn frame(&mut self, events: Vec<Event>) {
+            let mut input = egui::RawInput::default();
+            input.screen_rect = Some(Rect::from_min_size(
+                Pos2::ZERO,
+                egui::vec2(600.0, 400.0),
+            ));
+            self.t += 0.016;
+            input.time = Some(self.t);
+            input.events = events;
+            let sim = self as *mut Sim;
+            let text = &mut self.text;
+            let mut full = self.ctx.run_ui(input, move |ui| {
+                let resp = song_search_field(ui, text);
+                // SAFETY：run_ui 同步执行闭包，期间没有其他地方访问 sim。
+                let sim = unsafe { &mut *sim };
+                sim.rect = resp.rect;
+                sim.id = resp.id;
+            });
+            full.textures_delta.clear();
+        }
+
+        /// 无事件的稳定帧（用于点击后让点击状态落定）。
+        fn settle(&mut self) {
+            self.frame(vec![]);
+        }
+
+        fn pointer_press(&mut self, p: Pos2) {
+            self.frame(vec![
+                Event::PointerMoved(p),
+                Event::PointerButton {
+                    pos: p,
+                    button: PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Modifiers::default(),
+                },
+            ]);
+        }
+
+        fn pointer_release(&mut self, p: Pos2) {
+            self.frame(vec![Event::PointerButton {
+                pos: p,
+                button: PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::default(),
+            }]);
+        }
+
+        fn click(&mut self, p: Pos2) {
+            self.pointer_press(p);
+            self.pointer_release(p);
+        }
+
+        /// 模拟在聚焦输入框里键入一段文本：完整复刻 egui-winit 的按键投递
+        /// （Key press+release 同帧，随后同帧 push Event::Text；见
+        /// egui-winit `on_keyboard_input`），不要拆帧——Text 与 Key 需同帧到达。
+        fn type_text(&mut self, s: &str) {
+            for ch in s.chars() {
+                let key = egui::Key::from_name(&ch.to_string())
+                    .unwrap_or_else(|| panic!("测试仅覆盖可映射按键，收到 {ch:?}"));
+                let mut events = vec![
+                    Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: Modifiers::default(),
+                    },
+                    Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed: false,
+                        repeat: false,
+                        modifiers: Modifiers::default(),
+                    },
+                ];
+                if ch.is_alphanumeric() {
+                    events.push(Event::Text(ch.to_string()));
+                }
+                self.frame(events);
+            }
+        }
+
+        fn focused(&self) -> bool {
+            self.ctx.memory(|m| m.has_focus(self.id))
+        }
+    }
+
+    /// 回归：搜索框必须用跨帧稳定的 id_salt（与 TextEdit 返回的真实 id 一致）。
+    ///
+    /// 之前用自动 id：输入第一个字后「清空搜索」按钮插入到输入框前面，
+    /// 自动 id 漂移 → 焦点丢失（打一个字就失焦）。固定 id_salt 后，
+    /// 输入框 id 与前置控件数量无关。
+    #[test]
+    fn search_field_uses_stable_id_salt() {
+        let mut sim = Sim::new();
+        sim.settle();
+        assert!(
+            format!("{:?}", sim.id).contains(SONG_SEARCH_ID_SALT),
+            "输入框 id 派生链必须包含固定 id_salt（实际 {:?}）；\
+             若 id 派生规则变化，请同步更新测试与组件文档",
+            sim.id
+        );
+    }
+
+    /// 回归：点击聚焦后输入第一个字（清空按钮随之出现），焦点必须保持。
+    #[test]
+    fn focus_survives_typing_first_char() {
+        let mut sim = Sim::new();
+        sim.settle();
+        assert!(sim.rect.width() > 0.0, "首帧应布局出搜索框");
+
+        // 点击输入框 → 聚焦。
+        sim.click(sim.rect.center());
+        sim.settle();
+        assert!(sim.focused(), "点击输入框后应获得焦点");
+
+        // 输入 "n"（此前清空按钮不存在，此帧它出现）→ 焦点不能丢。
+        sim.type_text("n");
+        assert!(sim.focused(), "输入第一个字后焦点必须保持（自动 id 漂移回归）");
+        assert_eq!(sim.text, "n");
+
+        // 继续输入仍聚焦。
+        sim.type_text("e");
+        assert!(sim.focused(), "继续输入焦点仍应保持");
+        assert_eq!(sim.text, "ne");
+    }
+
+    /// 回归：中文输入法组合期间焦点必须保持，组合文本进框后仍聚焦，提交正常落字。
+    ///
+    /// 修复前：预编辑串一进文本 → 清空按钮出现 → 自动 id 漂移 → 失焦 →
+    /// egui-winit 检测到无焦点文本框即 `set_ime_allowed(false)` → 组合被系统取消。
+    #[test]
+    fn ime_composition_keeps_focus() {
+        let mut sim = Sim::new();
+        sim.settle();
+        sim.click(sim.rect.center());
+        sim.settle();
+        assert!(sim.focused());
+
+        // IME 组合开始："ni" 作为预编辑文本插入（egui 将组合文本写入缓冲区）。
+        sim.frame(vec![Event::Ime(ImeEvent::Preedit {
+            text: "ni".into(),
+            active_range_chars: Some(0..2),
+        })]);
+        sim.settle();
+        assert!(sim.focused(), "IME 组合开始后焦点必须保持");
+        assert_eq!(sim.text, "ni", "预编辑文本应写入缓冲区");
+
+        // 组合更新："nihao"（替换上一帧的组合文本）。
+        sim.frame(vec![Event::Ime(ImeEvent::Preedit {
+            text: "nihao".into(),
+            active_range_chars: Some(0..5),
+        })]);
+        sim.settle();
+        assert!(sim.focused(), "IME 组合更新后焦点必须保持");
+        assert_eq!(sim.text, "nihao", "组合更新应整体替换上一帧的组合文本");
+
+        // 候选确认："你" 提交——替换组合文本，焦点保持。
+        sim.frame(vec![Event::Ime(ImeEvent::Commit("你".into()))]);
+        sim.settle();
+        assert!(sim.focused(), "IME 提交后焦点必须保持");
+        assert_eq!(sim.text, "你", "提交的候选词应替换预编辑文本");
+
+        // 提交后集成层一般再发一次空 Preedit 表示组合彻底结束——焦点保持。
+        sim.frame(vec![Event::Ime(ImeEvent::Preedit {
+            text: String::new(),
+            active_range_chars: None,
+        })]);
+        sim.settle();
+        assert!(sim.focused(), "组合结束后焦点必须保持");
+    }
+
+    /// 回归：输入第一个字触发清空按钮出现时，输入框几何必须完全不变（布局不跳）。
+    #[test]
+    fn clear_button_appearing_does_not_move_field() {
+        let mut sim = Sim::new();
+        sim.settle();
+        let rect_empty = sim.rect;
+        sim.type_text("n");
+        sim.settle();
+        assert_eq!(
+            rect_empty, sim.rect,
+            "输入第一个字（清空按钮出现）后输入框矩形必须不变"
+        );
+
+        // 清空后（按钮消失）输入框矩形同样不变。
+        sim.text.clear();
+        sim.settle();
+        assert_eq!(rect_empty, sim.rect, "清空后输入框矩形必须不变");
+    }
+
+    /// 清空按钮行为：有词时点击「×」（输入框右侧）应清空。
+    #[test]
+    fn clear_button_clears_when_clicked() {
+        let mut sim = Sim::new();
+        sim.text = "周杰".into();
+        sim.settle();
+        // 右到左布局：× 占位紧贴输入框右侧，间隙来自 spacing.item_spacing.x。
+        let gap = sim.ctx.style_of(egui::Theme::Dark).spacing.item_spacing.x;
+        let btn_pos = Pos2::new(sim.rect.right() + gap, sim.rect.center().y);
+        sim.click(btn_pos);
+        sim.settle();
+        assert!(
+            sim.text.is_empty(),
+            "点击 × 应清空搜索词（当前 = {:?}）",
+            sim.text
+        );
+    }
+}
+

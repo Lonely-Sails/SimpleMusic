@@ -324,8 +324,11 @@ impl MusicApp {
                     }
                     if self.renaming_idx == Some(*i) {
                         ui.horizontal(|ui| {
+                            // 显式 id_salt：重命名框出现在列表第几行是动态的，
+                            // 自动 id 不稳定会丢焦点/打断中文输入法。
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.rename_text)
+                                    .id_salt(egui::Id::new(("rename_playlist_field", *i)))
                                     .desired_width(180.0)
                                     .hint_text("新歌单名"),
                             );

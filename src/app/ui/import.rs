@@ -16,8 +16,11 @@ impl MusicApp {
             // 预留右侧「添加并播放」按钮 + 右侧留白，输入框占满剩余空间。
             let btn_reserve = 132.0;
             let field_w = (ui.available_width() - btn_reserve).max(140.0);
+            // 显式 id_salt：输入框前方的 spinner（pending_import）出现/消失时，
+            // 自动 id 会漂移导致失焦/打断中文输入法（与歌单搜索框同一坑）。
             ui.add(
                 egui::TextEdit::singleline(&mut self.import_text)
+                    .id_salt(egui::Id::new("import_bvid_field"))
                     .hint_text("BV 号 / 视频链接 / b23.tv 短链")
                     .desired_width(field_w),
             );

@@ -189,7 +189,34 @@ src/
 
 ## 6. 近期改动（本轮已实现）
 
-本轮（新增：桌面歌词位置随开随记，重启自动恢复）：
+本轮（修复：搜索框输入时布局跳动/失焦、中文输入法被打断）：
+
+- **根因（egui 自动 id 漂移）**：`TextEdit` 不给 `id_salt` 时用 `ui.next_auto_id()`
+  （同一 Ui 内自增的盐），id 随**同 Ui 里排在它前面的控件数量**变化。本地/在线歌曲
+  列表的搜索框之前就是这样：输入第一个字 → 条件渲染的「清空搜索」按钮插到它前面 →
+  输入框 id 整体漂移 → egui 按 Id 记忆的焦点失效 → 失焦。中文输入法组合期间预编辑串
+  一进文本就走同一链条：egui-winit 检测到无焦点文本框即 `set_ime_allowed(false)`，
+  组合被系统取消、拼音残留在框里（「中文输入法异常」的真凶）。
+- **`widgets.rs` 新增 `song_search_field`**（本地/在线列表共用）：
+  ① TextEdit 固定 `id_salt(SONG_SEARCH_ID_SALT)`，id 与前置控件增减无关；
+  ② 清空按钮**常驻占位 24px**（无搜索词时分配同样空间但不绘制、不可点），按钮
+  出现/消失不再横向挤动输入框——布局不跳，也避免输入框被挤动后原本点在输入框上的
+  第二次点击落进突然出现的「×」误清搜索词。右到左布局，占位/按钮贴最右。
+- **同型隐患顺手修**：`import.rs` 的 BVID 输入框（前面有条件出现的加载圈）与
+  `playlist_bar.rs` 的歌单重命名输入框（列表项循环里）也补了显式 `id_salt`。
+- **测试（`search_field_tests`，多帧无头 egui 模拟器）**：id_salt 稳定、点击聚焦后
+  输入第一个字不失焦、完整 IME 序列（Preedit→更新→Commit→空 Preedit）全程聚焦且
+  文本正确（"ni"→"nihao"→"你"）、按钮出现/消失输入框矩形不变、点「×」清空。
+  两个无头测试的坑，后续写类似测试必看：
+  1. **必须装字体**：本项目 eframe 关了 `default_fonts`，无头 `Context::default()`
+     字体表是空的 → 零字形 galley → 光标定位坍缩到 0，任何依赖光标位置的断言都会
+     诡异失败。测试里调 `crate::fonts::install_fonts(&ctx)`（生产同款内嵌字体）。
+  2. **模拟打字要复刻 egui-winit 的投递**：Key press+release 与 `Event::Text` 必须
+     同帧（见 egui-winit `on_keyboard_input`：push 完 Key 紧接着 push Text）；拆成
+     多帧的话 release 帧的 Key 会先于 Text 消费，插入位置就错了。
+- 验证：156 个离线单测全绿（新增 5 个），`cargo check`（默认 tray）通过。
+
+上一轮（新增：桌面歌词位置随开随记，重启自动恢复）：
 
 - **`Settings` 新增 `lyrics_pos: Option<[f32; 2]>`**（`#[serde(default)]`，旧 config.json 兼容）：
   存屏幕坐标而非 egui 的 `Pos2`——项目未启用 eframe 的 serde feature，`Pos2` 没实现 Serialize，
