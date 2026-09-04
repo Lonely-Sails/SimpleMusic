@@ -9,19 +9,15 @@
 //!    「无法打开音频输出设备」错误路径）。
 //! 5. 不打印任何 Cookie 值（凭据脱敏）。
 
-#[path = "../src/state.rs"]
-#[allow(dead_code)]
-pub mod state;
 
 // 桥接模块复用主 crate 的完整实现，示例只用其中一部分，容忍 dead_code。
 #[allow(dead_code)]
-mod modules;
 
 use std::io::Read;
 use std::time::{Duration, Instant};
 
-use modules::audio::AudioEngine;
-use modules::bilibili::{BiliClient, BiliError};
+use simple_music::modules::audio::AudioEngine;
+use simple_music::modules::bilibili::{BiliClient, BiliError};
 
 
 use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
@@ -49,12 +45,12 @@ fn main() {
 
     let bvid = BiliClient::parse_bvid_direct(&input).unwrap_or_else(|| input.trim().to_string());
     println!("[stream] 目标 BV: {bvid}");
-    let stream = match client.resolve_stream(&bvid, state::AudioQuality::High) {
+    let stream = match client.resolve_stream(&bvid, simple_music::state::AudioQuality::High) {
         Ok(s) => s,
         Err(BiliError::Api { code, message }) if code == -404 => {
             println!("[stream] API code=-404 message=\"{message}\"，回退公开测试视频 BV1GJ411x7h7");
             let fallback = "BV1GJ411x7h7";
-            match client.resolve_stream(fallback, state::AudioQuality::High) {
+            match client.resolve_stream(fallback, simple_music::state::AudioQuality::High) {
                 Ok(s) => s,
                 Err(e) => {
                     println!("[stream] resolve_stream 失败: {e}");

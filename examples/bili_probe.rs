@@ -9,20 +9,16 @@
 //! 5. 尝试带 UA/Referer 下载音频流前 1KB，报告 CDN 可达性（沙箱出口 IP 常见 403）。
 //! 6. 不打印任何 Cookie 值（凭据脱敏）。
 
-#[path = "../src/state.rs"]
-#[allow(dead_code)]
-pub mod state;
 
 // 桥接模块复用主 crate 的完整实现，示例只用其中一部分，容忍 dead_code。
 #[allow(dead_code)]
-mod modules;
 
-use modules::bilibili::{BiliClient, BiliError};
+use simple_music::modules::bilibili::{BiliClient, BiliError};
 
 fn main() {
     let input = std::env::args().nth(1).unwrap_or_else(|| "BV1GJ411x7h7".to_string());
     println!("=== SimpleMusic bili_probe ===");
-    println!("UA: {}", modules::bilibili::USER_AGENT);
+    println!("UA: {}", simple_music::modules::bilibili::USER_AGENT);
 
     // ---- 1. 客户端 + buvid ----
     let mut client = match BiliClient::with_session() {
@@ -149,7 +145,7 @@ fn main() {
     println!("[playurl] 选中最高码率音频 bandwidth={signed_bw}bps codec={signed_codec}");
 
     // ---- 5. resolve_stream 端到端（含备用 CDN 与必需请求头） ----
-    match client.resolve_stream_with_cid(&bvid, detail.cid, state::AudioQuality::High) {
+    match client.resolve_stream_with_cid(&bvid, detail.cid, simple_music::state::AudioQuality::High) {
         Ok(s) => {
             let mut url80 = s.audio_url.clone();
             url80.truncate(80);
