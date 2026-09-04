@@ -111,6 +111,10 @@ pub struct MusicApp {
     last_save: Option<Instant>,
     last_queue_save: Option<Instant>,
     queue_dirty: bool,
+    /// 上一帧是否处于最小化（用于恢复时补发重绘，见 `logic` 里的恢复逻辑）。
+    was_minimized: bool,
+    /// 重绘保活线程的退出标志（`on_exit` 置位；进程正常退出前兜底）。
+    keepalive_stop: Arc<AtomicBool>,
     // 搜索过滤
     search_text: String,
     // 歌单管理
@@ -233,6 +237,8 @@ impl MusicApp {
             last_save: None,
             last_queue_save: None,
             queue_dirty: false,
+            was_minimized: false,
+            keepalive_stop: Arc::new(AtomicBool::new(false)),
             search_text: String::new(),
             playlist_mgmt_open: false,
             renaming_idx: None,
@@ -251,6 +257,32 @@ impl MusicApp {
     // 重启后若上次停留在在线歌单（B 站收藏夹），恢复 fav_selected 指向该收藏夹，
     // 避免收藏夹视图跳回列表中的第一个。
     app.restore_favorites_selection();
+
+    // 重绘保活线程：规避 eframe/winit 最小化后事件循环「饿死」的已知缺陷
+    // （egui #8246：最小化再恢复后 UI 永久冻结；egui #5136 / PR #8414：合成器对
+    // 不可见/最小化窗口扣留重绘回调，`logic` 从此不再执行）。
+    //
+    // 原理：`Context::request_repaint` 会经 eframe 的 event-loop proxy 唤醒事件循环，
+    // 即使窗口处于最小化/不可见状态也能到达（Windows 上隐藏窗口收不到系统
+    // `RedrawRequested`，eframe 0.34+ 对这类窗口会在收到重绘请求时直接跑一遍
+    // `run_ui_and_paint`，viewport 命令因此得以处理）。线程独立于 egui 存活期间，
+    // 无论 UI 线程是否已被平台「饿死」，恢复窗口后最多 200ms 内必有一次真帧。
+    //
+    // 开销：每秒 5 次 proxy 唤醒，空闲功耗可忽略；应用退出时置位停止。
+    {
+        let ctx = cc.egui_ctx.clone();
+        let stop = Arc::clone(&app.keepalive_stop);
+        std::thread::Builder::new()
+            .name("render-keepalive".into())
+            .spawn(move || {
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    ctx.request_repaint();
+                }
+            })
+            .expect("启动渲染保活线程失败");
+    }
+
     app
 }
 
@@ -439,6 +471,36 @@ impl eframe::App for MusicApp {
             ctx.request_repaint();
         }
 
+        // 最小化恢复卡死的兜底修复（egui #8246 / #5136：最小化后部分平台不再投递
+        // RedrawRequested，eframe 只在重绘事件里跑 logic/UI，恢复后事件循环等不到
+        // 重绘 → 界面永久冻结）。
+        //
+        // 1) macOS 上 `update_viewport_info` 为规避运行时查询死锁（egui #3494）不会
+        //    刷新 `minimized`，而标题栏发的 `ViewportCommand::Minimized(true)` 会把它
+        //    锁死为 `Some(true)`（egui #8246）→ eframe 从此认为窗口不可见，跳过全部
+        //    UI 绘制，还原窗口后界面冻结。这里检测「egui 认为最小化、但窗口实际已
+        //    恢复」的矛盾态——真最小化窗口拿不到焦点，`inner_rect` 也会被置 None；
+        //    二者任一恢复即说明窗口已还原——补发 `Minimized(false)` 清掉锁存
+        //    （非 macOS 平台 minimized 每帧从真实状态刷新：真最小化时 inner_rect 必为
+        //    None，该条件不可能成立，无副作用）。
+        // 2) 恢复瞬间（最小化 → 正常）补发一次重绘，把可能卡住的事件循环踹醒。
+        let (minimized_flag, focused, has_rect) = ctx.input(|i| {
+            (
+                i.viewport().minimized,
+                i.viewport().focused,
+                i.viewport().inner_rect.is_some(),
+            )
+        });
+        if minimized_flag == Some(true) && (focused == Some(true) || has_rect) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        }
+
+        let minimized = minimized_flag.unwrap_or(false);
+        if self.was_minimized != minimized {
+            self.was_minimized = minimized;
+            ctx.request_repaint();
+        }
+
         if repaint || repaint_msg || self.state.playing || st.loading {
             ctx.request_repaint();
         }
@@ -449,6 +511,9 @@ impl eframe::App for MusicApp {
         if self.queue_dirty {
             let _ = storage::save_playlists(&self.playlists);
         }
+        // 停掉重绘保活线程（应用退出后不再唤醒事件循环）。
+        self.keepalive_stop
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         self.tray.stop();
         eprintln!("[app] 托盘已关闭，应用退出。");
     }

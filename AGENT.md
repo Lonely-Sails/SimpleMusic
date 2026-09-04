@@ -88,6 +88,13 @@ src/
 
 ### 线程模型（最重要的一条约定）
 - **所有阻塞网络/IO 都放后台 `std::thread`**，结果经**单个 `mpsc` 通道** `AsyncMsg` 发回主线程；`MusicApp::logic` 每帧 `try_recv` 排空并更新状态。
+- **重绘保活线程**（`app/mod.rs`，线程名 `render-keepalive`，200ms 一拍）：后台线程持续
+  `ctx.request_repaint()`，规避 eframe/winit「最小化后恢复界面卡死」的上游缺陷
+  （egui #8246：macOS 上 `ViewportCommand::Minimized(true)` 把 `info.minimized` 锁死为
+  `Some(true)`、eframe 永远跳过绘制；egui #5136 / PR #8414：合成器扣留 frame callback
+  后重绘门不再打开）。配套在 `MusicApp::logic` 里检测「egui 认为最小化但窗口已恢复
+  （有焦点或 inner_rect 存在）」的矛盾态并补发 `Minimized(false)` 清锁。**改最小化/托盘
+  隐藏相关代码前先读懂这两个 issue**；`on_exit` 里必须置位 `keepalive_stop`。
 - `BiliClient` 以 `Arc<Mutex<..>>` 跨线程共享（有锁中毒保护）；`AudioEngine` 仅在 UI 线程持有，命令经 mpsc 发往专用播放线程，状态经 `Arc<Mutex<PlaybackStatus>>` 轮询。
 - **桌面歌词浮窗**通过 `egui::Context::show_viewport_deferred`（延迟模式）渲染，**不与主窗口共享重绘节奏**：浮窗只在歌词文本变化或被 `request_repaint_of` 显式唤醒时才重绘，主窗口播放动画时不会连带浮窗——彻底解决多 viewport 卡顿。
 - UI 闭包里禁止直接做网络请求；需要结果就 `spawn_*` 一个后台线程 + 发消息。
@@ -167,7 +174,23 @@ src/
 
 ## 6. 近期改动（本轮已实现）
 
-本轮（文档：沉淀播放列表重构的经验与踩坑）：
+本轮（修复：最小化后恢复界面卡死）：
+
+- **根因**：上游 eframe/winit 已知缺陷——最小化后部分平台不再向应用投递
+  `RedrawRequested`（Windows 隐藏/最小化窗口不投递；Wayland 合成器对不可见 surface
+  扣留 frame callback，重绘门不重开；macOS 上 `ViewportCommand::Minimized(true)` 把
+  `info.minimized` 锁死），而 eframe 只在重绘事件里执行 `logic`/`ui`，于是恢复窗口后
+  事件循环永远等不到重绘 → 整窗冻结（egui #8246 / #5136，修复 PR #8414 尚未发布）。
+- **修复**（`app/mod.rs`）：① `render-keepalive` 后台线程每 200ms `ctx.request_repaint()`
+  强制事件循环保持苏醒（eframe 0.34+ 对不可见窗口会在收到重绘请求时直接跑
+  `run_ui_and_paint`，viewport 命令得以处理）；② `logic` 里检测「egui 认为最小化但
+  窗口已恢复（有焦点或 inner_rect 存在）」矛盾态，补发 `Minimized(false)` 清掉 macOS
+  的 `info.minimized` 锁存；③ `was_minimized` 记录最小化→恢复跳变，恢复瞬间补一针重绘。
+  `on_exit` 置位 `keepalive_stop` 让线程退出。
+- 经验：**这类「只在最小化/恢复后出现的冻结」不是死锁，是事件循环饿死**；
+  优先怀疑平台不再投递重绘事件，应用层用后台线程保活 + 恢复补绘即可兜底。
+
+上一轮（文档：沉淀播放列表重构的经验与踩坑）：
 
 - §1 补沙箱测试要点：`cargo test` 必须 `--no-default-features`（GTK 链接坑，`check` 却能过，
   别被骗）；`cargo check`（默认 feature）也要跑以覆盖托盘代码；测试数更新为 133。
