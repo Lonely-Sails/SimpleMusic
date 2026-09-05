@@ -3,7 +3,7 @@
 
 use super::model::{Lyrics, LrcSearchResult, SongHint};
 use super::lrc;
-use super::matching::{best_match_with_hint, match_score_with_hint};
+use super::matching::best_match_if_acceptable;
 use super::{
     MIN_ACCEPT_SCORE, VKEYS_NETEASE_LYRIC, VKEYS_NETEASE_SEARCH, VKEYS_QQ_LYRIC, VKEYS_QQ_SEARCH,
 };
@@ -119,11 +119,8 @@ pub(super) fn vkeys_source_fetch(
     if candidates.is_empty() {
         return None;
     }
-    let best = best_match_with_hint(&candidates, title, uploader, hint)?;
-    if match_score_with_hint(best, title, uploader, hint) < MIN_ACCEPT_SCORE {
-        return None;
-    }
-    let best_idx = candidates.iter().position(|c| std::ptr::eq(c, best))?;
+    let (best_idx, best) =
+        best_match_if_acceptable(&candidates, title, uploader, hint, MIN_ACCEPT_SCORE)?;
     let best_id = vkey_item_id(src, &items[best_idx])?;
     let lyric = vkeys_lyric_fetch(client, src, &best_id)?;
     let mut ly = build_vkey_lyrics(lyric)?;

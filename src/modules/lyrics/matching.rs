@@ -124,16 +124,43 @@ pub fn best_match_with_hint<'a>(
     uploader: &str,
     hint: Option<&SongHint>,
 ) -> Option<&'a LrcSearchResult> {
-    let mut best: Option<&LrcSearchResult> = None;
+    best_match_index_with_hint(candidates, title, uploader, hint)
+        .and_then(|i| candidates.get(i))
+}
+
+/// [`best_match_with_hint`] 的返回索引版本：调用方需要候选在原切片中的
+/// 位置（如 vkeys 回查 id）时用它，避免 `std::ptr::eq` 比对。
+pub(super) fn best_match_index_with_hint(
+    candidates: &[LrcSearchResult],
+    title: &str,
+    uploader: &str,
+    hint: Option<&SongHint>,
+) -> Option<usize> {
+    let mut best_idx: Option<usize> = None;
     let mut best_score = i64::MIN;
-    for c in candidates {
+    for (i, c) in candidates.iter().enumerate() {
         let sc = match_score_with_hint(c, title, uploader, hint);
         if sc > best_score {
             best_score = sc;
-            best = Some(c);
+            best_idx = Some(i);
         }
     }
-    best
+    best_idx
+}
+
+/// 选最佳候选并应用接受阈值：最佳得分 ≥ `min_score` 才返回该候选，
+/// 否则 `None`。lrclib / vkeys 两数据源共用的「命中判定」。
+pub(super) fn best_match_if_acceptable<'a>(
+    candidates: &'a [LrcSearchResult],
+    title: &str,
+    uploader: &str,
+    hint: Option<&SongHint>,
+    min_score: i64,
+) -> Option<(usize, &'a LrcSearchResult)> {
+    let idx = best_match_index_with_hint(candidates, title, uploader, hint)?;
+    let best = &candidates[idx];
+    (match_score_with_hint(best, title, uploader, hint) >= min_score)
+        .then_some((idx, best))
 }
 
 #[cfg(test)]

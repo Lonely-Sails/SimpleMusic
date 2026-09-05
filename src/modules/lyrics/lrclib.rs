@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use super::model::{Lyrics, LrcSearchResult, SongHint};
-use super::matching::{best_match_with_hint, match_score_with_hint};
+use super::matching::best_match_if_acceptable;
 use super::query::clean_title;
 use super::query::{search_queries_with_hint, usable_uploader};
 use super::vkeys::{vkeys_source_fetch, VkSource};
@@ -74,10 +74,10 @@ impl LyricsProvider {
                 continue;
             }
             if let Some(results) = search(&client, q) {
-                if let Some(best) = best_match_with_hint(&results, title, uploader, hint) {
-                    if match_score_with_hint(best, title, uploader, hint) >= MIN_ACCEPT_SCORE {
-                        push_unique_lyrics(&mut out, lyrics_from(best));
-                    }
+                if let Some((_, best)) =
+                    best_match_if_acceptable(&results, title, uploader, hint, MIN_ACCEPT_SCORE)
+                {
+                    push_unique_lyrics(&mut out, lyrics_from(best));
                 }
             }
         }

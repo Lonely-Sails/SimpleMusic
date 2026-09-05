@@ -95,21 +95,27 @@ pub fn load_session_from(path: &Path) -> std::io::Result<BiliSession> {
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
-/// 把会话写入指定路径（目录不存在会自动创建）。会话含 SESSDATA 等登录凭据，
-/// 落盘后把文件权限收紧为仅属主可读写（0600），避免多用户机器上其他用户读到。
-pub fn save_session_to(path: &Path, session: &BiliSession) -> std::io::Result<()> {
+/// 把序列化文本写入指定路径（目录不存在会自动创建）。
+/// 各 `save_*_to` 的公共落盘通道；`mode` 提供时额外收紧文件权限（如会话 0600）。
+fn write_json_at(path: &Path, text: String, mode: Option<u32>) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let text = serde_json::to_string_pretty(session)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     fs::write(path, text)?;
     #[cfg(unix)]
-    {
+    if let Some(m) = mode {
         use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(m));
     }
     Ok(())
+}
+
+/// 把会话写入指定路径（目录不存在会自动创建）。会话含 SESSDATA 等登录凭据，
+/// 落盘后把文件权限收紧为仅属主可读写（0600），避免多用户机器上其他用户读到。
+pub fn save_session_to(path: &Path, session: &BiliSession) -> std::io::Result<()> {
+    let text = serde_json::to_string_pretty(session)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    write_json_at(path, text, Some(0o600))
 }
 
 /// 读取默认路径下的会话。
@@ -161,12 +167,9 @@ pub fn load_settings() -> std::io::Result<Settings> {
 /// 保存设置（目录不存在会自动创建）。
 pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
     let path = config_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
     let text = serde_json::to_string_pretty(settings)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    fs::write(path, text)
+    write_json_at(&path, text, None)
 }
 
 /// 播放队列文件完整路径：`~/.config/simple-music/playlist.json`。
@@ -229,12 +232,9 @@ pub fn save_playlists(playlists: &[Playlist]) -> std::io::Result<()> {
 
 /// 保存歌单到指定路径。
 pub fn save_playlists_to(path: &Path, playlists: &[Playlist]) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
     let text = serde_json::to_string_pretty(playlists)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    fs::write(path, text)
+    write_json_at(path, text, None)
 }
 
 // ---------------------------------------------------------------------------
@@ -276,12 +276,9 @@ pub fn save_lyrics_cache_to(
     path: &Path,
     cache: &BTreeMap<String, crate::modules::lyrics::LyricsCacheEntry>,
 ) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
     let text = serde_json::to_string_pretty(cache)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    fs::write(path, text)
+    write_json_at(path, text, None)
 }
 
 /// 缓存目录：`$HOME/.cache/simple-music`（与音频缓存同根；未设置 HOME 回退当前目录）。
