@@ -72,8 +72,10 @@ impl MusicApp {
         } else {
             cur.clone()
         };
-        self.state.current_lrc_line = current_line;
-        self.lyrics_next_line = if prelude { cur } else { next };
+        // 显示文本净化：剔除内嵌字体渲染不出的字符（emoji/PUA/零宽等），
+        // 桌面歌词浮窗不再「?」满天飞（浮窗侧显示边界还有一道同样过滤，幂等）。
+        self.state.current_lrc_line = crate::fonts::sanitize_text(&current_line);
+        self.lyrics_next_line = crate::fonts::sanitize_text(&(if prelude { cur } else { next }));
     }
 
     /// 应用一份歌词候选（歌词选择弹窗点选时调用）：重设当前歌词与时间轴/纯文本行。

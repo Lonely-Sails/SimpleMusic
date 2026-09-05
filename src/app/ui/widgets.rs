@@ -356,7 +356,12 @@ pub fn draw_qr(ui: &mut egui::Ui, matrix: &[Vec<bool>], size: f32) {
 // ---------------------------------------------------------------------------
 
 /// 将文本缩小到不超过 `max_width` 的宽度（末尾加「…」）。
+///
+/// 显示边界统一净化（`fonts::sanitize_text`）：剔除内嵌字体渲染不出的
+/// emoji/PUA 等字符，再按净洁后的文本量宽截断——先量后截，避免净化后
+/// 仍超宽或「?」占位撑坏布局。
 pub fn fit_text(ctx: &egui::Context, text: &str, font: &FontId, max_width: f32) -> String {
+    let text = crate::fonts::sanitize_text(text);
     if text.is_empty() {
         return String::new();
     }
@@ -365,8 +370,8 @@ pub fn fit_text(ctx: &egui::Context, text: &str, font: &FontId, max_width: f32) 
             .size()
             .x
     };
-    if width_of(text) <= max_width {
-        return text.to_owned();
+    if width_of(&text) <= max_width {
+        return text;
     }
     const ELLIPSIS: &str = "…";
     let mut chars: Vec<char> = text.chars().collect();
@@ -381,10 +386,13 @@ pub fn fit_text(ctx: &egui::Context, text: &str, font: &FontId, max_width: f32) 
 }
 
 /// 用 `FontId::proportional(13.0)` 截断文本（列表行标签常用）。
+///
+/// 与 [`fit_text`] 同样先净化再量宽（列表标题/UP 主是 emoji 重灾区）。
 pub fn truncate_label(ui: &egui::Ui, text: &str, max_width: f32) -> String {
     if max_width <= 0.0 {
-        return text.to_owned();
+        return crate::fonts::sanitize_text(text);
     }
+    let text = crate::fonts::sanitize_text(text);
     if ui
         .ctx()
         .fonts_mut(|f| f.layout_no_wrap(text.to_owned(), FontId::proportional(13.0), Color32::WHITE))
@@ -394,7 +402,7 @@ pub fn truncate_label(ui: &egui::Ui, text: &str, max_width: f32) -> String {
     {
         return text.to_owned();
     }
-    fit_text(ui.ctx(), text, &FontId::proportional(13.0), max_width)
+    fit_text(ui.ctx(), &text, &FontId::proportional(13.0), max_width)
 }
 
 #[cfg(test)]

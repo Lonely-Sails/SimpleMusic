@@ -27,6 +27,8 @@ impl MusicApp {
             .map(|p| p.name.as_str())
             .unwrap_or("默认歌单")
             .to_owned();
+        // 歌单名可能来自 B 站收藏夹标题（可含 emoji）：显示前统一净化。
+        let current_name = crate::fonts::sanitize_text(&current_name);
 
         egui::Panel::top(egui::Id::new("playlist_bar"))
             .frame(
@@ -197,8 +199,12 @@ impl MusicApp {
                         clicked = ui
                             .add(
                                 egui::Button::new(
-                                    RichText::new(format!("{} ({})", f.title, f.media_count))
-                                        .color(theme::TEXT_PRIMARY),
+                                    RichText::new(format!(
+                                        "{} ({})",
+                                        crate::fonts::sanitize_text(&f.title),
+                                        f.media_count
+                                    ))
+                                    .color(theme::TEXT_PRIMARY),
                                 )
                                 .fill(theme::BG_CARD)
                                 .corner_radius(theme::CORNER),
@@ -288,7 +294,12 @@ impl MusicApp {
                             icons::folder(ui.painter(), r, theme::TEXT_SECONDARY);
                             ui.add_space(2.0);
                         }
-                        ui.label(RichText::new(format!("{name} ({count})")).color(theme::TEXT_PRIMARY));
+                        ui.label(RichText::new(format!(
+                            "{} ({})",
+                            crate::fonts::sanitize_text(name),
+                            count
+                        ))
+                        .color(theme::TEXT_PRIMARY));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui
                                 .add(

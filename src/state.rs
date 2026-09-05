@@ -233,6 +233,45 @@ impl UiFont {
     }
 }
 
+/// 桌面歌词浮窗的字体选择（设置页「桌面歌词字体」）。
+///
+/// 桌面歌词用大字号渲染歌词，字体观感与主界面解耦：主窗口恒用内嵌字体
+/// （见 `fonts.rs` 模块文档），浮窗文字用这里的选择（柔影光栅化同源）。
+///
+/// - `FollowUi`：跟随界面字体（主界面恒内嵌，等价 `Embedded`；保留语义与
+///   旧配置兼容——旧版 `"kind":"auto"`/界面字体默认值都落到这里）；
+/// - `Embedded`：恒用内嵌 Noto Sans SC；
+/// - `Specific`：用户挑选的系统字体文件（存绝对路径字符串）。
+///
+/// 持久化为带 tag 的枚举；旧配置没有该字段时 `#[serde(default)]` 落到 FollowUi。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "path", rename_all = "snake_case")]
+pub enum LyricsFont {
+    /// 跟随界面字体（兼容旧版 `auto` 设置值）。
+    #[serde(alias = "auto", alias = "follow_ui")]
+    FollowUi,
+    /// 恒用内嵌 Noto Sans SC。
+    Embedded,
+    /// 指定系统字体文件（绝对路径）。
+    Specific(String),
+}
+
+impl Default for LyricsFont {
+    fn default() -> Self {
+        LyricsFont::FollowUi
+    }
+}
+
+impl LyricsFont {
+    /// Specific 时返回字体文件路径。
+    pub fn path(&self) -> Option<&str> {
+        match self {
+            LyricsFont::Specific(p) => Some(p),
+            _ => None,
+        }
+    }
+}
+
 /// 用户设置（持久化到 ~/.config/simple-music/config.json，由 modules::storage 负责）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
@@ -255,6 +294,9 @@ pub struct Settings {
     /// 界面字体选择（设置页可选自动/内嵌/任意系统字体；详见 [`UiFont`]）。
     #[serde(default)]
     pub ui_font: UiFont,
+    /// 桌面歌词浮窗字体（跟随界面/内嵌/指定；详见 [`LyricsFont`]）。
+    #[serde(default)]
+    pub lyrics_font: LyricsFont,
     /// 桌面歌词浮窗位置（屏幕坐标 `[x, y]`，`None` = 首次由系统默认决定）。
     /// 浮窗每次上报当前位置时更新并随设置落盘，重启后恢复到关闭前的位置。
     /// 存 `[f32; 2]` 而非 egui 的 `Pos2`：项目未启用 eframe 的 serde feature，
@@ -279,6 +321,7 @@ impl Default for Settings {
             volume: 0.8,
             active_playlist: 0,
             ui_font: UiFont::Auto,
+            lyrics_font: LyricsFont::FollowUi,
             lyrics_pos: None,
         }
     }
@@ -412,5 +455,49 @@ mod tests {
         assert_eq!(UiFont::Specific("/x.ttf".into()).path(), Some("/x.ttf"));
         assert_eq!(UiFont::Auto.path(), None);
         assert_eq!(UiFont::Embedded.path(), None);
+    }
+
+    #[test]
+    fn settings_old_json_without_lyrics_font_loads_as_follow_ui() {
+        // 旧版 config.json 没有 lyrics_font 字段 → serde default 落到 FollowUi。
+        let old = r#"{"desktop_lyrics_enabled":false,"lyrics_locked":false,"font_scale":1.0}"#;
+        let s: Settings = serde_json::from_str(old).unwrap();
+        assert_eq!(s.lyrics_font, LyricsFont::FollowUi);
+    }
+
+    #[test]
+    fn lyrics_font_roundtrip_all_variants() {
+        for f in [
+            LyricsFont::FollowUi,
+            LyricsFont::Embedded,
+            LyricsFont::Specific("/usr/share/fonts/y.ttf".into()),
+        ] {
+            let json = serde_json::to_string(&f).unwrap();
+            let back: LyricsFont = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, f, "roundtrip 失败: {json}");
+        }
+        // 序列化形态（与 UiFont 同款 tag/content 布局）。
+        assert_eq!(
+            serde_json::to_string(&LyricsFont::FollowUi).unwrap(),
+            r#"{"kind":"follow_ui"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&LyricsFont::Embedded).unwrap(),
+            r#"{"kind":"embedded"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&LyricsFont::Specific("/b.ttf".into())).unwrap(),
+            r#"{"kind":"specific","path":"/b.ttf"}"#
+        );
+    }
+
+    #[test]
+    fn lyrics_font_path_accessors() {
+        assert_eq!(
+            LyricsFont::Specific("/y.ttf".into()).path(),
+            Some("/y.ttf")
+        );
+        assert_eq!(LyricsFont::FollowUi.path(), None);
+        assert_eq!(LyricsFont::Embedded.path(), None);
     }
 }
