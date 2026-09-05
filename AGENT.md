@@ -14,7 +14,7 @@
 cd /data/dsh/home/SimpleMusic
 source .toolchain/env.sh          # 设置 RUSTUP_HOME / CARGO_HOME / PATH / CC / 链接器 等
 cargo check                       # 编译检查（默认 tray feature）
-cargo test --no-default-features  # 单测（167 个离线用例 + 2 个 #[ignore] 网络用例）
+cargo test --no-default-features  # 单测（177 个离线用例 + 2 个 #[ignore] 网络用例）
 cargo run --no-default-features -- --smoke  # 无窗口模块自检，打印 SMOKE_OK 退出
 cargo run                         # 真实 GUI 启动（需要显示环境）
 ```
@@ -66,7 +66,7 @@ src/
 │   ├── messages.rs   后台线程消息 AsyncMsg + spawn_* 派发 + handle_msg
 │   ├── player.rs     播放控制（上下曲/seek/音量/移除）+ 快捷键 + playback_songs() 快照
 │   ├── playlists.rs  歌单管理（切换/删除/重命名/添加到歌单/在线歌单定位）
-│   ├── lyrics.rs     歌词同步（update_lyrics_line + pick_plain_line_index）
+│   ├── lyrics.rs     歌词同步（update_lyrics_line + pick_plain_line_index + next_switch_delay_secs）
 │   ├── window.rs     窗口关闭/隐藏 + 托盘事件轮询
 │   └── ui/           主界面组件，按区域一文件（mod/widgets/title_bar/status_bar/
 │                     playlist_bar/song_list/import/player_bar/settings/login/lyrics_viewport）
@@ -101,6 +101,7 @@ src/
 │   │   └── text.rs   文本低层工具（书名号/括号注释/分隔符/Levenshtein）
 │   └── storage.rs    配置/会话/歌单 JSON 持久化（write_json_at 统一落盘；BiliSession Debug 已脱敏）
 ├── state.rs          数据模型：PlaybackState / QueueItem / Playlist / PlayMode / AudioQuality / Settings
+├── text_shadow.rs    文字真·模糊柔影：skrifa 轮廓 → vello_cpu 光栅化 → 盒滤波高斯 → egui 纹理
 ├── theme.rs          主题色板 + 按钮/样式辅助（BG_*/TEXT_*/ACCENT 等语义常量）
 ├── icons.rs          图标：内嵌 Phosphor 图标字体（PUA 码点），不依赖 emoji/系统字形
 ├── cover.rs          封面缩略图：后台下载 + 解码（不在主线程）→ egui 纹理缓存（失败 30 分钟冷却）
@@ -127,9 +128,14 @@ src/
   命令经 mpsc 发往专用播放线程（`audio/player.rs::worker_loop`），状态经 `Arc<Mutex<PlaybackStatus>>` 轮询。
 - **桌面歌词浮窗**通过 `egui::Context::show_viewport_deferred`（延迟模式）渲染，**不与主窗口共享
   重绘节奏**：浮窗只在内容指纹（当前句/下一句/字号/锁定）变化或输入事件时重绘。切歌过渡动画的
-  过渡状态存在共享 `Context` data 槽（`TRANSITION_SLOT`），动画期间 `request_repaint_after(1/60s)`
-  只唤醒浮窗自身。跨 viewport 通信一律走 data 槽（`IdTypeMap`，读后即删），deferred 闭包是
-  `Fn + 'static`，不能借用 `&mut self`。
+  过渡状态存在共享 `Context` data 槽（`TRANSITION_SLOT`），动画期间 `request_repaint()` 连续唤醒
+  浮窗自身——呈现节奏交给 vsync/合成器对齐（egui 内建动画同款）；固定 1/60s 定时器会与 vblank
+  相位漂移（帧距 16.7/33.4ms 交替），观感一顿一顿，**不要改回去**。跨 viewport 通信一律走
+  data 槽（`IdTypeMap`，读后即删），deferred 闭包是 `Fn + 'static`，不能借用 `&mut self`。
+- **主窗口播放时按 5Hz 节流自醒**（`PLAY_REPAINT_INTERVAL`，`app/mod.rs::logic`）：醒来时刻取
+  「节流间隔」与「下一个歌词切换点 − 20ms 提前量」的较早者（`app/lyrics.rs::next_switch_delay_secs`），
+  进度条平滑且切行动画不迟到。**不要恢复 `playing ⇒ request_repaint()` 的全速连续重绘**——
+  浮窗动画期间主窗口全速重绘会在 winit 全局重绘队列里互相踩踏，是浮窗掉帧主因。
 - UI 闭包里禁止直接做网络请求；需要结果就 `spawn_*` 一个后台线程 + 发消息。
 
 ### 播放列表语义（改播放相关代码前必读）
@@ -189,7 +195,7 @@ CDN 403/410 自动换备用地址；写盘失败降级内存缓冲；无输出�
 6. **图标**：所有界面图标用 `icons::*`（内嵌 Phosphor，PUA 码点渲染到 rect 中心），不要依赖 emoji 或媒体控制码点（跨平台字形缺失会显示 "?"）。
 7. **错误处理**：音频错误不 panic，写 `PlaybackStatus.error` 由 UI 展示；网络错误经 `AsyncMsg` 回 `ui_error`（红色）或 `notice`（金色轻提示，4 秒）。
 8. **文本宽度**：动态文案先 `truncate_label`/`fit_text` 再 `painter.text`。
-9. **单测**：纯函数（解析/打分/格式化/过滤）放同文件 `#[cfg(test)] mod tests`，离线跑；真实网络用 `#[ignore]` 标注（如 `detect_music_live`）。新增纯逻辑尽量带测试。测试数 167 + 2 ignored。
+9. **单测**：纯函数（解析/打分/格式化/过滤）放同文件 `#[cfg(test)] mod tests`，离线跑；真实网络用 `#[ignore]` 标注（如 `detect_music_live`）。新增纯逻辑尽量带测试。测试数 177 + 2 ignored。
 10. **UI 状态与数据解耦（稳定标识模式）**：凡是「UI 里选中的东西」跨帧/跨列表操作要记住时，**存稳定标识（如 bvid），不要存列表下标**——下标在过滤/删歌/刷新后静默漂移出 bug，标识找不到时按 `None` 处理即可自然降级。
 11. **不要让「执行动作」顺手改数据**：副作用（入单/落盘/置 dirty）必须由用户的显式操作触发；新功能如果发现自己「顺手」改了用户数据，几乎一定是设计错了。
 12. **行为不变量改动要写迁移/清理**：改持久化语义时在启动路径加一次性数据清理，并考虑旧文件兼容（`#[serde(default)]`）。
@@ -205,7 +211,10 @@ CDN 403/410 自动换备用地址；写盘失败降级内存缓冲；无输出�
 - **播放**：播放/暂停、上下曲、进度条 seek、音量、曲终自动下一首、加载进度、三种切歌模式（顺序循环/单曲循环/随机）、音质偏好（64/128/320k/无损）。
 - **播放列表语义**：**当前选中的歌单就是播放列表**，没有独立队列；播放时不隐式写歌进歌单。
 - **封面**：列表/播放条圆角缩略图，异步 + 内存缓存 + 占位图。
-- **桌面歌词**：透明置顶无边框悬浮窗，当前句+下一句预览，可拖动/锁定(鼠标穿透)/调字号，位置随浮窗重绘实时记录进设置并持久化（仅 X11），重启后自动恢复；切歌淡入淡出过渡。
+- **桌面歌词**：透明置顶无边框悬浮窗，当前句+下一句预览（带 skrifa+vello_cpu 离屏光栅化的
+  真·模糊柔影，见 `text_shadow.rs`，等价 CSS text-shadow；纹理按文本缓存，过渡动画期间复用），
+  可拖动/锁定(鼠标穿透)/调字号，位置随浮窗重绘实时记录进设置并持久化（仅 X11），重启后自动恢复；
+  切歌淡入淡出过渡（vsync 对齐，见线程模型）。
 - **歌词**：B 站「识别音乐」生成优先查询词 + 视频时长校准打分；vkeys.cn 聚合源自动搜索 + LRC 时间轴同步，翻译并入；LRCLIB 兜底；本地缓存 + 手选持久化。
 - **歌单**：本地歌单增删改（管理窗口）；在线歌单（B 站收藏夹引用，可删）。
 - **歌单内搜索**：标题/UP 主实时过滤（本地与在线列表都有）。

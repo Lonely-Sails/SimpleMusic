@@ -27,6 +27,35 @@
 use eframe::egui;
 use skrifa::MetadataProvider as _;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock, RwLock};
+
+/// 最近一次安装的**文字**字体字节（供 `text_shadow` 离屏光栅化与 egui 保持同一
+/// 字形来源）。`OnceLock<RwLock<_>>`：安装时写（启动/设置页切字体），渲染时读。
+static ACTIVE_TEXT_FONT: OnceLock<RwLock<Arc<Vec<u8>>>> = OnceLock::new();
+
+/// 登记当前文字字体字节（安装字体后调用）。
+fn set_active_text_font(bytes: &[u8]) {
+    let slot = ACTIVE_TEXT_FONT.get_or_init(|| RwLock::new(Arc::new(Vec::new())));
+    if let Ok(mut v) = slot.write() {
+        *v = Arc::new(bytes.to_vec());
+    }
+}
+
+/// 当前文字字体字节；从未安装过（纯无头测试）时回退内嵌 Noto Sans SC。
+pub fn active_text_font() -> Arc<Vec<u8>> {
+    match ACTIVE_TEXT_FONT.get().and_then(|s| s.read().ok()) {
+        Some(v) if !v.is_empty() => Arc::clone(&v),
+        _ => Arc::new(NOTO_SC_BYTES.to_vec()),
+    }
+}
+
+/// 内嵌 CJK 字体字节（include_bytes 静态数据；[`embedded_cjk_data`] 与
+/// [`active_text_font`] 共用同一份）。pub 供 text_shadow 无头测试直接使用。
+pub(crate) const NOTO_SC_BYTES_FOR_TEST: &[u8] = include_bytes!("../assets/NotoSansSC-Regular.otf");
+
+/// 内嵌 CJK 字体字节（include_bytes 静态数据；[`embedded_cjk_data`]、
+/// [`active_text_font`] 与 [`NOTO_SC_BYTES_FOR_TEST`] 共用同一份）。
+const NOTO_SC_BYTES: &[u8] = NOTO_SC_BYTES_FOR_TEST;
 
 /// 内嵌 CJK 字体在 FontDefinitions 里的键名。
 const EMBEDDED_KEY: &str = "noto_sc";
@@ -62,6 +91,11 @@ pub fn install_fonts(ctx: &egui::Context, ui_font: Option<&Path>) -> FontChoice 
     };
     let (fonts, choice) = build_definitions(system.as_ref());
     ctx.set_fonts(fonts);
+    // 登记实际采用的字体字节，供 text_shadow 阴影光栅化与 egui 保持同源字形。
+    match &system {
+        Some((_, bytes)) => set_active_text_font(bytes),
+        None => set_active_text_font(NOTO_SC_BYTES),
+    }
     choice
 }
 
@@ -115,9 +149,7 @@ fn build_definitions(system: Option<&(PathBuf, Vec<u8>)>) -> (egui::FontDefiniti
 
 /// 内嵌 CJK 字体（`include_bytes!` 静态数据）。
 fn embedded_cjk_data() -> std::sync::Arc<egui::FontData> {
-    std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
-        "../assets/NotoSansSC-Regular.otf"
-    )))
+    std::sync::Arc::new(egui::FontData::from_static(NOTO_SC_BYTES))
 }
 
 /// 强制安装内嵌 Noto Sans SC + Phosphor（跳过系统字体探测）。
@@ -126,6 +158,7 @@ fn embedded_cjk_data() -> std::sync::Arc<egui::FontData> {
 pub fn install_embedded_fonts(ctx: &egui::Context) {
     let (fonts, _) = build_definitions(None);
     ctx.set_fonts(fonts);
+    set_active_text_font(NOTO_SC_BYTES);
 }
 
 // ---------------------------------------------------------------------------

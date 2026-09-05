@@ -1,6 +1,6 @@
 //! 歌词同步：把当前播放进度映射为「当前句 / 下一句」。
 
-use crate::modules::lyrics::{self, Lyrics};
+use crate::modules::lyrics::{self, LrcLine, Lyrics};
 
 use super::MusicApp;
 
@@ -12,6 +12,32 @@ pub fn pick_plain_line_index(plain: &[String], progress: f64) -> usize {
     let p = progress.clamp(0.0, 1.0);
     let idx = (p * plain.len() as f64) as usize;
     idx.min(plain.len() - 1)
+}
+
+/// 距下一次歌词行切换的秒数：LRC 用下一个时间戳，纯文本按进度均分推算。
+/// 用于主窗口「定时在切换点醒来」——节流重绘的同时保证切行不延迟。
+/// 无歌词或已到最后一行之后返回 `None`。
+pub fn next_switch_delay_secs(
+    lines: &[LrcLine],
+    plain_len: usize,
+    pos_secs: f64,
+    duration_secs: f64,
+) -> Option<f64> {
+    if !lines.is_empty() {
+        // LRC 行按时间升序（解析后已排序）；取第一个晚于当前进度的行。
+        let idx = lines.partition_point(|l| l.time_secs <= pos_secs);
+        let dt = lines.get(idx)?.time_secs - pos_secs;
+        Some(dt.max(0.0))
+    } else if plain_len > 0 && duration_secs > 0.0 {
+        let idx = pick_plain_line_index(&[], 0.0).min(plain_len - 1);
+        let _ = idx; // 切换点只取决于进度比例，无需当前下标
+        let p = (pos_secs / duration_secs).clamp(0.0, 1.0);
+        let idx = (p * plain_len as f64) as usize;
+        let next_pos = (idx + 1).min(plain_len) as f64 / plain_len as f64 * duration_secs;
+        Some((next_pos - pos_secs).max(0.0))
+    } else {
+        None
+    }
 }
 
 impl MusicApp {
@@ -92,6 +118,7 @@ impl MusicApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modules::lyrics::LrcLine;
 
     #[test]
     fn pick_plain_line_index_clamped() {
@@ -101,5 +128,38 @@ mod tests {
         assert_eq!(pick_plain_line_index(&plain, 1.5), 2);
         assert_eq!(pick_plain_line_index(&plain, -1.0), 0);
         assert_eq!(pick_plain_line_index(&[], 0.5), 0);
+    }
+
+    fn lrc(times: &[f64]) -> Vec<LrcLine> {
+        times
+            .iter()
+            .enumerate()
+            .map(|(i, t)| LrcLine { time_secs: *t, text: format!("line{i}") })
+            .collect()
+    }
+
+    /// LRC：切换点 = 下一个时间戳；前奏（pos < 首行时间）覆盖首行切换；
+    /// 最后一行之后无切换点。
+    #[test]
+    fn next_switch_delay_lrc() {
+        let lines = lrc(&[10.0, 20.0, 30.0]);
+        assert_eq!(next_switch_delay_secs(&lines, 0, 5.0, 100.0), Some(5.0));
+        assert_eq!(next_switch_delay_secs(&lines, 0, 0.0, 100.0), Some(10.0));
+        assert_eq!(next_switch_delay_secs(&lines, 0, 21.5, 100.0), Some(8.5));
+        assert_eq!(next_switch_delay_secs(&lines, 0, 31.0, 100.0), None);
+        // 越界进度（时钟略超时间戳）不产生负延迟。
+        assert_eq!(next_switch_delay_secs(&lines, 0, 10.5, 100.0), Some(9.5));
+    }
+
+    /// 纯文本：按进度均分推算切换点；无歌词/无时长时 None。
+    #[test]
+    fn next_switch_delay_plain() {
+        let plain_len = 4;
+        // 4 行均分：切换点在 25/50/75/100%。
+        assert_eq!(next_switch_delay_secs(&[], plain_len, 5.0, 100.0), Some(20.0));
+        assert_eq!(next_switch_delay_secs(&[], plain_len, 30.0, 100.0), Some(20.0));
+        assert_eq!(next_switch_delay_secs(&[], plain_len, 100.0, 100.0), Some(0.0));
+        assert_eq!(next_switch_delay_secs(&[], 0, 5.0, 100.0), None);
+        assert_eq!(next_switch_delay_secs(&[], plain_len, 5.0, 0.0), None);
     }
 }

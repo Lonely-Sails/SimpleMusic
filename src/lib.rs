@@ -12,7 +12,8 @@
 //! - `app/`：UI 状态机 —— `MusicApp`（eframe::App）+ 每帧 `logic` + 按区域拆分的
 //!   `app::ui`；后台任务经 `app::messages::AsyncMsg` 单通道回主线程。
 //! - 其余为 UI 支撑：`theme`（语义色板）、`icons`（自绘 Phosphor 图标）、
-//!   `fonts`（字体安装/系统扫描）、`cover`（封面缩略图缓存）、`tray`（系统托盘）。
+//!   `fonts`（字体安装/系统扫描）、`text_shadow`（真·模糊文字阴影纹理）、
+//!   `cover`（封面缩略图缓存）、`tray`（系统托盘）。
 
 pub mod app;
 pub mod cover;
@@ -20,6 +21,7 @@ pub mod fonts;
 pub mod icons;
 pub mod modules;
 pub mod state;
+pub mod text_shadow;
 pub mod theme;
 pub mod tray;
 pub mod util;

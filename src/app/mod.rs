@@ -41,6 +41,13 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+/// 播放中主窗口自醒重绘的间隔（秒）。进度条按此节流刷新；约 5Hz 对人眼而言
+/// 已是平滑的进度推进，同时大幅降低播放期间主窗口的渲染占用。
+const PLAY_REPAINT_INTERVAL: f32 = 0.2;
+/// 主窗口比歌词切换点提前醒来的秒数（缓冲）：保证切行帧落在切换点之前，
+/// 过渡动画从正确的时刻开始。
+const LYRICS_SWITCH_WAKE_EARLY: f64 = 0.02;
+
 pub struct MusicApp {
     // 引擎与客户端
     audio: AudioEngine,
@@ -116,6 +123,10 @@ pub struct MusicApp {
     queue_dirty: bool,
     /// 上一帧是否处于最小化（用于恢复时补发重绘，见 `logic` 里的恢复逻辑）。
     was_minimized: bool,
+    /// 上次「播放中节流重绘」的时刻：播放时主窗口按 [`PLAY_REPAINT_INTERVAL`]
+    /// 低频自醒（进度条同步），其余时间不连续重绘——把渲染线程让给桌面歌词
+    /// 浮窗的过渡动画。
+    last_playing_repaint: Option<Instant>,
     /// 重绘保活线程的退出标志（`on_exit` 置位；进程正常退出前兜底）。
     keepalive_stop: Arc<AtomicBool>,
     // 搜索过滤
@@ -245,6 +256,7 @@ impl MusicApp {
             last_queue_save: None,
             queue_dirty: false,
             was_minimized: false,
+            last_playing_repaint: None,
             keepalive_stop: Arc::new(AtomicBool::new(false)),
             search_text: String::new(),
             font_list: Vec::new(),
@@ -376,17 +388,12 @@ impl MusicApp {
 
     // ---- 每帧同步 ----
 
-    fn sync_playback(&mut self, st: &PlaybackStatus) -> bool {
-        let mut repaint = false;
+    fn sync_playback(&mut self, st: &PlaybackStatus) {
         self.state.playing = st.playing;
         self.state.position_secs = st.position_secs;
         if st.duration_secs > 0.0 {
             self.state.duration_secs = st.duration_secs;
         }
-        if st.playing || st.loading {
-            repaint = true;
-        }
-        repaint
     }
 
     fn handle_finished(&mut self, st: &PlaybackStatus) -> bool {
@@ -448,9 +455,11 @@ impl eframe::App for MusicApp {
             self.force_quit = false;
         }
 
+        // 状态同步与曲终推进；它们引发的即时重绘统一由下方 `repaint_msg` /
+        // 播放节流块决定（`sync_playback` 的播放态本身由节流块处理）。
         let st = self.audio.status();
-        let mut repaint = self.sync_playback(&st);
-        repaint |= self.handle_finished(&st);
+        self.sync_playback(&st);
+        let track_switched = self.handle_finished(&st);
 
         let mut repaint_msg = false;
         while let Ok(msg) = self.rx.try_recv() {
@@ -543,7 +552,37 @@ impl eframe::App for MusicApp {
             ctx.request_repaint();
         }
 
-        if repaint || repaint_msg || self.state.playing || st.loading {
+        // 播放中的自醒重绘：进度条按 [`PLAY_REPAINT_INTERVAL`] 节流（人眼对进度
+        // 平滑度不敏感），事件驱动帧（输入/消息/转场）照常即时响应。这同时把渲染
+        // 线程让给桌面歌词浮窗——浮窗过渡动画期间若主窗口也在全速重绘，二者在
+        // winit 全局重绘队列里互相踩踏，是浮窗动画掉帧的主因。
+        if self.state.playing || st.loading {
+            let now = Instant::now();
+            let due = match self.last_playing_repaint {
+                Some(t) => now.duration_since(t).as_secs_f32() >= PLAY_REPAINT_INTERVAL,
+                None => true,
+            };
+            if due {
+                self.last_playing_repaint = Some(now);
+                // 醒来时刻取「节流间隔」与「下一个歌词切换点」的较早者：进度条
+                // 低频刷新的同时，切行动画不会因节流而迟到（迟到会吃掉过渡前段）。
+                let lyrics_delay = crate::app::lyrics::next_switch_delay_secs(
+                    &self.lyrics_lines,
+                    self.lyrics_plain.len(),
+                    self.state.position_secs,
+                    self.state.duration_secs,
+                )
+                .map(|d| (d - LYRICS_SWITCH_WAKE_EARLY) as f32)
+                .filter(|d| *d > 0.05);
+                let delay = lyrics_delay.unwrap_or(PLAY_REPAINT_INTERVAL);
+                ctx.request_repaint_after(std::time::Duration::from_secs_f32(delay));
+            }
+        } else {
+            self.last_playing_repaint = None;
+        }
+
+        // 后台线程消息（取流完成/失败等）与曲终切歌必须下一帧立即上屏。
+        if repaint_msg || track_switched {
             ctx.request_repaint();
         }
     }

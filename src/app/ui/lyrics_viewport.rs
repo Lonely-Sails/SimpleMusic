@@ -26,17 +26,27 @@
 //! ## 歌词切换过渡动画
 //!
 //! 当前歌行推进到下一行时不是瞬时替换，而是旧行淡出并继续上移、新行从下方淡入升起
-//! （quadratic_out 缓动，约 0.45s，滑动距离刻意收窄到 10px），下一行预览同步交叉淡化。
+//! （quadratic_out 缓动，约 0.45s，滑动距离刻意收窄到 14px），下一行预览同步交叉淡化。
 //! 帧率抖动时观感依然平滑：位移小 + 缓动前段平缓，掉一帧只挪 0.5px。过渡状态（上一帧
 //! 渲染的文本 + 过渡起点时间）存在共享 `Context` 的 data 槽里——deferred 闭包是 `Fn`，
 //! 不能持可变状态，但所有 viewport 共享同一个 `egui::Context`，`IdTypeMap` 即跨调用内存。
-//! 动画期间闭包内 `request_repaint_after(16ms)` 只唤醒浮窗自身 viewport（约 60fps），
-//! 过渡结束自动停止，空闲时浮窗仍完全静止，不影响主窗口重绘节奏。
+//! 动画期间闭包内 `request_repaint()` 连续唤醒浮窗自身 viewport，呈现节奏交给
+//! vsync/合成器对齐（egui 内建动画同款）——固定 1/60s 定时器会与 vblank 相位漂移，
+//! 出现 16.7/33.4ms 交替帧距，观感一顿一顿；过渡结束自动停止，空闲时浮窗仍完全静止。
+//!
+//! ## 真·模糊柔影（text-shadow 观感）
+//!
+//! 当前句/下一句下方垫一张**高斯模糊后的字形位图**（见 [`crate::text_shadow`]）：
+//! skrifa 取字形轮廓 → vello_cpu 离屏光栅化 → 盒滤波近似高斯 → egui 纹理，光晕向
+//! 四周均匀晕开，等价 CSS `text-shadow: 0 2px 12px rgba(0,0,0,.55)`。纹理按文本缓存
+//! （data 槽 [`SHADOW_SLOT`]），过渡动画期间逐帧复用，不重复光栅化。刻意避免多层
+//! 文字副本叠加（放大是同心硬边，晕不开）与四周描边式硬黑边。
 //!
 //! 每帧的文本布局只做一次：`layout_no_wrap` 用 `Color32::PLACEHOLDER` 拿到不带
-//! 真实颜色的 galley，柔影层与主体层复用同一 galley 以不同 fallback 颜色
-//! `painter.galley` 绘制——动画期间每帧最多 2 次布局查询（当前行 + 下一行）。
+//! 真实颜色的 galley，主体层复用同一 galley 绘制——动画期间每帧最多 2 次布局查询
+//! （当前行 + 下一行）。
 
+use crate::text_shadow::{ShadowCache, ShadowStyle};
 use crate::{icons, theme};
 use eframe::egui::{
     self, Align2, Color32, FontId, Id, Pos2, Rect, Sense, Vec2, ViewportBuilder, ViewportCommand,
@@ -52,14 +62,19 @@ const LYRICS_VIEWPORT_SIZE: Vec2 = Vec2::new(800.0, 104.0);
 /// 歌词切换过渡动画时长。
 const SWITCH_DURATION: f32 = 0.45;
 /// 过渡期间歌词垂直滑动的距离（px）：新行从下方滑入，旧行向上滑出。
-/// 刻意收窄——位移小则掉帧不可见（30fps 下每帧仅约 0.5px）。
-const SWITCH_SLIDE: f32 = 10.0;
-/// 过渡动画的目标帧间隔（约 60fps）。
-const ANIM_FRAME_INTERVAL: f32 = 1.0 / 60.0;
+/// 刻意收窄——位移小则掉帧不可见（30fps 下每帧仅约 0.7px）。
+const SWITCH_SLIDE: f32 = 14.0;
 
-/// 当前行文字的柔影阶梯：`(垂直偏移 px, 不透明度系数)`。只沿垂直方向逐层衰减，
-/// 模拟柔和投影；四周描边式的偏移组合会显出硬黑边（描边感），刻意不用。
-const TEXT_SHADOW_STEPS: [(f32, f32); 3] = [(1.5, 0.26), (3.0, 0.14), (4.6, 0.06)];
+/// 柔影参数（当前句）：σ 与垂直下坠随字号缩放，等价 CSS `0 2px 12px rgba(0,0,0,.55)`。
+const SHADOW_SIGMA_SCALE: f32 = 0.22; // σ ≈ 0.22 × 字号（26px 字 → σ ≈ 5.7px）
+const SHADOW_STRENGTH: f32 = 0.55;
+const SHADOW_DY: f32 = 1.5;
+/// 柔影参数（下一句预览）：字号小、信息弱，光晕相应更轻更聚。
+const NEXT_SHADOW_STRENGTH: f32 = 0.4;
+const NEXT_SHADOW_DY: f32 = 1.0;
+
+/// data 槽：柔影纹理缓存（当前句/下一句/过渡中的旧行共用，按文本键控）。
+const SHADOW_SLOT: &str = "simple_music_lyrics_shadow";
 
 /// 桌面歌词 viewport 的稳定 id。
 pub(crate) fn lyrics_viewport_id() -> ViewportId {
@@ -72,7 +87,6 @@ const CLOSE_SLOT: &str = "simple_music_lyrics_close";
 const POS_SLOT: &str = "simple_music_lyrics_pos";
 /// data 槽：歌词过渡状态（上一次绘制的当前行/下一行文本 + 过渡起点时间）。
 const TRANSITION_SLOT: &str = "simple_music_lyrics_transition";
-
 /// 歌词文本的过渡状态：记录上一次绘制的文本，文本变化时以此作淡出方，
 /// 配合过渡起点时间画出「旧行淡出上移 + 新行淡入升起」。
 #[derive(Clone)]
@@ -244,12 +258,15 @@ impl MusicApp {
                 let current = fit_text(ui.ctx(), &current, &font, max_w);
                 let next = fit_text(ui.ctx(), &next, &next_font, max_w);
                 let center = rect.center();
+                let font_pt = 26.0 * scale;
+                let next_font_pt = 14.0 * scale;
 
                 // ── 歌词切换过渡 ──
                 // 每行独立过渡：文本相对上一帧变化时，旧行转为淡出方并重启计时，
-                // quadratic_out 缓动驱动交叉淡化 + 上滑。过渡期间 request_repaint_after
-                // 只唤醒本 viewport（约 60fps），空闲时零重绘。这里只取绘制所需的
-                // outgoing 文本与进度，不整状态克隆（免每帧两次 String 拷贝）。
+                // quadratic_out 缓动驱动交叉淡化 + 上滑。过渡期间 request_repaint()
+                // 连续唤醒本 viewport（呈现节奏由 vsync/合成器对齐），空闲时零重绘。
+                // 这里只取绘制所需的 outgoing 文本与进度，不整状态克隆（免每帧两次
+                // String 拷贝）。
                 let now = Instant::now();
                 let (cur_outgoing, cur_p, next_outgoing, next_p) = ui.ctx().data_mut(|d| {
                     let st = d.get_temp_mut_or::<(LineFade, LineFade)>(
@@ -269,9 +286,10 @@ impl MusicApp {
                     )
                 });
                 if cur_p < 1.0 || next_p < 1.0 {
-                    ui.ctx().request_repaint_after(std::time::Duration::from_secs_f32(
-                        ANIM_FRAME_INTERVAL,
-                    ));
+                    // 连续重绘：eframe/winit 以 request_redraw 驱动，swap 的 vsync
+                    // 节流把帧距钉在刷新周期上；固定 16ms 定时器则与 vblank 相位
+                    // 漂移，帧距 16.7/33.4ms 交替 → 观感卡顿。
+                    ui.ctx().request_repaint();
                 }
                 let cur_ease = egui::emath::easing::quadratic_out(cur_p);
                 let next_ease = egui::emath::easing::quadratic_out(next_p);
@@ -281,19 +299,19 @@ impl MusicApp {
                 // 可淡出的内容，不凭空放出占位文本）。
                 if !cur_outgoing.is_empty() && cur_ease < 1.0 {
                     draw_current_layer(
-                        ui.painter(),
+                        ui,
                         center,
                         &cur_outgoing,
-                        font.clone(),
+                        font_pt,
                         1.0 - cur_ease,
                         -SWITCH_SLIDE * cur_ease,
                     );
                 }
                 draw_current_layer(
-                    ui.painter(),
+                    ui,
                     center,
                     current.as_str(),
-                    font,
+                    font_pt,
                     cur_ease,
                     SWITCH_SLIDE * (1.0 - cur_ease),
                 );
@@ -302,19 +320,19 @@ impl MusicApp {
                 // 流动方向一致（整组歌词向上推进）。
                 if next_ease < 1.0 {
                     draw_next_layer(
-                        ui.painter(),
+                        ui,
                         center,
                         &next_outgoing,
-                        next_font.clone(),
+                        next_font_pt,
                         1.0 - next_ease,
                         -SWITCH_SLIDE * 0.5 * next_ease,
                     );
                 }
                 draw_next_layer(
-                    ui.painter(),
+                    ui,
                     center,
                     next.as_str(),
-                    next_font,
+                    next_font_pt,
                     next_ease,
                     SWITCH_SLIDE * 0.5 * (1.0 - next_ease),
                 );
@@ -323,19 +341,31 @@ impl MusicApp {
     }
 }
 
-/// 绘制一行当前歌词（含单向柔影）；`alpha` 为过渡透明度，`dy` 为相对锚点的
-/// 垂直偏移（负=上移）。`text` 为空表示「等待播放」占位层（18px 固定字号）。
-///
-/// 柔影只沿垂直方向逐层衰减（见 [`TEXT_SHADOW_STEPS`]），并用同一 galley 以不同
-/// 颜色复用绘制：一次布局、多次着色，动画期间布局查询开销恒定。
-fn draw_current_layer(
-    painter: &egui::Painter,
-    center: Pos2,
+/// 取（或生成）一行文本的柔影纹理；`None` = 字形为空（纯空白）或光栅化失败。
+fn lyrics_shadow_texture(
+    ctx: &egui::Context,
     text: &str,
-    font: FontId,
-    alpha: f32,
-    dy: f32,
-) {
+    font_pt: f32,
+    sigma: f32,
+    strength: f32,
+) -> Option<egui::TextureHandle> {
+    let ppi = ctx.pixels_per_point();
+    let font_px = font_pt * ppi;
+    let style = ShadowStyle {
+        sigma: (sigma * ppi),
+        strength,
+    };
+    let font = crate::fonts::active_text_font();
+    ctx.data_mut(|d| {
+        d.get_temp_mut_or::<ShadowCache>(Id::new(SHADOW_SLOT), ShadowCache::default())
+            .texture(ctx, &font, 0, text, font_px, style)
+    })
+}
+
+/// 绘制当前句歌词（含向四周晕开的模糊柔影）；`alpha` 为过渡透明度，`dy` 为相对
+/// 锚点的垂直偏移（负=上移）。`text` 为空表示「等待播放」占位层（18px 固定字号）。
+fn draw_current_layer(ui: &egui::Ui, center: Pos2, text: &str, font_pt: f32, alpha: f32, dy: f32) {
+    let painter = ui.painter();
     if alpha <= f32::EPSILON {
         return;
     }
@@ -349,33 +379,66 @@ fn draw_current_layer(
         );
         return;
     }
+    let font = FontId::proportional(font_pt);
+    let ctx = ui.ctx().clone();
     // PLACEHOLDER：布局时不带真实颜色，tessellator 会用 `Painter::galley` 的
-    // fallback_color 替换——同一 galley 可被柔影/主体以不同透明度复用绘制。
+    // fallback_color 替换——柔影贴图与主体文字以同一锚点对齐。
     let galley = painter.layout_no_wrap(text.to_owned(), font, Color32::PLACEHOLDER);
-    // galley 以左上角定位，此处换算回原来的 CENTER_CENTER 锚点语义。
+    // galley 以左上角定位，此处换算回 CENTER_CENTER 锚点语义。
     let anchor = center + Vec2::new(0.0, -12.0 + dy) - galley.size() / 2.0;
-    let shadow_alpha = |k: f32| ((255.0 * k * alpha).round() as u8).max(1);
-    for (offset, k) in TEXT_SHADOW_STEPS {
-        painter.galley(
-            anchor + Vec2::new(0.0, offset),
-            galley.clone(),
-            Color32::from_black_alpha(shadow_alpha(k)),
-        );
+    // 柔影：贴图墨迹中心 = 文字墨迹中心（galley.mesh_bounds 是墨迹紧致盒）+ 轻微
+    // 下坠，光晕向四周均匀晕开。
+    let shadow_alpha = SHADOW_STRENGTH * alpha;
+    if shadow_alpha > f32::EPSILON {
+        let sigma = font_pt * SHADOW_SIGMA_SCALE;
+        if let Some(tex) = lyrics_shadow_texture(&ctx, text, font_pt, sigma, SHADOW_STRENGTH) {
+            let ppi = ctx.pixels_per_point();
+            let ink_center = anchor + galley.mesh_bounds.center().to_vec2();
+            let size_pt = tex.size_vec2() / ppi;
+            let rect = Rect::from_center_size(ink_center + Vec2::new(0.0, SHADOW_DY), size_pt);
+            painter.image(
+                tex.id(),
+                rect,
+                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                Color32::from_black_alpha((shadow_alpha * 255.0).round().clamp(1.0, 255.0) as u8),
+            );
+        }
     }
     painter.galley(anchor, galley, theme::LYRIC_CURRENT.gamma_multiply(alpha));
 }
 
-/// 绘制下一行歌词预览（无描边）；`alpha` 为过渡透明度，`dy` 为相对锚点的
+/// 绘制下一行歌词预览（含更轻的柔影）；`alpha` 为过渡透明度，`dy` 为相对锚点的
 /// 垂直偏移（负=上移）。
-fn draw_next_layer(painter: &egui::Painter, center: Pos2, text: &str, font: FontId, alpha: f32, dy: f32) {
+fn draw_next_layer(ui: &egui::Ui, center: Pos2, text: &str, font_pt: f32, alpha: f32, dy: f32) {
     if alpha <= f32::EPSILON || text.is_empty() {
         return;
     }
-    painter.text(
-        center + Vec2::new(0.0, 26.0 + dy),
-        Align2::CENTER_CENTER,
-        text,
-        font,
+    let painter = ui.painter();
+    let ctx = ui.ctx().clone();
+    let font = FontId::proportional(font_pt);
+    // 与 draw_current_layer 同款 galley + mesh_bounds 墨迹对齐（CENTER_CENTER 锚的
+    // 语义锚点是布局矩形中心，含行高上下空白；墨迹中心才是阴影该贴的位置）。
+    let galley = painter.layout_no_wrap(text.to_owned(), font, Color32::PLACEHOLDER);
+    let anchor = center + Vec2::new(0.0, 26.0 + dy) - galley.size() / 2.0;
+    let shadow_alpha = NEXT_SHADOW_STRENGTH * alpha;
+    if shadow_alpha > f32::EPSILON {
+        let sigma = font_pt * SHADOW_SIGMA_SCALE;
+        if let Some(tex) = lyrics_shadow_texture(&ctx, text, font_pt, sigma, NEXT_SHADOW_STRENGTH) {
+            let ppi = ctx.pixels_per_point();
+            let ink_center = anchor + galley.mesh_bounds.center().to_vec2();
+            let size_pt = tex.size_vec2() / ppi;
+            let rect = Rect::from_center_size(ink_center + Vec2::new(0.0, NEXT_SHADOW_DY), size_pt);
+            painter.image(
+                tex.id(),
+                rect,
+                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                Color32::from_black_alpha((shadow_alpha * 255.0).round().clamp(1.0, 255.0) as u8),
+            );
+        }
+    }
+    painter.galley(
+        anchor,
+        galley,
         theme::LYRIC_NEXT.gamma_multiply(alpha),
     );
 }
