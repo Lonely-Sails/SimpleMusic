@@ -47,7 +47,7 @@
 //! （当前行 + 下一行）。
 
 use crate::text_shadow::{CachedShadow, ShadowCache, ShadowStyle, rasterize_shadow};
-use crate::{icons, theme};
+use crate::{fonts, icons, theme};
 use eframe::egui::{
     self, Align2, Color32, FontId, Id, Pos2, Rect, Sense, Vec2, ViewportBuilder, ViewportCommand,
     ViewportId,
@@ -136,6 +136,13 @@ fn wayland_session() -> bool {
     wayland_session_from(std::env::var("WAYLAND_DISPLAY").ok().as_deref())
 }
 
+/// 清空柔影纹理缓存（字体切换时调用）。缓存键只含 `(文本, 字号, σ, 强度)`，
+/// 不含字体——切「桌面歌词字体」后旧字形位图与新字体不一致，必须整体失效。
+pub(crate) fn clear_shadow_cache(ctx: &egui::Context) {
+    // 短临界区：只做槽位移除，闭包内不得再调其它 Context API（见 text_shadow 锁纪律）。
+    ctx.data_mut(|d| d.remove_temp::<ShadowCache>(Id::new(SHADOW_SLOT)));
+}
+
 impl MusicApp {
     /// 桌面歌词浮窗内容变化时由 `logic` 调用：只唤醒浮窗 viewport 重绘，
     /// 不影响主窗口的重绘节奏。
@@ -188,8 +195,10 @@ impl MusicApp {
         }
 
         // 每帧重建闭包（捕获最新文本/字号），但只在浮窗需要重绘时才执行。
-        let current = self.state.current_lrc_line.clone();
-        let next = self.lyrics_next_line.clone();
+        // 显示边界统一净化：剔除内嵌/歌词字体渲染不出的 emoji 等字符，
+        // 避免「?」满天飞（柔影光栅化同源，见下）。
+        let current = fonts::sanitize_text(&self.state.current_lrc_line);
+        let next = fonts::sanitize_text(&self.lyrics_next_line);
         let scale = self.settings.font_scale;
 
         ctx.show_viewport_deferred(
@@ -252,8 +261,10 @@ impl MusicApp {
                     }
                 }
 
-                let font = FontId::proportional(26.0 * scale);
-                let next_font = FontId::proportional(14.0 * scale);
+                // 歌词文字用专用「歌词字体」family：设置页可独立于主界面选择
+                // 字体（主窗口恒用内嵌字体，见 fonts.rs 模块文档）。
+                let font = fonts::lyrics_font_id(26.0 * scale);
+                let next_font = fonts::lyrics_font_id(14.0 * scale);
                 let max_w = rect.width() - 24.0;
                 let current = fit_text(ui.ctx(), &current, &font, max_w);
                 let next = fit_text(ui.ctx(), &next, &next_font, max_w);
@@ -369,7 +380,7 @@ fn lyrics_shadow_texture(
         CachedShadow::Ready(tex) => return Some(tex),
         CachedShadow::Failed => return None,
         CachedShadow::Miss(key) => {
-            let font = crate::fonts::active_text_font();
+            let font = crate::fonts::active_lyrics_font();
             let tex = rasterize_shadow(ctx, &font, 0, text, font_px, style);
             (key, tex)
         }
@@ -399,7 +410,7 @@ fn draw_current_layer(ui: &egui::Ui, center: Pos2, text: &str, font_pt: f32, alp
         );
         return;
     }
-    let font = FontId::proportional(font_pt);
+    let font = fonts::lyrics_font_id(font_pt);
     let ctx = ui.ctx().clone();
     // PLACEHOLDER：布局时不带真实颜色，tessellator 会用 `Painter::galley` 的
     // fallback_color 替换——柔影贴图与主体文字以同一锚点对齐。
@@ -435,7 +446,7 @@ fn draw_next_layer(ui: &egui::Ui, center: Pos2, text: &str, font_pt: f32, alpha:
     }
     let painter = ui.painter();
     let ctx = ui.ctx().clone();
-    let font = FontId::proportional(font_pt);
+    let font = fonts::lyrics_font_id(font_pt);
     // 与 draw_current_layer 同款 galley + mesh_bounds 墨迹对齐（CENTER_CENTER 锚的
     // 语义锚点是布局矩形中心，含行高上下空白；墨迹中心才是阴影该贴的位置）。
     let galley = painter.layout_no_wrap(text.to_owned(), font, Color32::PLACEHOLDER);

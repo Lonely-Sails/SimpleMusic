@@ -1,7 +1,7 @@
-//! 设置窗口：界面字体 / 音质偏好 / 桌面歌词 / 播放音量。
+//! 设置窗口：界面字体（恒内嵌展示项）/ 桌面歌词字体 / 音质偏好 / 桌面歌词 / 播放音量。
 
 use crate::fonts::SystemFont;
-use crate::state::{AudioQuality, UiFont};
+use crate::state::{AudioQuality, LyricsFont};
 use crate::theme;
 use eframe::egui::{self, Align2, RichText};
 use std::path::Path;
@@ -25,7 +25,13 @@ impl MusicApp {
                 ui.add_space(6.0);
 
                 // ── 界面字体 ──
-                self.ui_font_picker(ui, ctx);
+                self.ui_font_picker(ui);
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                // ── 桌面歌词字体 ──
+                self.lyrics_font_picker(ui, ctx);
                 ui.add_space(8.0);
                 ui.separator();
                 ui.add_space(8.0);
@@ -108,41 +114,59 @@ impl MusicApp {
         self.settings_window_open = open;
     }
 
-    /// 「界面字体」选择器：自动 / 内嵌 Noto / 系统字体列表（带过滤），选择即时生效。
+    /// 「界面字体」展示项：主界面恒用内嵌字体（不再提供选择）。
     ///
-    /// 字体候选列表由后台线程扫描（首次展开时触发，回填 `font_list`）；
-    /// `Specific` 选中项持久化绝对路径，重启自动恢复；文件失效时启动/选择
-    /// 均回退自动并提示。
-    fn ui_font_picker(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    /// 说明：旧版允许把系统字体装进主界面字体链，但内嵌 Noto Sans SC 覆盖稳定
+    /// （缺字还有净化兜底），系统字体反而引入跨机器观感漂移——主界面收敛为恒内嵌；
+    /// 系统字体的选择入口移到下方「桌面歌词字体」（大字号歌词观感收益更明显）。
+    fn ui_font_picker(&mut self, ui: &mut egui::Ui) {
         ui.label(
             RichText::new("界面字体")
                 .color(theme::TEXT_SECONDARY)
                 .strong(),
         );
+        ui.label(
+            RichText::new("内嵌 Noto Sans SC（恒定）").color(theme::TEXT_PRIMARY),
+        )
+        .on_hover_text("编译期内嵌字体，跨机器观感一致；旧版「系统字体」选项已移除，系统字体可在下方给桌面歌词单独选");
+    }
 
-        // 两个内置选项：自动 / 强制内嵌。
+    /// 「桌面歌词字体」选择器：跟随界面 / 内嵌 Noto / 系统字体列表（带过滤），
+    /// 选择即时生效（重建字体表 + 失效柔影缓存 + 唤醒浮窗重绘）。
+    ///
+    /// 字体候选列表由后台线程扫描（首次展开时触发，回填 `font_list`）；
+    /// `Specific` 选中项持久化绝对路径，重启自动恢复；文件失效时启动/选择
+    /// 均回退内嵌并提示。
+    fn lyrics_font_picker(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.label(
+            RichText::new("桌面歌词字体")
+                .color(theme::TEXT_SECONDARY)
+                .strong(),
+        );
+
+        // 两个内置选项：跟随界面 / 强制内嵌（当前两者渲染一致）。
         for (variant, label, hint) in [
             (
-                UiFont::Auto,
-                "自动（系统优先）",
-                "探测系统 UI 字体，失败回退内嵌 Noto",
+                LyricsFont::FollowUi,
+                "跟随界面字体",
+                "与主界面相同的内嵌 Noto Sans SC",
             ),
-            (UiFont::Embedded, "内嵌 Noto Sans SC", "跨机器观感一致"),
+            (LyricsFont::Embedded, "内嵌 Noto Sans SC", "跨机器观感一致"),
         ] {
             // 悬停说明：radio 的 Response 上挂 tooltip（egui 0.36 惯用 API）。
             let radio = ui.radio(
-                self.settings.ui_font == variant,
+                self.settings.lyrics_font == variant,
                 RichText::new(label).color(theme::TEXT_PRIMARY),
             );
-            if radio.clicked() && self.settings.ui_font != variant {
+            if radio.clicked() && self.settings.lyrics_font != variant {
                 self.apply_font_setting(ctx, &variant);
-                self.settings.ui_font = variant;
+                self.settings.lyrics_font = variant;
             }
             radio.on_hover_text(hint);
         }
 
         // 自定义：从系统字体列表里挑。
-        let specific_active = matches!(self.settings.ui_font, UiFont::Specific(_));
+        let specific_active = matches!(self.settings.lyrics_font, LyricsFont::Specific(_));
         if ui
             .radio(
                 specific_active,
@@ -155,8 +179,8 @@ impl MusicApp {
         }
 
         if specific_active {
-            // 当前选中文件的回显（可能已失效——失效时启动已回退自动，这里仅显示）。
-            if let Some(path) = self.settings.ui_font.path() {
+            // 当前选中文件的回显（可能已失效——失效时启动已回退内嵌，这里仅显示）。
+            if let Some(path) = self.settings.lyrics_font.path() {
                 ui.label(
                     RichText::new(format!("当前: {}", short_path(path)))
                         .color(theme::TEXT_WEAK)
@@ -207,7 +231,7 @@ impl MusicApp {
                         for f in &candidates {
                             let selected = self
                                 .settings
-                                .ui_font
+                                .lyrics_font
                                 .path()
                                 .map(|p| Path::new(p) == f.path)
                                 .unwrap_or(false);
@@ -218,18 +242,18 @@ impl MusicApp {
                             });
                             if ui.radio(selected, label).clicked() {
                                 let new_font =
-                                    UiFont::Specific(f.path.display().to_string());
-                                // 即时生效；失败（文件刚被删等）时复位成自动。
+                                    LyricsFont::Specific(f.path.display().to_string());
+                                // 即时生效；失败（文件刚被删等）时复位成内嵌。
                                 if self.apply_font_setting(ctx, &new_font) {
-                                    self.settings.ui_font = new_font;
+                                    self.settings.lyrics_font = new_font;
                                 } else {
-                                    self.settings.ui_font = UiFont::Auto;
+                                    self.settings.lyrics_font = LyricsFont::Embedded;
                                 }
                             }
                         }
                     });
                 ui.label(
-                    RichText::new("选择后立即生效；含汉字由内嵌 Noto 自动兜底")
+                    RichText::new("选择后立即生效；缺汉字由内嵌 Noto 自动兜底")
                         .color(theme::TEXT_WEAK)
                         .small(),
                 );

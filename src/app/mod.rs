@@ -30,7 +30,7 @@ use crate::modules::audio::{AudioEngine, PlaybackStatus};
 use crate::modules::bilibili::{BiliClient, FavFolder, FavItem};
 use crate::modules::lyrics::{LrcLine, Lyrics, LyricsCacheEntry};
 use crate::modules::storage;
-use crate::state::{PlaybackState, Playlist, QueueItem, Settings, UiFont};
+use crate::state::{PlaybackState, Playlist, QueueItem, Settings, LyricsFont};
 use crate::tray;
 use crate::app::ui::toast::{show_toasts, Toast, ToastKind};
 use eframe::egui;
@@ -311,35 +311,25 @@ impl MusicApp {
 
     // ---- 跨模块小工具 ----
 
-    /// 应用设置中的界面字体（设置页切选时调用）：重建字体表**即时生效**，
+    /// 应用设置中的字体（设置页切选时调用）：重建字体表**即时生效**，
     /// 无需重启；持久化交给设置落盘机制（每 5s 兜底 + 退出保存）。
     ///
-    /// 显式选择的文件失效（被删/格式不支持）时回退自动探测并弹 toast 说明；
-    /// 返回值表示该选择是否成功生效（UI 据此复位选择框）。
-    pub(crate) fn apply_font_setting(&mut self, ctx: &egui::Context, font: &UiFont) -> bool {
-        let choice = match font {
-            UiFont::Auto => {
-                crate::fonts::install_fonts(ctx, None);
-                true
-            }
-            UiFont::Embedded => {
-                crate::fonts::install_embedded_fonts(ctx);
-                true
-            }
-            UiFont::Specific(path) => {
-                match crate::fonts::install_fonts(ctx, Some(std::path::Path::new(path))) {
-                    crate::fonts::FontChoice::System(p) => p == std::path::Path::new(path),
-                    crate::fonts::FontChoice::Embedded => false,
-                }
-            }
-        };
-        if !choice {
+    /// 主界面恒用内嵌字体（`UiFont::Auto`/`Embedded` 等价，仅保留旧配置兼容）；
+    /// 歌词字体按 `LyricsFont` 解析。`Specific` 指向的文件失效（被删/格式不支持）
+    /// 时回退内嵌并弹 toast 说明；返回值表示该选择是否成功生效（UI 据此复位选择框）。
+    pub(crate) fn apply_font_setting(&mut self, ctx: &egui::Context, font: &LyricsFont) -> bool {
+        let adopted = crate::fonts::install_fonts(ctx, font);
+        if adopted != *font {
             self.error(format!(
-                "字体 {} 不可用（读取失败或格式不支持），已回退自动选择",
+                "字体 {} 不可用（读取失败或格式不支持），已回退内嵌字体",
                 font.path().unwrap_or("")
             ));
         }
-        choice
+        // 字体变更后：柔影缓存按文本键控、不含字体维度，必须整体失效；
+        // deferred 浮窗文本指纹未变（同一句歌词），需显式唤醒一次重绘换新字体。
+        crate::app::ui::lyrics_viewport::clear_shadow_cache(ctx);
+        self.request_lyrics_repaint(ctx);
+        adopted == *font
     }
 
     /// 当前播放曲目的 bvid。
@@ -378,12 +368,15 @@ impl MusicApp {
 
     /// 轻提示：顶部弹金色 toast（成功/信息类）。
     pub(crate) fn notice(&mut self, msg: impl Into<String>) {
-        self.toasts.push(Toast::new(msg, ToastKind::Notice));
+        // toast 文本同样净化：消息里常拼歌单/曲目名（可能带 emoji）。
+        self.toasts
+            .push(Toast::new(crate::fonts::sanitize_text(&msg.into()), ToastKind::Notice));
     }
 
     /// 错误提示：顶部弹暖红色 toast。
     pub(crate) fn error(&mut self, msg: impl Into<String>) {
-        self.toasts.push(Toast::new(msg, ToastKind::Error));
+        self.toasts
+            .push(Toast::new(crate::fonts::sanitize_text(&msg.into()), ToastKind::Error));
     }
 
     // ---- 每帧同步 ----

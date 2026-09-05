@@ -14,7 +14,7 @@
 cd /data/dsh/home/SimpleMusic
 source .toolchain/env.sh          # 设置 RUSTUP_HOME / CARGO_HOME / PATH / CC / 链接器 等
 cargo check                       # 编译检查（默认 tray feature）
-cargo test --no-default-features  # 单测（178 个离线用例 + 2 个 #[ignore] 网络用例）
+cargo test --no-default-features  # 单测（196 个离线用例 + 2 个 #[ignore] 网络用例）
 cargo run --no-default-features -- --smoke  # 无窗口模块自检，打印 SMOKE_OK 退出
 cargo run                         # 真实 GUI 启动（需要显示环境）
 ```
@@ -33,12 +33,17 @@ cargo run                         # 真实 GUI 启动（需要显示环境）
   （薄壳：命令行解析 + `--smoke` + eframe 启动）。业务代码全在 lib 里，`examples/` 探针
   直接 `use simple_music::…`，**不要再用 `#[path]` 桥接复制源码树**。
 - **图标字体** `assets/Phosphor.ttf`（约 0.5MB，MIT）编译期 `include_bytes!` 进二进制，恒定注册；
-  **文字字体**由设置 `Settings::ui_font`（`UiFont` 枚举）决定：`Auto` 系统探测优先
-  （Windows 微软雅黑 / macOS 苹方 / Linux Noto CJK、文泉驿等）、`Embedded` 强制内嵌
-  Noto Sans SC、`Specific(路径)` 用户挑选的系统字体。加载前用 skrifa 校验——egui 对解析
-  失败的字体直接 panic。两级校验语义：`font_file_is_suitable`（Auto 探测用）与
-  `font_file_is_loadable`（用户显式选择用）。探测失败回退内嵌 Noto Sans SC。
-  环境变量（仅 Auto 模式）：`SIMPLEMUSIC_EMBEDDED_FONTS=1` 强制全内嵌、
+  **主界面文字字体恒内嵌** Noto Sans SC（跨机器观感一致，不再探测系统字体）；
+  **桌面歌词字体**由设置 `Settings::lyrics_font`（`LyricsFont` 枚举）决定：
+  `FollowUi`（跟随界面 = 内嵌，兼容旧 `auto`）/ `Embedded` 内嵌 Noto Sans SC、
+  `Specific(路径)` 用户挑选的系统字体。歌词文字走**专用 named family**
+  `fonts::lyrics_family()`（浮窗与主窗口共享 Context 的 FontDefinitions，无法按窗口
+  选字体，named family 是唯一解耦手段）；系统字体加载前用 skrifa 校验可解析
+  （`font_file_is_loadable`）——egui 对解析失败的字体直接 panic；文件失效回退内嵌。
+  **缺字净化**：内嵌字体没有 emoji/PUA 字形，缺字会渲染成「?」占位——动态文本
+  显示入口统一走 `fonts::sanitize_text`（必删字符类 + 内嵌 Noto cmap 覆盖判定，
+  见 `util/text.rs` 模块文档）；新增显示网络文本的地方必须接净化。
+  环境变量：`SIMPLEMUSIC_EMBEDDED_FONTS=1` 强制全内嵌、
   `SIMPLEMUSIC_FONT=/path/to.ttf` 手动指定。无头测试一律用 `fonts::install_embedded_fonts`
   （度量不随宿主系统字体漂移）。
 - 已有 git 仓库（分支 `main`）：改动用增量编辑，提交信息用中文、说明动机；`SimpleMusic.zip`
@@ -105,8 +110,8 @@ src/
 ├── theme.rs          主题色板 + 按钮/样式辅助（BG_*/TEXT_*/ACCENT 等语义常量）
 ├── icons.rs          图标：内嵌 Phosphor 图标字体（PUA 码点），不依赖 emoji/系统字形
 ├── cover.rs          封面缩略图：后台下载 + 解码（不在主线程）→ egui 纹理缓存（失败 30 分钟冷却）
-├── fonts.rs          字体：系统字体优先（skrifa 校验），内嵌 Noto Sans SC 兜底；图标恒用 Phosphor
-├── util/             fmt.rs(format_secs) / rand.rs(rand_idx) / filter.rs(song_matches_query)
+├── fonts.rs          字体：主界面恒内嵌 Noto Sans SC + Phosphor；桌面歌词专用 family（设置可选系统字体）+ 缺字净化
+├── util/             fmt.rs(format_secs) / rand.rs(rand_idx) / filter.rs(song_matches_query) / text.rs(sanitize_ui_text 缺字过滤)
 └── tray.rs           系统托盘（feature=tray）：Linux=GTK 线程；macOS/Win=原生；无 feature 时 no-op 桩
 ```
 
@@ -178,7 +183,7 @@ CDN 403/410 自动换备用地址；写盘失败降级内存缓冲；无输出�
 ## 3. 数据与持久化（Linux 路径）
 
 ```
-~/.config/simple-music/config.json      设置（桌面歌词开关/锁定/字号/位置/界面字体/音量/音质/播放模式）
+~/.config/simple-music/config.json      设置（桌面歌词开关/锁定/字号/位置/歌词字体/音量/音质/播放模式）
 ~/.config/simple-music/session.json     B 站登录态 Cookie（权限 0600，Debug 已脱敏）
 ~/.config/simple-music/playlists.json   所有歌单（本地 + 在线引用）
 ~/.config/simple-music/playlist.json    旧版单队列文件（读取时自动迁移，随后删除）
@@ -221,7 +226,9 @@ CDN 403/410 自动换备用地址；写盘失败降级内存缓冲；无输出�
 - **桌面歌词**：透明置顶无边框悬浮窗，当前句+下一句预览（带 skrifa+vello_cpu 离屏光栅化的
   真·模糊柔影，见 `text_shadow.rs`，等价 CSS text-shadow；纹理按文本缓存，过渡动画期间复用），
   可拖动/锁定(鼠标穿透)/调字号，位置随浮窗重绘实时记录进设置并持久化（仅 X11），重启后自动恢复；
-  切歌淡入淡出过渡（vsync 对齐，见线程模型）。
+  切歌淡入淡出过渡（vsync 对齐，见线程模型）。歌词文字用**专用字体 family**
+  （`fonts::lyrics_family()`），设置页可单独选「桌面歌词字体」（跟随界面/内嵌/系统字体），
+  切换后需 `clear_shadow_cache` 失效柔影缓存并唤醒浮窗重绘（柔影缓存键不含字体维度）。
 - **歌词**：B 站「识别音乐」生成优先查询词 + 视频时长校准打分；vkeys.cn 聚合源自动搜索 + LRC 时间轴同步，翻译并入；LRCLIB 兜底；本地缓存 + 手选持久化。
 - **歌单**：本地歌单增删改（管理窗口）；在线歌单（B 站收藏夹引用，可删）。
 - **歌单内搜索**：标题/UP 主实时过滤（本地与在线列表都有）。
@@ -259,8 +266,9 @@ CDN 403/410 自动换备用地址；写盘失败降级内存缓冲；无输出�
 | 歌单选择 + 管理 | `app/ui/playlist_bar.rs::show_playlist_selector` / `show_playlist_manage_window` |
 | 本地歌曲列表 | `app/ui/song_list.rs::show_local_songs` |
 | 在线收藏夹列表 | `app/ui/song_list.rs::show_online_songs` |
-| 设置窗口 | `app/ui/settings.rs::show_settings_window` |
+| 设置窗口 | `app/ui/settings.rs::show_settings_window`（歌词字体选择器 `lyrics_font_picker`） |
 | 桌面歌词悬浮窗 | `app/ui/lyrics_viewport.rs::show_lyrics_viewport` |
+| 缺字净化（emoji/PUA 过滤） | `util/text.rs::sanitize_ui_text` + `fonts.rs::sanitize_text`（动态文本显示入口统一调用） |
 | 扫码登录弹窗 | `app/ui/login.rs::show_login_window` |
 | 快捷键 | `app/player.rs::handle_shortcuts` |
 | 播放控制（上下曲/seek/移除） | `app/player.rs` |

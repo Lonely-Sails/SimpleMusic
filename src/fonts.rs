@@ -1,52 +1,83 @@
-//! 字体加载：界面**文字**优先使用系统字体（观感跟随操作系统），界面**图标**恒用
-//! 内嵌的 Phosphor 图标字体（PUA 码点，跨平台系统图标字形缺失会显示 "?"，不依赖系统）。
+//! 字体加载：主界面**文字/图标**恒用内嵌字体（观感跨机器一致、不依赖宿主环境），
+//! 桌面歌词浮窗的**歌词字体**由设置项决定（可指定系统字体）。
 //!
-//! 策略（优先级从高到低）：
-//! 1. 设置页选择的字体（`Settings::ui_font`）：用户在「设置 → 界面字体」里显式挑选
-//!    的系统字体文件，切选即时生效并持久化（内嵌字体列表见 [`scan_system_fonts`]）；
-//! 2. 系统文字字体（Auto 模式）：按平台探测常见 UI/CJK 字体（Windows 微软雅黑/黑体、
-//!    macOS 苹方/系统英文 UI 字体、Linux Noto Sans CJK / 文泉驿 / Droid 等），读盘后用
-//!    skrifa（epaint 同款解析器）校验「可解析 + 覆盖基础拉丁和常用汉字」才启用——egui
-//!    对解析失败的字体直接 panic，必须前置校验；图标字体（无文字覆盖）会被校验拒绝；
-//! 3. 内嵌 Noto Sans SC Regular（`assets/NotoSansSC-Regular.otf`，`include_bytes!` 编译期
-//!    嵌入）：探测失败时顶上；探测成功时也挂在系统字体之后作 CJK 兜底，纯拉丁系统上
-//!    中文不会变豆腐块；
-//! 4. 内嵌 Phosphor 图标字体（`assets/Phosphor.ttf`，MIT 协议），负责界面 PUA 码点字形
-//!    （音乐/齿轮/关闭/播放控制等），所有图标走 `crate::icons::*`，恒定注册；
-//! 5. egui 默认字体（若启用 default_fonts）仍在列表末尾作最终兜底。
+//! ## 主界面（恒定）
+//! - 文字：内嵌 Noto Sans SC Regular（`assets/NotoSansSC-Regular.otf`，`include_bytes!`
+//!   编译期嵌入），装到 `Proportional`/`Monospace` 两个 family 首位——汉字/假名/
+//!   谚文/全角符号全覆盖，纯拉丁系统上中文不会豆腐块；
+//! - 图标：内嵌 Phosphor 图标字体（`assets/Phosphor.ttf`，MIT 协议）紧随其后，
+//!   负责界面 PUA 码点字形（音乐/齿轮/关闭/播放控制等），所有图标走
+//!   `crate::icons::*`，不依赖 emoji/系统字形。
 //!
-//! 注册顺序：首选文字字体插到 `Proportional`/`Monospace` 两个 family 的首位，图标字体
-//! 紧随其后（index 1）。egui 按 family 列表顺序逐个查字形，PUA 码点正常由 Phosphor 命中
-//! （个别系统字体自带 PUA 覆盖时才会优先命中系统字形，与旧行为一致），不干扰正常文字。
-//! 用户选了不含汉字的字体也没关系：中文自动由内嵌 Noto 兜底（字体链里恒有它）。
+//! ## 桌面歌词（设置项「桌面歌词字体」，即时生效并持久化）
+//! 浮窗与主窗口共享同一个 `egui::Context`（共享同一份 FontDefinitions），无法按
+//! 窗口选字体——歌词文字改用**专用 named family**（[`lyrics_family`]）承载，其
+//! 首选字体按设置 [`LyricsFont`](crate::state::LyricsFont) 解析：
+//! 1. `FollowUi`：与主界面一致（内嵌 Noto Sans SC，缺字由 [`sanitize_text`] 过滤）；
+//! 2. `Embedded`：恒用内嵌 Noto Sans SC；
+//! 3. `Specific(路径)`：用户挑选的系统字体文件（`font_file_is_loadable` 校验，纯拉丁
+//!    字体也允许——中文由内嵌 Noto 兜底）；文件失效时回退内嵌字体并提示。
 //!
-//! 环境变量（仅 Auto 模式下生效，设置页显式选择的优先级更高）：
-//! - `SIMPLEMUSIC_EMBEDDED_FONTS=1`：跳过系统探测，全部用内嵌字体（旧行为）；
-//! - `SIMPLEMUSIC_FONT=/path/to/font.ttf`：直接指定系统字体文件（跳过自动探测）。
+//! 歌词 family 的兜底链恒为 `歌词首选 → Phosphor → 内嵌 Noto`，与界面 family 解耦；
+//! 柔影光栅化（`text_shadow`）用 [`active_lyrics_font`] 的字节与 egui 渲染保持同一
+//! 字形来源。
+//!
+//! ## 缺字过滤
+//! 内嵌字体不含 emoji/PUA 等字形，网络标题/歌词里的这类字符会渲染成「?」占位。
+//! [`sanitize_text`] 按「必删字符类 + 内嵌字体 cmap 覆盖」剔除它们（见
+//! `util::text` 模块文档），动态文本显示入口统一收口调用。
+//!
+//! 环境变量（`Specific` 失效回退时补充探测用）：
+//! - `SIMPLEMUSIC_EMBEDDED_FONTS=1`：跳过系统探测，全部用内嵌字体；
+//! - `SIMPLEMUSIC_FONT=/path/to/font.ttf`：直接指定系统字体文件。
+//! 无头测试一律用 [`install_embedded_fonts`]（度量不随宿主系统字体漂移）。
 
+use crate::state::LyricsFont;
 use eframe::egui;
 use skrifa::MetadataProvider as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, RwLock};
 
-/// 最近一次安装的**文字**字体字节（供 `text_shadow` 离屏光栅化与 egui 保持同一
+/// 最近一次安装的**歌词**字体字节（供 `text_shadow` 离屏光栅化与 egui 保持同一
 /// 字形来源）。`OnceLock<RwLock<_>>`：安装时写（启动/设置页切字体），渲染时读。
-static ACTIVE_TEXT_FONT: OnceLock<RwLock<Arc<Vec<u8>>>> = OnceLock::new();
+static ACTIVE_LYRICS_FONT: OnceLock<RwLock<Arc<Vec<u8>>>> = OnceLock::new();
 
-/// 登记当前文字字体字节（安装字体后调用）。
-fn set_active_text_font(bytes: &[u8]) {
-    let slot = ACTIVE_TEXT_FONT.get_or_init(|| RwLock::new(Arc::new(Vec::new())));
+/// 登记当前歌词字体字节（安装字体后调用）。
+fn set_active_lyrics_font(bytes: &[u8]) {
+    let slot = ACTIVE_LYRICS_FONT.get_or_init(|| RwLock::new(Arc::new(Vec::new())));
     if let Ok(mut v) = slot.write() {
         *v = Arc::new(bytes.to_vec());
     }
 }
 
-/// 当前文字字体字节；从未安装过（纯无头测试）时回退内嵌 Noto Sans SC。
-pub fn active_text_font() -> Arc<Vec<u8>> {
-    match ACTIVE_TEXT_FONT.get().and_then(|s| s.read().ok()) {
+/// 内嵌 Noto 字节的共享 Arc（懒初始化，避免每次回退都复制整份字体数据）。
+fn noto_arc() -> Arc<Vec<u8>> {
+    static NOTO: OnceLock<Arc<Vec<u8>>> = OnceLock::new();
+    NOTO
+        .get_or_init(|| Arc::new(NOTO_SC_BYTES.to_vec()))
+        .clone()
+}
+
+/// 当前歌词字体字节；从未安装过（纯无头测试）时回退内嵌 Noto Sans SC。
+pub fn active_lyrics_font() -> Arc<Vec<u8>> {
+    match ACTIVE_LYRICS_FONT.get().and_then(|s| s.read().ok()) {
         Some(v) if !v.is_empty() => Arc::clone(&v),
-        _ => Arc::new(NOTO_SC_BYTES.to_vec()),
+        _ => noto_arc(),
     }
+}
+
+/// 桌面歌词专用字体 family：`FontFamily::Name("simple_music_lyrics")`。
+///
+/// 浮窗与主窗口共享 Context 的 FontDefinitions，无法按窗口选择字体；
+/// 歌词文字统一用这个 named family 渲染，首选字体随「桌面歌词字体」设置重建
+/// （见 [`build_definitions`]），主窗口的 `Proportional` 不受影响。
+pub fn lyrics_family() -> egui::FontFamily {
+    egui::FontFamily::Name(Arc::from(LYRICS_FAMILY_KEY))
+}
+
+/// 桌面歌词文本用的 [`egui::FontId`]（歌词专用 family + 指定字号）。
+pub fn lyrics_font_id(size: f32) -> egui::FontId {
+    egui::FontId::new(size, lyrics_family())
 }
 
 /// 内嵌 CJK 字体字节（include_bytes 静态数据；[`embedded_cjk_data`] 与
@@ -61,48 +92,54 @@ const NOTO_SC_BYTES: &[u8] = NOTO_SC_BYTES_FOR_TEST;
 const EMBEDDED_KEY: &str = "noto_sc";
 /// 内嵌图标字体（Phosphor，MIT）在 FontDefinitions 里的键名。
 const PHOSPHOR_KEY: &str = "phosphor_icons";
-/// 运行时加载的系统字体在 FontDefinitions 里的键名。
-const SYSTEM_KEY: &str = "system_ui";
+/// 歌词字体（设置指定的系统字体）在 FontDefinitions 里的键名。
+const LYRICS_KEY: &str = "lyrics_font";
+/// 歌词专用 named family 的名字（[`lyrics_family`] 用它构造 FontFamily）。
+const LYRICS_FAMILY_KEY: &str = "simple_music_lyrics";
 
-/// 文字字体来源说明（用于启动报告）。
-#[derive(Debug, Clone, PartialEq)]
-pub enum FontChoice {
-    /// 运行时加载的系统字体（路径）；内嵌 Noto Sans SC 仍挂在兜底链上。
-    System(PathBuf),
-    /// 内嵌 Noto Sans SC（系统探测失败，或 `SIMPLEMUSIC_EMBEDDED_FONTS=1`）。
-    Embedded,
-}
-
-/// 安装字体：按设置选择文字字体（`ui_font = None` 时系统优先），图标恒用内嵌
-/// Phosphor。返回文字字体实际采用的来源（`ui_font` 指向的文件无效时自动回退，
-/// 返回值反映真实结果）。
-pub fn install_fonts(ctx: &egui::Context, ui_font: Option<&Path>) -> FontChoice {
-    let forced = ui_font.and_then(load_font_file);
-    let system = match forced {
-        Some(f) => Some(f),
-        None => {
-            let force_embedded = std::env::var_os("SIMPLEMUSIC_EMBEDDED_FONTS").is_some();
-            if force_embedded {
-                None
-            } else {
-                load_system_font()
-            }
-        }
-    };
-    let (fonts, choice) = build_definitions(system.as_ref());
+/// 安装字体：主界面恒用内嵌 Noto Sans SC + Phosphor；歌词 family 按设置
+/// [`LyricsFont`] 解析（见模块文档）。返回歌词字体**实际生效**的设置值：
+/// `Specific` 指向的文件无效时已自动回退内嵌，此时返回 `Embedded`——调用方
+/// 据此复位设置页选择框并提示。
+pub fn install_fonts(ctx: &egui::Context, lyrics_font: &LyricsFont) -> LyricsFont {
+    let (lyrics_bytes, adopted) = resolve_lyrics_font(lyrics_font);
+    let (fonts, _) = build_definitions(lyrics_bytes.as_slice());
     ctx.set_fonts(fonts);
-    // 登记实际采用的字体字节，供 text_shadow 阴影光栅化与 egui 保持同源字形。
-    match &system {
-        Some((_, bytes)) => set_active_text_font(bytes),
-        None => set_active_text_font(NOTO_SC_BYTES),
-    }
-    choice
+    // 登记实际采用的歌词字体字节，供 text_shadow 阴影光栅化与 egui 保持同源字形。
+    set_active_lyrics_font(&lyrics_bytes);
+    adopted
 }
 
-/// 组装 FontDefinitions：`system` 为探测到的系统字体（已通过 [`font_file_is_suitable`]
-/// 校验），否则回退内嵌 Noto Sans SC。纯函数，便于无头测试。
-/// 返回 `(字体表, 文字字体实际来源)`。
-fn build_definitions(system: Option<&(PathBuf, Vec<u8>)>) -> (egui::FontDefinitions, FontChoice) {
+/// 按设置解析歌词字体：返回 `(字体字节, 实际生效的设置值)`。
+/// `Specific` 读文件（无效/解析失败回退内嵌并打日志）；其余恒内嵌。
+fn resolve_lyrics_font(font: &LyricsFont) -> (Vec<u8>, LyricsFont) {
+    match font {
+        LyricsFont::Specific(path) => match std::fs::read(path) {
+            Ok(bytes) if font_file_is_loadable(&bytes) => (bytes, font.clone()),
+            Ok(_) => {
+                eprintln!(
+                    "[font] 歌词字体 {path} 无法解析（egui 不支持该格式），回退内嵌 Noto Sans SC",
+                    path = path
+                );
+                (NOTO_SC_BYTES.to_vec(), LyricsFont::Embedded)
+            }
+            Err(e) => {
+                eprintln!(
+                    "[font] 歌词字体 {path} 读取失败（{e}），回退内嵌 Noto Sans SC",
+                    path = path
+                );
+                (NOTO_SC_BYTES.to_vec(), LyricsFont::Embedded)
+            }
+        },
+        LyricsFont::FollowUi | LyricsFont::Embedded => (NOTO_SC_BYTES.to_vec(), LyricsFont::Embedded),
+    }
+}
+
+/// 组装 FontDefinitions：主界面（Proportional/Monospace）恒为内嵌 Noto Sans SC
+/// 首位 + Phosphor 次位；歌词 family 首位为 `lyrics_bytes` 对应的字体（内嵌时
+/// 复用 `EMBEDDED_KEY`，系统字体时注册 `LYRICS_KEY`，避免整份字体数据装两遍），
+/// Phosphor 与内嵌 Noto 兜底。纯函数，便于无头测试；返回 `(字体表, 歌词首位键名)`。
+fn build_definitions(lyrics_bytes: &[u8]) -> (egui::FontDefinitions, &'static str) {
     let mut fonts = egui::FontDefinitions::default();
 
     // 图标字体（Phosphor，PUA 码点）恒内嵌：图标不依赖系统字形。
@@ -112,39 +149,66 @@ fn build_definitions(system: Option<&(PathBuf, Vec<u8>)>) -> (egui::FontDefiniti
             include_bytes!("../assets/Phosphor.ttf"),
         )),
     );
+    // 内嵌 CJK：主界面文字首选，同时是歌词 family 的最终兜底。
+    fonts
+        .font_data
+        .insert(EMBEDDED_KEY.to_owned(), embedded_cjk_data());
 
-    // 文字字体：系统优先；内嵌 CJK 挂在系统字体之后兜底，系统缺字时中文不变豆腐块。
-    let (first_key, choice) = match system {
-        Some((path, bytes)) => {
-            fonts.font_data.insert(
-                SYSTEM_KEY.to_owned(),
-                std::sync::Arc::new(egui::FontData::from_owned(bytes.clone())),
-            );
-            fonts
-                .font_data
-                .insert(EMBEDDED_KEY.to_owned(), embedded_cjk_data());
-            (SYSTEM_KEY, FontChoice::System(path.clone()))
-        }
-        None => {
-            fonts
-                .font_data
-                .insert(EMBEDDED_KEY.to_owned(), embedded_cjk_data());
-            (EMBEDDED_KEY, FontChoice::Embedded)
-        }
+    // 歌词 family 首选：设置指定的系统字体（与内嵌字节不同才注册新键）时用
+    // LYRICS_KEY，否则复用内嵌键。
+    let lyrics_first = if lyrics_bytes == NOTO_SC_BYTES {
+        EMBEDDED_KEY
+    } else {
+        fonts.font_data.insert(
+            LYRICS_KEY.to_owned(),
+            std::sync::Arc::new(egui::FontData::from_owned(lyrics_bytes.to_vec())),
+        );
+        LYRICS_KEY
     };
 
     for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
         let list = fonts.families.entry(family).or_default();
-        // 文字字体优先；图标字体紧随其后（PUA 码点在此命中，不干扰正常文字）；
-        // 系统字体模式下内嵌 CJK 排在其后兜底（egui 只按 family 列表顺序查字形，
-        // 只进 font_data 不进列表的字形永远不会被命中）。
-        list.insert(0, first_key.to_owned());
+        // 主界面：内嵌 Noto 首位；图标字体紧随其后（PUA 码点在此命中，
+        // 不干扰正常文字）。
+        list.insert(0, EMBEDDED_KEY.to_owned());
         list.insert(1, PHOSPHOR_KEY.to_owned());
-        if first_key == SYSTEM_KEY {
-            list.insert(2, EMBEDDED_KEY.to_owned());
-        }
     }
-    (fonts, choice)
+    // 歌词 family：歌词首选 → Phosphor → 内嵌 CJK 兜底（egui 按 family 列表
+    // 顺序查字形；只进 font_data 不进列表的字体永远不会被命中）。
+    fonts.families.insert(
+        lyrics_family(),
+        vec![lyrics_first.to_owned(), PHOSPHOR_KEY.to_owned(), EMBEDDED_KEY.to_owned()],
+    );
+    (fonts, lyrics_first)
+}
+
+/// 过滤文本中「当前界面字体渲染不出来」的字符（emoji/PUA/零宽等）。
+///
+/// 判定两层（见 `util::text` 模块文档）：与字体无关的必删类，加内嵌 Noto Sans SC
+/// 的 cmap 覆盖判定——查不到字形的码点一律剔除，避免渲染成「?」占位。
+pub fn sanitize_text(text: &str) -> String {
+    use skrifa::MetadataProvider as _;
+    // 内嵌 Noto 的 cmap：进程内恒定，只收集一次（升序排列供二分查找）。
+    static CHARMAP: OnceLock<Vec<u32>> = OnceLock::new();
+    let charmap = CHARMAP.get_or_init(|| {
+        let font = match skrifa::FontRef::from_index(NOTO_SC_BYTES, 0) {
+            Ok(f) => f,
+            Err(_) => return Vec::new(),
+        };
+        let mut codes: Vec<u32> =
+            font.charmap().mappings().map(|(code, _)| code).collect();
+        codes.sort_unstable();
+        codes
+    });
+    let covered = |c: char| {
+        if charmap.is_empty() {
+            // 内嵌字体解析失败（理论不可能）：退化为只挡必删类。
+            return true;
+        }
+        charmap.binary_search(&(c as u32)).is_ok()
+    };
+    let renderable = |c: char| !crate::util::text::is_unsupported_char(c) && covered(c);
+    crate::util::text::sanitize_ui_text(text, renderable)
 }
 
 /// 内嵌 CJK 字体（`include_bytes!` 静态数据）。
@@ -152,13 +216,13 @@ fn embedded_cjk_data() -> std::sync::Arc<egui::FontData> {
     std::sync::Arc::new(egui::FontData::from_static(NOTO_SC_BYTES))
 }
 
-/// 强制安装内嵌 Noto Sans SC + Phosphor（跳过系统字体探测）。
+/// 强制安装内嵌 Noto Sans SC + Phosphor（主界面与歌词 family 都恒内嵌）。
 ///
 /// 供无头测试使用：字形度量不随宿主机器的系统字体变化，跨机器结果稳定。
 pub fn install_embedded_fonts(ctx: &egui::Context) {
-    let (fonts, _) = build_definitions(None);
+    let (fonts, _) = build_definitions(NOTO_SC_BYTES);
     ctx.set_fonts(fonts);
-    set_active_text_font(NOTO_SC_BYTES);
+    set_active_lyrics_font(NOTO_SC_BYTES);
 }
 
 // ---------------------------------------------------------------------------
@@ -180,34 +244,10 @@ pub struct SystemFont {
 /// 校验字体文件能否被 egui/epaint 加载（skrifa 可解析即可，**不**要求覆盖中文）。
 ///
 /// 与 [`font_file_is_suitable`] 的区别：用户显式挑选的字体允许是纯拉丁字体——
-/// 界面中文自动由内嵌 Noto 兜底（字体链恒有内嵌 CJK），不该因此拒绝用户的选择；
+/// 歌词中文自动由内嵌 Noto 兜底（字体链恒有内嵌 CJK），不该因此拒绝用户的选择；
 /// 但解析失败的文件必须拦下（egui 对解析失败的字体直接 panic）。
 pub fn font_file_is_loadable(bytes: &[u8]) -> bool {
     skrifa::FontRef::from_index(bytes, 0).is_ok()
-}
-
-/// 从文件读出字体并校验可加载；返回 `(路径, 内容)`。
-///
-/// 失败时打印提示并返回 `None`（调用方回退 Auto/内嵌——文件被删或格式不支持时
-/// 不能让选择静默失效）。
-fn load_font_file(path: &Path) -> Option<(PathBuf, Vec<u8>)> {
-    match std::fs::read(path) {
-        Ok(bytes) if font_file_is_loadable(&bytes) => Some((path.to_path_buf(), bytes)),
-        Ok(_) => {
-            eprintln!(
-                "[font] 设置选择的字体 {} 无法解析（egui 不支持该格式），回退自动选择",
-                path.display()
-            );
-            None
-        }
-        Err(e) => {
-            eprintln!(
-                "[font] 设置选择的字体 {} 读取失败（{e}），回退自动选择",
-                path.display()
-            );
-            None
-        }
-    }
 }
 
 /// 读字体家族名（name 表 typographic family / family，English 优先）。
@@ -540,34 +580,116 @@ mod tests {
         assert!(!font_file_is_suitable(&[]));
     }
 
-    /// Phosphor 恒在两个 family；用上系统字体时内嵌 CJK 必须仍在兜底链上（系统字体
-    /// 之后、图标字体之前）；没用上时内嵌 CJK 在首位。不读 Context（无头下 run 前
-    /// 不能访问字体视图），直接断言组装结果。
+    /// 主界面恒内嵌（Phosphor 次位），歌词 family 链为「歌词首选 → Phosphor →
+    /// 内嵌 CJK」。不读 Context（无头下 run 前不能访问字体视图），直接断言组装结果。
     #[test]
     fn install_keeps_phosphor_and_fallback_chain() {
-        // 无系统字体 → 内嵌兜底。
-        let (defs, choice) = build_definitions(None);
-        assert_eq!(choice, FontChoice::Embedded);
+        // 歌词也用内嵌 → 内嵌 CJK 在主界面两个 family 首位、歌词 family 首位。
+        let (defs, first) = build_definitions(NOTO_SC_BYTES);
+        assert_eq!(first, EMBEDDED_KEY);
         for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
             let list = &defs.families[&family];
             assert_eq!(list.first().map(String::as_str), Some(EMBEDDED_KEY));
             assert_eq!(list.get(1).map(String::as_str), Some(PHOSPHOR_KEY));
         }
+        let lyrics = &defs.families[&lyrics_family()];
+        assert_eq!(lyrics.first().map(String::as_str), Some(EMBEDDED_KEY));
+        assert_eq!(lyrics.get(1).map(String::as_str), Some(PHOSPHOR_KEY));
+        assert_eq!(lyrics.get(2).map(String::as_str), Some(EMBEDDED_KEY));
+        assert!(!defs.font_data.contains_key(LYRICS_KEY), "内嵌模式下不应注册歌词系统字体键");
 
-        // 有系统字体 → 系统字体首位、图标第二、内嵌 CJK 兜底。
-        let sys = (PathBuf::from("/tmp/fake.ttf"), b"fake".to_vec());
-        let (defs, choice) = build_definitions(Some(&sys));
-        assert_eq!(choice, FontChoice::System(sys.0.clone()));
+        // 歌词用系统字体（这里以 Phosphor 字节代表「一份非内嵌字体」）→ 歌词
+        // family 首位是 LYRICS_KEY，Phosphor/内嵌 CJK 兜底；主界面不受影响。
+        let (defs, first) = build_definitions(include_bytes!("../assets/Phosphor.ttf"));
+        assert_eq!(first, LYRICS_KEY);
+        assert!(defs.font_data.contains_key(LYRICS_KEY));
+        let lyrics = &defs.families[&lyrics_family()];
+        assert_eq!(lyrics.first().map(String::as_str), Some(LYRICS_KEY));
+        assert_eq!(lyrics.get(1).map(String::as_str), Some(PHOSPHOR_KEY));
+        assert_eq!(lyrics.get(2).map(String::as_str), Some(EMBEDDED_KEY));
         for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
             let list = &defs.families[&family];
-            assert_eq!(list.first().map(String::as_str), Some(SYSTEM_KEY));
+            assert_eq!(list.first().map(String::as_str), Some(EMBEDDED_KEY));
             assert_eq!(list.get(1).map(String::as_str), Some(PHOSPHOR_KEY));
             assert!(
-                list.iter().any(|k| k == EMBEDDED_KEY),
-                "{family:?} 系统字体模式下缺少内嵌 CJK 兜底: {list:?}"
+                !list.iter().any(|k| k == LYRICS_KEY),
+                "{family:?} 歌词字体不应混进主界面字体链: {list:?}"
             );
         }
-        assert!(defs.font_data.contains_key(SYSTEM_KEY));
+    }
+
+    /// 歌词 family 上的字形解析：装上内嵌字体后，用 `fonts::lyrics_font_id`
+    /// 布局歌词文本必须得到非零尺寸，且 CJK 与拉丁命中不同真实字形（若都渲染成
+    /// replacement 占位字形，宽度必然相等 → 断言失败）。
+    #[test]
+    fn lyrics_family_glyphs_resolve_after_install() {
+        let ctx = egui::Context::default();
+        install_embedded_fonts(&ctx);
+        let font_id = lyrics_font_id(26.0);
+        assert_eq!(font_id.family, lyrics_family(), "歌词 FontId 应用专用 family");
+        let mut full = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            ctx.fonts_mut(|f| {
+                let cjk = f.glyph_width(&font_id, '中');
+                let latin = f.glyph_width(&font_id, 'A');
+                assert!(cjk > 0.0, "歌词 CJK 字形宽度为 0");
+                assert_ne!(cjk, latin, "歌词 CJK 与拉丁宽度相同 = 都渲染成占位字形");
+                let galley = f.layout_no_wrap(
+                    "中文歌词 ABC 123：".into(),
+                    font_id.clone(),
+                    egui::Color32::WHITE,
+                );
+                assert!(galley.rect.width() > 0.0);
+                assert!(galley.rect.height() > 0.0);
+            });
+        });
+        full.textures_delta.clear();
+    }
+
+    /// 歌词字体解析：`Specific` 指向有效文件 → 原样生效；指向无效文件 → 回退内嵌；
+    /// `FollowUi`/`Embedded` → 内嵌。文件写临时目录，不依赖宿主字体环境。
+    #[test]
+    fn resolve_lyrics_font_adopted_or_fallback() {
+        let dir = std::env::temp_dir().join(format!("simplemusic-lyricsfont-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let good = dir.join("good.otf");
+        let bad = dir.join("bad.ttf");
+        std::fs::write(&good, include_bytes!("../assets/NotoSansSC-Regular.otf")).unwrap();
+        std::fs::write(&bad, b"not a font").unwrap();
+
+        // 有效文件 → 采用 Specific。
+        let (bytes, adopted) = resolve_lyrics_font(&LyricsFont::Specific(good.display().to_string()));
+        assert_eq!(adopted, LyricsFont::Specific(good.display().to_string()));
+        assert_eq!(bytes, NOTO_SC_BYTES.to_vec());
+
+        // 垃圾文件 → 回退内嵌。
+        let (_, adopted) = resolve_lyrics_font(&LyricsFont::Specific(bad.display().to_string()));
+        assert_eq!(adopted, LyricsFont::Embedded);
+
+        // 路径不存在 → 回退内嵌。
+        let (_, adopted) = resolve_lyrics_font(&LyricsFont::Specific("/nonexistent/font.ttf".into()));
+        assert_eq!(adopted, LyricsFont::Embedded);
+
+        // FollowUi / Embedded → 内嵌。
+        let (_, adopted) = resolve_lyrics_font(&LyricsFont::FollowUi);
+        assert_eq!(adopted, LyricsFont::Embedded);
+        let (_, adopted) = resolve_lyrics_font(&LyricsFont::Embedded);
+        assert_eq!(adopted, LyricsFont::Embedded);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 缺字过滤端到端：emoji/PUA/零宽被剔除，汉字/拉丁/常用全角符号保留
+    /// （判定闭包用内嵌 Noto 的真实 cmap，与生产 `sanitize_text` 同源）。
+    #[test]
+    fn sanitize_text_filters_uncovered_glyphs() {
+        assert_eq!(sanitize_text("晴天 Hello 123！"), "晴天 Hello 123！");
+        assert_eq!(sanitize_text("好听的\u{1F680}歌"), "好听的歌");
+        assert_eq!(sanitize_text("前\u{E0B0}后"), "前后");
+        assert_eq!(sanitize_text("零\u{200B}宽"), "零宽");
+        assert_eq!(sanitize_text("A \u{1F680} B"), "A B");
+        assert_eq!(sanitize_text(""), "");
+        // 全是 emoji → 空串。
+        assert_eq!(sanitize_text("\u{1F680}\u{1F3B5}"), "");
     }
 
     /// 兜底链最终形态：装上内嵌字体后，界面常用文本必须布局出非零尺寸，且 CJK 与
@@ -738,3 +860,4 @@ mod tests {
         }
     }
 }
+

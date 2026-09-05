@@ -4,7 +4,7 @@
 //! 全部应用逻辑在库目标 `simple_music`（见 `lib.rs` 的模块地图）。
 
 use simple_music::{app, fonts, modules, state, theme, tray};
-use state::Settings;
+use state::{Settings, LyricsFont};
 
 /// 简易命令行/环境变量解析（保持依赖少，不引入 clap）。
 struct LaunchOptions {
@@ -167,20 +167,17 @@ fn main() -> eframe::Result<()> {
         "SimpleMusic",
         native_options,
         Box::new(move |cc| {
-            // 先读设置（可能指定了界面字体），再注册字体：选择在首帧渲染前生效。
+            // 先读设置（可能指定了歌词字体），再注册字体：选择在首帧渲染前生效。
             let settings = Settings::load().unwrap_or_default();
-            // 注册字体：设置选择优先，Auto 时文字优先系统字体（图标恒用内嵌 Phosphor）。
-            let font_choice = fonts::install_fonts(
-                &cc.egui_ctx,
-                settings.ui_font.path().map(std::path::Path::new),
-            );
-            match font_choice {
-                fonts::FontChoice::System(p) => {
-                    println!("[font] 界面字体: {}（图标用内嵌 Phosphor）", p.display());
-                }
-                fonts::FontChoice::Embedded => {
-                    println!("[font] 界面字体: 内嵌 Noto Sans SC（未探测到系统字体）+ 内嵌 Phosphor 图标");
-                }
+            // 主界面恒用内嵌 Noto Sans SC + Phosphor；歌词 family 按设置解析。
+            let adopted = fonts::install_fonts(&cc.egui_ctx, &settings.lyrics_font);
+            match &adopted {
+                LyricsFont::Specific(p) => println!(
+                    "[font] 界面字体: 内嵌 Noto Sans SC + Phosphor 图标；歌词字体: {p}（桌面歌词）"
+                ),
+                _ => println!(
+                    "[font] 界面字体: 内嵌 Noto Sans SC + Phosphor 图标；歌词字体: 内嵌 Noto Sans SC"
+                ),
             }
             // 应用深色淡雅主题。
             theme::apply(&cc.egui_ctx);
