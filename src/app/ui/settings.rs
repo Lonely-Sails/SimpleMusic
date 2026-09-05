@@ -257,24 +257,29 @@ impl MusicApp {
             if radio.clicked() && self.settings.lyrics_font != variant {
                 self.apply_font_setting(ctx, &variant);
                 self.settings.lyrics_font = variant;
+                // 回到内置字体：收起自定义浏览列表。
+                self.lyrics_font_browsing = false;
             }
             radio.on_hover_text(hint);
         }
 
-        // 自定义：从系统字体列表里挑。
+        // 自定义：从系统字体列表里挑。选中过文件 = 恒展开；未选中时点它进入
+        // 「浏览模式」立即展开列表并触发扫描（否则第一次点击毫无反应——
+        // 列表展开条件不能只看 `lyrics_font` 是否为 Specific）。
         let specific_active = matches!(self.settings.lyrics_font, LyricsFont::Specific(_));
         if ui
             .radio(
-                specific_active,
+                specific_active || self.lyrics_font_browsing,
                 RichText::new("自定义…").color(theme::TEXT_PRIMARY),
             )
             .clicked()
         {
+            self.lyrics_font_browsing = true;
             // 触发后台扫描（幂等）；已有结果时直接展开列表。
             self.spawn_font_scan();
         }
 
-        if specific_active {
+        if specific_active || self.lyrics_font_browsing {
             // 当前选中文件的回显（可能已失效——失效时启动已回退内嵌，这里仅显示）。
             if let Some(path) = self.settings.lyrics_font.path() {
                 ui.label(
@@ -345,6 +350,8 @@ impl MusicApp {
                                     self.settings.lyrics_font = new_font;
                                 } else {
                                     self.settings.lyrics_font = LyricsFont::Embedded;
+                                    // 回退内嵌后浏览列表没有存在意义，收起。
+                                    self.lyrics_font_browsing = false;
                                 }
                             }
                         }

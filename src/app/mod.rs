@@ -139,6 +139,10 @@ pub struct MusicApp {
     font_scanning: bool,
     font_filter: String,
     settings_tab: SettingsTab,
+    /// 「桌面歌词字体 → 自定义…」浏览模式：点了自定义但还没选中具体文件时
+    /// 也必须展开候选列表（列表展开条件不能只看 `LyricsFont::Specific`，
+    /// 否则首次点击毫无反应）。
+    lyrics_font_browsing: bool,
     // 歌单管理
     playlist_mgmt_open: bool,
     renaming_idx: Option<usize>,
@@ -267,6 +271,7 @@ impl MusicApp {
             font_scanning: false,
             font_filter: String::new(),
             settings_tab: SettingsTab::default(),
+            lyrics_font_browsing: false,
             playlist_mgmt_open: false,
             renaming_idx: None,
             rename_text: String::new(),
