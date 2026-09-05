@@ -14,7 +14,7 @@
 cd /data/dsh/home/SimpleMusic
 source .toolchain/env.sh          # 设置 RUSTUP_HOME / CARGO_HOME / PATH / CC / 链接器 等
 cargo check                       # 编译检查（默认 tray feature）
-cargo test --no-default-features  # 单测（177 个离线用例 + 2 个 #[ignore] 网络用例）
+cargo test --no-default-features  # 单测（178 个离线用例 + 2 个 #[ignore] 网络用例）
 cargo run --no-default-features -- --smoke  # 无窗口模块自检，打印 SMOKE_OK 退出
 cargo run                         # 真实 GUI 启动（需要显示环境）
 ```
@@ -137,6 +137,13 @@ src/
   进度条平滑且切行动画不迟到。**不要恢复 `playing ⇒ request_repaint()` 的全速连续重绘**——
   浮窗动画期间主窗口全速重绘会在 winit 全局重绘队列里互相踩踏，是浮窗掉帧主因。
 - UI 闭包里禁止直接做网络请求；需要结果就 `spawn_*` 一个后台线程 + 发消息。
+- **egui `Context` 是一把大写锁**（`RwLock<ContextImpl>`，memory/data、viewports、input、
+  fonts 全在里面；epaint RwLock **不可重入**）。**绝不能在 `ctx.data_mut`/`data`/`input`/
+  `fonts` 等闭包里再调任何 `Context` API**（如 `load_texture`、`pixels_per_point`）——
+  同线程递归加锁 = 死锁，debug 构建 10s 后 `DEBUG PANIC: Failed to acquire RwLock`、
+  release 永久挂死（macOS 上 panic 发生在 `draw_rect` 里无法 unwind，直接 abort）。
+  正确写法：拆成「查（短临界区）→ 锁外做事（光栅化/load_texture）→ 写（短临界区）」，
+  见 `text_shadow.rs::ShadowCache` 的 get/insert 两段式设计。
 
 ### 播放列表语义（改播放相关代码前必读）
 - **当前选中的歌单就是播放列表，没有独立的播放队列**。`MusicApp` 只有
@@ -195,7 +202,7 @@ CDN 403/410 自动换备用地址；写盘失败降级内存缓冲；无输出�
 6. **图标**：所有界面图标用 `icons::*`（内嵌 Phosphor，PUA 码点渲染到 rect 中心），不要依赖 emoji 或媒体控制码点（跨平台字形缺失会显示 "?"）。
 7. **错误处理**：音频错误不 panic，写 `PlaybackStatus.error` 由 UI 展示；网络错误经 `AsyncMsg` 回 `ui_error`（红色）或 `notice`（金色轻提示，4 秒）。
 8. **文本宽度**：动态文案先 `truncate_label`/`fit_text` 再 `painter.text`。
-9. **单测**：纯函数（解析/打分/格式化/过滤）放同文件 `#[cfg(test)] mod tests`，离线跑；真实网络用 `#[ignore]` 标注（如 `detect_music_live`）。新增纯逻辑尽量带测试。测试数 177 + 2 ignored。
+9. **单测**：纯函数（解析/打分/格式化/过滤）放同文件 `#[cfg(test)] mod tests`，离线跑；真实网络用 `#[ignore]` 标注（如 `detect_music_live`）。新增纯逻辑尽量带测试。测试数 178 + 2 ignored。
 10. **UI 状态与数据解耦（稳定标识模式）**：凡是「UI 里选中的东西」跨帧/跨列表操作要记住时，**存稳定标识（如 bvid），不要存列表下标**——下标在过滤/删歌/刷新后静默漂移出 bug，标识找不到时按 `None` 处理即可自然降级。
 11. **不要让「执行动作」顺手改数据**：副作用（入单/落盘/置 dirty）必须由用户的显式操作触发；新功能如果发现自己「顺手」改了用户数据，几乎一定是设计错了。
 12. **行为不变量改动要写迁移/清理**：改持久化语义时在启动路径加一次性数据清理，并考虑旧文件兼容（`#[serde(default)]`）。

@@ -46,7 +46,7 @@
 //! 真实颜色的 galley，主体层复用同一 galley 绘制——动画期间每帧最多 2 次布局查询
 //! （当前行 + 下一行）。
 
-use crate::text_shadow::{ShadowCache, ShadowStyle};
+use crate::text_shadow::{CachedShadow, ShadowCache, ShadowStyle, rasterize_shadow};
 use crate::{icons, theme};
 use eframe::egui::{
     self, Align2, Color32, FontId, Id, Pos2, Rect, Sense, Vec2, ViewportBuilder, ViewportCommand,
@@ -342,6 +342,10 @@ impl MusicApp {
 }
 
 /// 取（或生成）一行文本的柔影纹理；`None` = 字形为空（纯空白）或光栅化失败。
+///
+/// **锁纪律**：缓存查/写是两个独立 `data_mut` 短临界区，光栅化 + `load_texture`
+/// 在锁外执行——`load_texture` 内部会再取同一把 `ContextImpl` 写锁，嵌在
+/// `data_mut` 闭包里就是同线程递归加写锁 = 死锁（epaint RwLock 不可重入）。
 fn lyrics_shadow_texture(
     ctx: &egui::Context,
     text: &str,
@@ -352,14 +356,30 @@ fn lyrics_shadow_texture(
     let ppi = ctx.pixels_per_point();
     let font_px = font_pt * ppi;
     let style = ShadowStyle {
-        sigma: (sigma * ppi),
+        sigma: sigma * ppi,
         strength,
     };
-    let font = crate::fonts::active_text_font();
+    // 1) 查缓存（短临界区）。
+    let cached = ctx.data_mut(|d| {
+        d.get_temp_mut_or::<ShadowCache>(Id::new(SHADOW_SLOT), ShadowCache::default())
+            .get(text, font_px, style)
+    });
+    // 2) 未命中 → 锁外光栅化 + 上传。
+    let (key, tex) = match cached {
+        CachedShadow::Ready(tex) => return Some(tex),
+        CachedShadow::Failed => return None,
+        CachedShadow::Miss(key) => {
+            let font = crate::fonts::active_text_font();
+            let tex = rasterize_shadow(ctx, &font, 0, text, font_px, style);
+            (key, tex)
+        }
+    };
+    // 3) 写缓存（短临界区，失败也缓存，避免每帧重试）。
     ctx.data_mut(|d| {
         d.get_temp_mut_or::<ShadowCache>(Id::new(SHADOW_SLOT), ShadowCache::default())
-            .texture(ctx, &font, 0, text, font_px, style)
-    })
+            .insert(key, tex.clone());
+    });
+    tex
 }
 
 /// 绘制当前句歌词（含向四周晕开的模糊柔影）；`alpha` 为过渡透明度，`dy` 为相对

@@ -13,10 +13,18 @@
 //! `egui::Context` 的 data 槽上，跨帧复用）。歌词过渡动画期间同一文本逐帧命中
 //! 缓存，每帧只多一次四边形绘制；只有切行那一帧才光栅化 + 模糊（一次 <1ms 级）。
 //!
+//! **锁纪律（重要）**：`ShadowCache` 存在 `Context::data_mut`（写锁）里，但
+//! [`ShadowCache::get`] / [`ShadowCache::insert`] 必须是两个独立临界区——光栅化
+//! 与 `ctx.load_texture` 绝不能在 `data_mut` 闭包内执行。`load_texture` 内部会经
+//! `Context::input`/`tex_manager` 再次获取同一把 `ContextImpl` 写锁，egui 的
+//! `epaint::RwLock` 不可重入，嵌套调用 = 同线程死锁（debug 构建 10s 后 panic，
+//! 见 epaint `mutex.rs` 的 DEADLOCK_DURATION）。
+//!
 //! 光栅化后端用 vello_cpu（epaint 0.36 同款 skrifa/vello 栈），字形渲染观感与
 //! UI 文字一致；skrifa 是本 crate 已有依赖，vello_cpu 本就在 epaint 的依赖树里。
 
 use eframe::egui;
+use eframe::egui::TextureHandle;
 use skrifa::MetadataProvider as _;
 use skrifa::outline::OutlinePen;
 use skrifa::prelude::{LocationRef, Size};
@@ -38,9 +46,10 @@ pub struct ShadowStyle {
     pub strength: f32,
 }
 
-/// 缓存键。f32 参数乘 100 取整后参与哈希（f32 不宜直接做键）。
-#[derive(Clone, PartialEq, Eq, Hash)]
-struct ShadowKey {
+/// 缓存键（不透明：只能经 [`ShadowKey::new`] 构造）。f32 参数乘 100 取整后参与
+/// 哈希（f32 不宜直接做键）。
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ShadowKey {
     text: String,
     px_centi: u32,
     sigma_centi: u32,
@@ -48,7 +57,7 @@ struct ShadowKey {
 }
 
 impl ShadowKey {
-    fn new(text: &str, px: f32, style: ShadowStyle) -> Self {
+    pub fn new(text: &str, px: f32, style: ShadowStyle) -> Self {
         Self {
             text: text.to_owned(),
             px_centi: (px * 100.0).round() as u32,
@@ -72,32 +81,60 @@ impl ShadowCache {
     ///
     /// `font_px` 为像素字号（pt × pixels_per_point）；`style.sigma` 亦是像素单位。
     /// 返回 `None` = 该文本没有可渲染的字形。
-    pub fn texture(
-        &mut self,
-        ctx: &egui::Context,
-        font_bytes: &[u8],
-        font_index: u32,
-        text: &str,
-        font_px: f32,
-        style: ShadowStyle,
-    ) -> Option<egui::TextureHandle> {
+    /// 查缓存（短临界区，闭包内只做 HashMap 查找）。命中返回纹理克隆；
+    /// `Some(None)` 表示「已知光栅化失败」（纯空白/无字形），调用方直接放弃；
+    /// `None` 表示未缓存，调用方应在**锁外**光栅化后调 [`Self::insert`]。
+    pub fn get(&mut self, text: &str, font_px: f32, style: ShadowStyle) -> CachedShadow {
         let key = ShadowKey::new(text, font_px, style);
-        if !self.order.contains(&key) {
-            let tex = rasterize_shadow(ctx, font_bytes, font_index, text, font_px, style);
-            self.map.insert(key.clone(), tex);
-            self.order.push_back(key.clone());
-            while self.order.len() > 8 {
-                if let Some(old) = self.order.pop_front() {
-                    self.map.remove(&old); // 释放 TextureHandle，纹理随后被 egui 回收
-                }
+        match self.map.get(&key) {
+            Some(Some(tex)) => CachedShadow::Ready(tex.clone()),
+            Some(None) => CachedShadow::Failed,
+            None => CachedShadow::Miss(key),
+        }
+    }
+
+    /// 写缓存（短临界区，闭包内只做 HashMap 插入 + LRU 淘汰）。
+    /// `texture` 为 `None` 时缓存「光栅化失败」，避免每帧重试。
+    pub fn insert(&mut self, key: ShadowKey, texture: Option<egui::TextureHandle>) {
+        if self.map.contains_key(&key) {
+            return; // 同帧竞态下另一处已插入，保旧（LRU 不动）
+        }
+        self.map.insert(key.clone(), texture);
+        self.order.push_back(key);
+        while self.order.len() > 8 {
+            if let Some(old) = self.order.pop_front() {
+                self.map.remove(&old); // 释放 TextureHandle，纹理随后被 egui 回收
             }
         }
-        self.map.get(&key)?.clone()
+    }
+}
+
+/// [`ShadowCache::get`] 的查询结果。
+#[must_use]
+pub enum CachedShadow {
+    /// 缓存命中，可直接绘制。
+    Ready(TextureHandle),
+    /// 已知失败（无字形/字体不可解析），不要重试。
+    Failed,
+    /// 未缓存；携带预构造的键，锁外光栅化完成后连同结果调 [`ShadowCache::insert`]。
+    Miss(ShadowKey),
+}
+
+/// 手动实现：egui 的 `TextureHandle` 没有实现 `Debug`，这里只打印判别名。
+impl std::fmt::Debug for CachedShadow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ready(_) => f.write_str("Ready(TextureHandle)"),
+            Self::Failed => f.write_str("Failed"),
+            Self::Miss(key) => f.debug_tuple("Miss").field(key).finish(),
+        }
     }
 }
 
 /// 光栅化 + 模糊 + 上传。字形全空（纯空白文本）或字体不可解析时返回 `None`。
-fn rasterize_shadow(
+///
+/// 供浮窗侧在 `data_mut` 锁外调用（锁内不可再碰 `ctx.*`，见模块文档锁纪律）。
+pub(crate) fn rasterize_shadow(
     ctx: &egui::Context,
     font_bytes: &[u8],
     font_index: u32,
@@ -409,5 +446,48 @@ mod tests {
     fn shadow_bitmap_bad_font_is_none() {
         let style = ShadowStyle { sigma: 5.0, strength: 0.6 };
         assert!(shadow_bitmap(b"not a font", 0, "测试", 26.0, style).is_none());
+    }
+
+    /// 缓存语义：Miss → 光栅化 → insert 后变 Ready/Failed；失败也要缓存；
+    /// 同键重复 insert 不覆盖；容量 8 FIFO 淘汰。纹理用 None（缓存失败）+ 一张
+    /// 真实纹理（无头 Context 上传 2x2）验证两条路径。
+    #[test]
+    fn shadow_cache_get_insert_semantics() {
+        let style = ShadowStyle { sigma: 5.0, strength: 0.6 };
+        let mut cache = ShadowCache::default();
+
+        // 未缓存 → Miss（携带键）。
+        let key = match cache.get("测试", 26.0, style) {
+            CachedShadow::Miss(k) => k,
+            other => panic!("首次查询应为 Miss，得到 {other:?}"),
+        };
+
+        // 失败也缓存：insert(None) → Failed（避免每帧重试光栅化）。
+        cache.insert(key.clone(), None);
+        assert!(matches!(cache.get("测试", 26.0, style), CachedShadow::Failed));
+
+        // 同键重复 insert 不覆盖（保旧）。
+        cache.insert(key, None);
+        assert!(matches!(cache.get("测试", 26.0, style), CachedShadow::Failed));
+
+        // 命中路径：无头 Context 上传一张 2x2 纹理。
+        let ctx = egui::Context::default();
+        let tex = ctx.load_texture(
+            "shadow-cache-test",
+            egui::ColorImage::from_rgba_premultiplied([2, 2], &[0, 0, 0, 128, 0, 0, 0, 128, 0, 0, 0, 128, 0, 0, 0, 128]),
+            egui::TextureOptions::LINEAR,
+        );
+        cache.insert(ShadowKey::new("命中", 26.0, style), Some(tex.clone()));
+        match cache.get("命中", 26.0, style) {
+            CachedShadow::Ready(t) => assert_eq!(t.id(), tex.id()),
+            other => panic!("insert 后应 Ready，得到 {other:?}"),
+        }
+
+        // 容量 8 FIFO：再灌 8 个新键（共 9+），最早插入的「测试」应被淘汰。
+        for i in 0..8 {
+            let k = ShadowKey::new(&format!("fill{i}"), 26.0, style);
+            cache.insert(k, None);
+        }
+        assert!(matches!(cache.get("测试", 26.0, style), CachedShadow::Miss(_)));
     }
 }
