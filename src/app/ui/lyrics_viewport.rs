@@ -49,7 +49,7 @@
 use crate::text_shadow::{CachedShadow, ShadowCache, ShadowStyle, rasterize_shadow};
 use crate::{fonts, icons, theme};
 use eframe::egui::{
-    self, Align2, Color32, FontId, Id, Pos2, Rect, Sense, Vec2, ViewportBuilder, ViewportCommand,
+    self, Align2, Color32, Id, Pos2, Rect, Sense, Vec2, ViewportBuilder, ViewportCommand,
     ViewportId,
 };
 use std::time::Instant;
@@ -401,11 +401,13 @@ fn draw_current_layer(ui: &egui::Ui, center: Pos2, text: &str, font_pt: f32, alp
         return;
     }
     if text.is_empty() {
+        // 占位提示同样走歌词 family：否则未播放时它是浮窗唯一可见文本，
+        // 换「桌面歌词字体」看不到任何变化（回归修复）。
         painter.text(
             center + Vec2::new(0.0, -12.0 + dy),
             Align2::CENTER_CENTER,
             "桌面歌词（等待播放…）",
-            FontId::proportional(18.0),
+            fonts::lyrics_font_id(18.0),
             theme::TEXT_SECONDARY.gamma_multiply(alpha),
         );
         return;

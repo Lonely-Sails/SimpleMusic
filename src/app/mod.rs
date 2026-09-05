@@ -32,6 +32,7 @@ use crate::modules::lyrics::{LrcLine, Lyrics, LyricsCacheEntry};
 use crate::modules::storage;
 use crate::state::{PlaybackState, Playlist, QueueItem, Settings, LyricsFont};
 use crate::tray;
+use crate::app::ui::settings::SettingsTab;
 use crate::app::ui::toast::{show_toasts, Toast, ToastKind};
 use eframe::egui;
 use messages::AsyncMsg;
@@ -131,11 +132,13 @@ pub struct MusicApp {
     keepalive_stop: Arc<AtomicBool>,
     // 搜索过滤
     search_text: String,
-    // 界面字体选择（设置页）：候选列表（后台扫描回填）/ 扫描状态 / 选择框过滤词。
+    // 字体选择（设置页）：候选列表（后台扫描回填）/ 扫描状态 / 选择框过滤词 /
+    // 当前选中的导航页。
     font_list: Vec<crate::fonts::SystemFont>,
     font_scan_started: bool,
     font_scanning: bool,
     font_filter: String,
+    settings_tab: SettingsTab,
     // 歌单管理
     playlist_mgmt_open: bool,
     renaming_idx: Option<usize>,
@@ -263,6 +266,7 @@ impl MusicApp {
             font_scan_started: false,
             font_scanning: false,
             font_filter: String::new(),
+            settings_tab: SettingsTab::default(),
             playlist_mgmt_open: false,
             renaming_idx: None,
             rename_text: String::new(),
@@ -319,10 +323,13 @@ impl MusicApp {
     /// 时回退内嵌并弹 toast 说明；返回值表示该选择是否成功生效（UI 据此复位选择框）。
     pub(crate) fn apply_font_setting(&mut self, ctx: &egui::Context, font: &LyricsFont) -> bool {
         let adopted = crate::fonts::install_fonts(ctx, font);
-        if adopted != *font {
+        // 只对「指定了文件却没生效」的 Specific 报错：FollowUi/Embedded 本来就
+        // 解析成内嵌，adopted 必为 Embedded，不是失败。
+        if let LyricsFont::Specific(path) = font
+            && adopted != *font
+        {
             self.error(format!(
-                "字体 {} 不可用（读取失败或格式不支持），已回退内嵌字体",
-                font.path().unwrap_or("")
+                "字体 {path} 不可用（读取失败或格式不支持），已回退内嵌字体"
             ));
         }
         // 字体变更后：柔影缓存按文本键控、不含字体维度，必须整体失效；

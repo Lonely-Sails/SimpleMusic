@@ -678,6 +678,55 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 用户自定义字体端到端（回归）：`install_fonts(Specific)` 之后，**live** 字体表
+    /// 的歌词 family 首位必须换成注册的系统字体键，主界面两个 family 不受影响，
+    /// 且新字体链能真实布局出歌词文本（egui/ab_glyph 对该文件可解析）。
+    /// 「Noto 字节 + 尾部填充」构造一份合法但与内嵌不同的字体（sfnt 解析器按
+    /// 表目录偏移读数据，表外尾部字节被忽略），既走 LYRICS_KEY 注册路径，
+    /// 又不依赖宿主系统装了什么字体。
+    #[test]
+    fn install_fonts_specific_switches_live_lyrics_family() {
+        let mut bytes = NOTO_SC_BYTES.to_vec();
+        bytes.extend_from_slice(b"simple-music-font-test-padding");
+        let dir = std::env::temp_dir().join(format!("simplemusic-livefont-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("custom.ttf");
+        std::fs::write(&path, &bytes).unwrap();
+
+        let ctx = egui::Context::default();
+        let choice = LyricsFont::Specific(path.display().to_string());
+        let adopted = install_fonts(&ctx, &choice);
+        assert_eq!(adopted, choice, "合法字体文件应原样生效");
+
+        // 新字体链可渲染：布局非零尺寸（egui 在这里才真正解析字体，坏文件会 panic）。
+        let mut full = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            // live 字体表：歌词 family 首位 = LYRICS_KEY（而不是内嵌键）。
+            let defs = ctx.fonts_mut(|f| f.definitions().clone());
+            let lyrics = &defs.families[&lyrics_family()];
+            assert_eq!(lyrics.first().map(String::as_str), Some(LYRICS_KEY));
+            assert_eq!(lyrics.get(1).map(String::as_str), Some(PHOSPHOR_KEY));
+            assert_eq!(lyrics.get(2).map(String::as_str), Some(EMBEDDED_KEY));
+            for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+                assert_eq!(
+                    defs.families[&family].first().map(String::as_str),
+                    Some(EMBEDDED_KEY),
+                    "{family:?} 主界面字体链不应被歌词字体影响"
+                );
+            }
+            ctx.fonts_mut(|f| {
+                let galley = f.layout_no_wrap(
+                    "自定义字体 Lyrics 123".into(),
+                    lyrics_font_id(26.0),
+                    egui::Color32::WHITE,
+                );
+                assert!(galley.rect.width() > 0.0 && galley.rect.height() > 0.0);
+            });
+        });
+        full.textures_delta.clear();
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// 缺字过滤端到端：emoji/PUA/零宽被剔除，汉字/拉丁/常用全角符号保留
     /// （判定闭包用内嵌 Noto 的真实 cmap，与生产 `sanitize_text` 同源）。
     #[test]

@@ -229,6 +229,8 @@ CDN 403/410 自动换备用地址；写盘失败降级内存缓冲；无输出�
   切歌淡入淡出过渡（vsync 对齐，见线程模型）。歌词文字用**专用字体 family**
   （`fonts::lyrics_family()`），设置页可单独选「桌面歌词字体」（跟随界面/内嵌/系统字体），
   切换后需 `clear_shadow_cache` 失效柔影缓存并唤醒浮窗重绘（柔影缓存键不含字体维度）。
+  浮窗**所有**文本（含「等待播放…」占位）都必须走 `fonts::lyrics_font_id`——
+  占位曾是唯一常显文本却用了主界面字体，导致换字体看似无效（已修复，勿回退）。
 - **歌词**：B 站「识别音乐」生成优先查询词 + 视频时长校准打分；vkeys.cn 聚合源自动搜索 + LRC 时间轴同步，翻译并入；LRCLIB 兜底；本地缓存 + 手选持久化。
 - **歌单**：本地歌单增删改（管理窗口）；在线歌单（B 站收藏夹引用，可删）。
 - **歌单内搜索**：标题/UP 主实时过滤（本地与在线列表都有）。
@@ -266,7 +268,7 @@ CDN 403/410 自动换备用地址；写盘失败降级内存缓冲；无输出�
 | 歌单选择 + 管理 | `app/ui/playlist_bar.rs::show_playlist_selector` / `show_playlist_manage_window` |
 | 本地歌曲列表 | `app/ui/song_list.rs::show_local_songs` |
 | 在线收藏夹列表 | `app/ui/song_list.rs::show_online_songs` |
-| 设置窗口 | `app/ui/settings.rs::show_settings_window`（歌词字体选择器 `lyrics_font_picker`） |
+| 设置窗口 | `app/ui/settings.rs::show_settings_window`（左侧分类导航 `SettingsTab` + 右侧滚动；歌词字体选择器 `lyrics_font_picker`） |
 | 桌面歌词悬浮窗 | `app/ui/lyrics_viewport.rs::show_lyrics_viewport` |
 | 缺字净化（emoji/PUA 过滤） | `util/text.rs::sanitize_ui_text` + `fonts.rs::sanitize_text`（动态文本显示入口统一调用） |
 | 扫码登录弹窗 | `app/ui/login.rs::show_login_window` |
