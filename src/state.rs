@@ -321,10 +321,20 @@ pub struct Settings {
     /// 仅 X11 下可靠；Wayland 上窗口位置由合成器决定，恢复可能被忽略。
     #[serde(default)]
     pub lyrics_pos: Option<[f32; 2]>,
+    /// 系统媒体控制：把当前曲目推给 macOS 控制中心/「正在播放」、Windows SMTC、
+    /// Linux MPRIS，并接收系统媒体键事件。默认开启；关闭后不再向系统上报，
+    /// 系统面板/媒体键不再控制本播放器（重启后生效，见设置页「播放」）。
+    #[serde(default = "default_true")]
+    pub media_control_enabled: bool,
 }
 
 fn default_volume() -> f32 {
     0.8
+}
+
+/// `#[serde(default)]` 用：默认开启的布尔项。
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -342,6 +352,7 @@ impl Default for Settings {
             lyrics_font: LyricsFont::FollowUi,
             lyrics_offset_secs: 0.0,
             lyrics_pos: None,
+            media_control_enabled: true,
         }
     }
 }

@@ -14,12 +14,14 @@
 //!   `app::ui`；后台任务经 `app::messages::AsyncMsg` 单通道回主线程。
 //! - 其余为 UI 支撑：`theme`（语义色板）、`icons`（自绘 Phosphor 图标）、
 //!   `fonts`（字体安装/系统扫描）、`text_shadow`（真·模糊文字阴影纹理）、
-//!   `cover`（封面缩略图缓存）、`tray`（系统托盘）。
+//!   `cover`（封面缩略图缓存）、`tray`（系统托盘）、
+//!   `media_controls`（系统媒体控制：控制中心/媒体键，feature `media-control`）。
 
 pub mod app;
 pub mod cover;
 pub mod fonts;
 pub mod icons;
+pub mod media_controls;
 pub mod modules;
 pub mod net;
 pub mod state;

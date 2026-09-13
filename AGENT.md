@@ -9,7 +9,7 @@
 ## 1. 构建与测试（macOS）
 
 ```sh
-cargo check                       # 编译检查（默认 tray feature）
+cargo check                       # 编译检查（默认 tray + media-control feature）
 cargo test                        # 单测（离线用例 + 2 个 #[ignore] 网络用例）
 cargo run -- --smoke              # 无窗口模块自检，打印 SMOKE_OK 退出
 cargo run                         # 真实 GUI 启动
@@ -21,6 +21,16 @@ cargo fmt                         # 格式化
   **macOS/Windows 用系统原生托盘（NSStatusItem / Shell_NotifyIcon），无需 GTK、无额外线程**，
   图标由 `MusicApp::new` 在主线程创建（macOS 要求事件循环运行中创建）；
   Linux 走独立 GTK 线程 + libappindicator（需系统装 GTK3）。
+- **系统媒体控制 feature**：默认启用 `media-control`（见 `src/media_controls.rs` 模块注释）：
+  把当前曲目（标题/歌手/封面/时长）推给系统，并接收系统媒体键事件。
+  **macOS = 控制中心/菜单栏「正在播放」（`MPNowPlayingInfoCenter`）+ `MPRemoteCommandCenter`；
+  Windows = SMTC；Linux = MPRIS（走 zbus，避免 libdbus 系统依赖）**。
+  `souvlaki::MediaControls` **非 `Send`，只能待主线程**（`MusicApp` 持有），
+  且 macOS 要求事件循环已运行才能注册远程命令——因此 `MusicApp::new` 在主线程 `init()`。
+  系统事件经全局 mpsc 通道回主线程，`app/media.rs::poll_media_events` 每帧排空（与托盘同款）。
+  **封面必须先下到本地**：macOS 侧 souvlaki 只认本地文件/URL，B 站图床校验 UA，
+  直接传远程 URL 拿不到图（见模块内 `ensure_cover_cached`）。
+  可在设置页「播放」用「系统媒体控制」开关运行时启停；无 feature 时 no-op 桩。
 - **lib/bin 双 target**：`src/lib.rs`（库目标，crate 名 `simple_music`）+ `src/main.rs`
   （薄壳：命令行解析 + `--smoke` + eframe 启动）。业务代码全在 lib 里，`examples/` 探针
   直接 `use simple_music::…`，**不要再用 `#[path]` 桥接复制源码树**。
@@ -66,6 +76,7 @@ src/
 │   ├── playlists.rs  歌单管理（切换/删除/重命名/添加到歌单/在线歌单定位）
 │   ├── lyrics.rs     歌词同步（update_lyrics_line + pick_plain_line_index + next_switch_delay_secs）
 │   ├── window.rs     窗口关闭/隐藏 + 托盘事件轮询
+│   ├── media.rs      系统媒体控制：播放态推送 + 媒体键/控制中心事件处理
 │   └── ui/           主界面组件，按区域一文件（mod/widgets/title_bar/status_bar/
 │                     playlist_bar/song_list/import/player_bar/settings/login/lyrics_viewport）
 ├── modules/
@@ -108,6 +119,8 @@ src/
 ├── fonts.rs          字体：主界面恒内嵌 Noto Sans SC + Phosphor；桌面歌词专用 family（设置可选系统字体）+ 缺字净化
 ├── util/             fmt.rs(format_secs) / rand.rs(rand_idx) / filter.rs(song_matches_query) / text.rs(sanitize_ui_text 缺字过滤) / log.rs(分级日志)
 └── tray.rs           系统托盘（feature=tray）：Linux=GTK 线程；macOS/Win=原生；无 feature 时 no-op 桩
+└── media_controls.rs 系统媒体控制（feature=media-control）：macOS=控制中心+媒体键；
+                      Win=SMTC；Linux=MPRIS；封面先下到本地再交给系统；无 feature 时 no-op 桩
 ```
 
 > **模块拆分约定**：任何文件超过 ~500 行就按职责拆目录。`BiliClient`/`AudioEngine` 等
@@ -128,7 +141,7 @@ src/
   但窗口已恢复」的矛盾态并补发 `Minimized(false)` 清锁。**改最小化/托盘隐藏相关代码前先读
   这两个 issue**；`on_exit` 里必须置位 `keepalive_stop`。经验：这类「只在最小化/恢复后出现
   的冻结」不是死锁，是事件循环饿死——应用层保活 + 恢复补绘兜底。
-- **预期线程数 ≈ 9**：main + NSEventThread + render-keepalive + simple-music-audio + 2× simple-music-net + 1 匿名 + macOS GCD dispatch。**不应出现 `reqwest-internal-sync-runtime`**（出现即说明某处又建了 blocking 客户端）。
+- **预期线程数 ≈ 9**：main + NSEventThread + render-keepalive + simple-music-audio + 2× simple-music-net + 1 匿名 + macOS GCD dispatch。**不应出现 `reqwest-internal-sync-runtime`**（出现即说明某处又建了 blocking 客户端）。媒体控制（souvlaki）在主线程内建 objc 对象、不自建线程；封面下载走 `net` 共享 runtime。
 - **桌面歌词浮窗**通过 `egui::Context::show_viewport_deferred`（延迟模式）渲染，**不与主窗口共享
   重绘节奏**：浮窗只在内容指纹（当前句/下一句/字号/锁定）变化或输入事件时重绘。切歌过渡动画的
   过渡状态存在共享 `Context` data 槽（`TRANSITION_SLOT`），动画期间 `request_repaint()` 连续唤醒
@@ -262,6 +275,7 @@ CDN 403/410 自动换备用地址；写盘失败降级内存缓冲；无输出�
 - **右键菜单**：歌曲项复制 BV 号、添加到/收藏到其他本地歌单。
 - **歌词选择**：播放条「T」按钮弹出多源候选（vkeys/LRCLIB），点选切换；弹窗底部带歌词时间校准（-1s / +1s / 重置）。
 - **系统托盘**：显示/隐藏/退出菜单；关闭按钮隐藏到托盘（托盘可用时）。
+- **系统媒体控制**：当前曲目（标题/歌手/封面/时长）上报系统媒体面板（macOS 控制中心/「正在播放」、Windows SMTC、Linux MPRIS）；接收系统媒体键与面板按钮（播放/暂停、上/下一首、seek、音量）。设置页「播放」可开关。
 
 ---
 
@@ -272,7 +286,7 @@ CDN 403/410 自动换备用地址；写盘失败降级内存缓冲；无输出�
 - 切换歌单会停止当前播放（播放列表 = 选中歌单的直接推论）；没有跨歌单的播放队列。
 - 在线歌单只显示已加载页，搜索也只过滤已加载页。
 - 桌面歌词位置仅 X11 会话下记录/恢复；原生 Wayland 由合成器决定窗口位置，跳过记录以防写进占位坐标。
-- 无全局媒体快捷键（如系统级播放/暂停）、无音量静音键。
+- 媒体控制的音量事件仅 Linux/MPRIS 会回报给系统（souvlaki 限制）；macOS/Windows 不回报。
 - 本地歌单内歌曲不可拖拽排序。
 - 无播放历史/最近播放记录。
 - 若要加功能：UI 增量放 `app/ui/` 对应 `show_*` 文件；跨线程新数据用 `AsyncMsg` 变体 +
@@ -288,6 +302,7 @@ CDN 403/410 自动换备用地址；写盘失败降级内存缓冲；无输出�
 | 主界面布局/顶部栏 | `app/ui/mod.rs::show_main` |
 | 自定义标题栏/窗口控制 | `app/ui/title_bar.rs::show_custom_title_bar` / `show_resize_grip` |
 | 窗口关闭/隐藏、托盘事件 | `app/window.rs::request_close` / `poll_tray_events`；`tray.rs` |
+| 系统媒体控制（控制中心/媒体键） | `media_controls.rs`（平台实现）；`app/media.rs::sync_media_controls` / `poll_media_events` |
 | 播放条（进度/音量/切歌模式） | `app/ui/player_bar.rs::show_player_bar` |
 | 歌单选择 + 管理 | `app/ui/playlist_bar.rs::show_playlist_selector` / `show_playlist_manage_window` |
 | 本地歌曲列表 | `app/ui/song_list.rs::show_local_songs` |

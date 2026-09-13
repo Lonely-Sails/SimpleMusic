@@ -10,9 +10,13 @@ name = "simple-music"
 path = "src/main.rs"
 
 [features]
-default = ["tray"]
+default = ["tray", "media-control"]
 # 系统托盘。Linux 需 GTK3（libappindicator 后端）；macOS/Windows 用系统原生托盘，无需 GTK。
 tray = ["dep:tray-icon", "dep:gtk"]
+# 系统媒体控制：把当前曲目推给 macOS 控制中心/「正在播放」、Windows SMTC、Linux MPRIS，
+# 并接收系统媒体键（控制中心按钮、耳机线控、键盘媒体键）事件。
+# 关闭后为 no-op 桩，程序照常运行。
+media-control = ["dep:souvlaki"]
 
 [dependencies]
 eframe = { version = "0.36.1", default-features = false, features = ["glow", "x11", "wayland"] }
@@ -40,6 +44,12 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 rodio = { version = "0.17", default-features = false }
 symphonia = { version = "0.5.4", default-features = false, features = ["aac", "isomp4", "mp3", "wav", "pcm"] }
 tray-icon = { version = "0.24.2", optional = true }
+# 系统媒体控制（控制中心/媒体键）。跨平台封装：macOS=MPNowPlayingInfoCenter +
+# MPRemoteCommandCenter，Windows=SMTC，Linux=MPRIS（D-Bus）。
+# 注意：macOS/Windows 的封面加载由 souvlaki 内部**按 URL 异步下载**（只认本地
+# 文件或 http(s) URL），且无超时控制；B 站图床校验 UA 防盗链，因此本项目先把封面
+# 下到本地缓存再交 `file://` 路径（见 src/media_controls.rs）。
+souvlaki = { version = "0.8.3", optional = true, default-features = false, features = ["use_zbus"] }
 
 # GTK 仅 Linux 需要（tray-icon 的 Linux 后端要求 GTK 事件循环；macOS/Windows 无此依赖）。
 # 参考 muda 的做法：feature 里 `dep:gtk` 在非 Linux 目标上是 no-op。

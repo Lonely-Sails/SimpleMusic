@@ -221,6 +221,29 @@ impl MusicApp {
                 self.notice("音量均衡已关闭，将在下一首生效");
             }
         }
+
+        ui.add_space(6.0);
+        // 系统媒体控制：把当前曲目推给系统（macOS 控制中心/「正在播放」、
+        // Windows SMTC、Linux MPRIS），并接收系统媒体键/控制中心按钮事件。
+        let prev_media = self.settings.media_control_enabled;
+        ui.checkbox(&mut self.settings.media_control_enabled, "系统媒体控制")
+            .on_hover_text(
+                "把当前播放曲目（标题/歌手/封面）上报给系统媒体面板，\n\
+                 并支持用系统媒体键、控制中心/耳机线控控制播放；\n\
+                 关闭后系统将无法检测到本播放器，媒体键也不再生效",
+            );
+        if self.settings.media_control_enabled != prev_media {
+            self.apply_media_control_setting(self.settings.media_control_enabled);
+            if self.settings.media_control_enabled {
+                if self.media.is_enabled() {
+                    self.notice("系统媒体控制已开启");
+                } else {
+                    self.error("当前平台/环境不支持系统媒体控制");
+                }
+            } else {
+                self.notice("系统媒体控制已关闭");
+            }
+        }
     }
 
     /// 「界面字体」展示项：主界面恒用内嵌字体（不再提供选择）。

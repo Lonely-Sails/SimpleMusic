@@ -16,9 +16,11 @@
 //! - `playlists.rs`：歌单管理（切换/删除/重命名/添加到歌单）。
 //! - `lyrics.rs`：歌词同步（当前句/下一句）。
 //! - `window.rs`：窗口关闭/隐藏、系统托盘事件轮询。
+//! - `media.rs`：系统媒体控制（控制中心/媒体键）状态推送与事件处理。
 //! - `ui/`：主界面各区域（标题栏/状态栏/歌单/歌曲列表/导入/播放条/设置/登录/桌面歌词）。
 
 pub mod lyrics;
+pub mod media;
 pub mod messages;
 pub mod player;
 pub mod playlists;
@@ -162,6 +164,9 @@ pub struct MusicApp {
     stream_retry_pending: Option<String>,
     // 系统托盘（独立 GTK 线程）
     tray: tray::Tray,
+    /// 系统媒体控制（控制中心/「正在播放」/媒体键）。macOS 要求事件循环已运行才能
+    /// 注册远程命令，因此由 `MusicApp::new` 在主线程调用 `init`。
+    media: crate::media_controls::MediaControls,
     /// 窗口是否因「最小化到托盘」而隐藏（用于托盘菜单切换）。
     window_hidden: bool,
     /// 托盘菜单「退出」触发的强制退出（避免被最小化到托盘逻辑拦截）。
@@ -285,9 +290,16 @@ impl MusicApp {
             stream_retried: std::collections::HashSet::new(),
             stream_retry_pending: None,
             tray,
+            media: crate::media_controls::MediaControls::disabled(),
             window_hidden: false,
             force_quit: false,
         };
+
+        // 系统媒体控制：在主线程（事件循环已运行）初始化，让系统能检测到播放内容
+        // 并接收控制中心/媒体键事件（macOS 要求在此刻注册远程命令）。
+        if app.settings.media_control_enabled {
+            app.media.init();
+        }
 
         // 恢复过登录态时拉一次用户昵称（后台线程，避免阻塞 UI）。
         if app.logged_in() {
@@ -491,6 +503,9 @@ impl eframe::App for MusicApp {
         // 系统托盘菜单事件轮询（即使窗口隐藏也运行）。
         self.poll_tray_events(ctx);
 
+        // 系统媒体控制：排空媒体键/控制中心事件（即使窗口隐藏也运行）。
+        self.poll_media_events(ctx);
+
         // 系统级关闭请求（如 Alt+F4）：托盘可用时改为最小化到托盘。
         if ctx.input(|i| i.viewport().close_requested()) {
             if !self.force_quit && self.tray.is_enabled() {
@@ -534,6 +549,9 @@ impl eframe::App for MusicApp {
 
         self.covers.poll();
         self.update_lyrics_line();
+
+        // 把当前播放态推给系统媒体控制（元数据变更/进度节流由模块内部判定）。
+        self.sync_media_controls();
 
         // 桌面歌词：内容变化时才唤醒浮窗重绘（deferred 模式不与主窗口互拖）。
         if self.settings.desktop_lyrics_enabled {

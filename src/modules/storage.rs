@@ -362,6 +362,7 @@ mod tests {
             lyrics_font: crate::state::LyricsFont::Specific("/f.ttf".into()),
             lyrics_offset_secs: -1.5,
             lyrics_pos: Some([1920.0, 1040.0]),
+            media_control_enabled: false,
         };
         let text = serde_json::to_string_pretty(&s).expect("序列化失败");
         let back: Settings = serde_json::from_str(&text).expect("反序列化失败");
@@ -373,6 +374,7 @@ mod tests {
         assert!(text.contains("\"lyrics_font\""));
         assert!(text.contains("\"volume_normalize\""));
         assert!(text.contains("\"lyrics_offset_secs\""));
+        assert!(text.contains("\"media_control_enabled\""));
     }
 
     #[test]
@@ -389,6 +391,7 @@ mod tests {
         let s: Settings = serde_json::from_str(old).unwrap();
         assert_eq!(s.active_playlist, 0);
         assert!(!s.volume_normalize, "旧配置无该字段时应默认关闭");
+        assert!(s.media_control_enabled, "旧配置无该字段时应默认开启");
     }
 
     #[test]

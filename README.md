@@ -21,6 +21,7 @@
 - **歌单管理**：歌单栏「+」创建本地歌单，可同步 B 站收藏夹为只读在线歌单；「管理」支持重命名（本地）与删除；切换歌单时播放上下文自动跟随。
 - **歌单内搜索**：歌曲列表顶部搜索框，按标题 / UP 主实时过滤（含无匹配提示与一键清空）。
 - **键盘快捷键**：`空格` 播放/暂停 · `←/→` 快退/快进 5 秒 · `↑/↓` 音量 ±5% · `N/P` 下一首/上一首（文本输入聚焦时自动禁用，避免冲突）。
+- **系统媒体控制**：播放时系统能检测到当前曲目，在 macOS 控制中心/菜单栏「正在播放」、Windows 系统媒体浮层、Linux（GNOME/KDE/`playerctl`）面板里显示标题/歌手/封面，并可用系统媒体键、耳机线控、控制中心按钮控制播放/暂停/上下首/拖动进度。可在设置页「播放」里关闭。
 - **歌曲右键菜单**：列表项右键可「复制 BV 号」、收藏/添加到其他本地歌单。
 - **极简原则**：无音乐搜索、无推荐、无评论、无广告。就一个播放器。
 
@@ -71,6 +72,7 @@ src/
 │   ├── playlists.rs   歌单管理
 │   ├── lyrics.rs      歌词同步
 │   ├── window.rs      窗口控制 + 系统托盘事件
+│   ├── media.rs       系统媒体控制（控制中心/媒体键）状态推送与事件处理
 │   └── ui/            界面组件（标题栏/状态栏/歌单/歌曲列表/播放条/设置/登录/桌面歌词…）
 ├── util/              纯函数工具（格式化/随机数/搜索过滤/文本净化，带单测）
 ├── fonts.rs           字体加载（主界面恒内嵌 Noto Sans SC + Phosphor 图标；桌面歌词专用字体可选系统字体；缺字净化）
@@ -79,6 +81,7 @@ src/
 ├── theme.rs           主题色板与按钮样式
 ├── icons.rs           Phosphor 图标
 ├── tray.rs            系统托盘（feature=tray，可选 GTK）
+├── media_controls.rs  系统媒体控制（feature=media-control）：macOS 控制中心/媒体键、Win SMTC、Linux MPRIS
 └── modules/
     ├── bilibili.rs    B 站客户端：扫码登录/收藏夹/BV 解析/playurl DASH 音流（含 WBI 支持）
     ├── audio.rs       音频引擎：下载缓存 + symphonia 解码 + rodio 输出（专用线程 + 命令通道）
@@ -93,6 +96,7 @@ src/
 ~/.config/simple-music/session.json     B 站登录态（Cookie，脱敏）
 ~/.config/simple-music/playlist.json    播放队列
 ~/.cache/simple-music/audio/            音频缓存（按 bvid，md5 校验）
+~/.cache/simple-music/cover/            系统媒体面板封面缓存（按封面 URL 的 md5）
 ```
 
 ## 实现要点
