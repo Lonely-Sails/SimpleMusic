@@ -12,6 +12,12 @@ use super::LrcLine;
 /// - `[offset:±N]`（毫秒，正负）作用到所有时间戳（正号 = 时间后移，句更晚出现）
 /// - 无时间标签的行忽略
 ///
+/// **正文为空的行同样忽略**（只有时间标签、标签后无文字，如 `[00:03.38]`）：
+/// QQ 音乐等源会用这类行做「换行节奏填充」，它们不是歌词。若保留，同步引擎会
+/// 在这些时刻切到空句——桌面歌词浮窗把空文本当作「未播放」处理，于是渲染出
+/// 「等待播放…」占位；而当下一行也是空行时，「下一句预览」又直接消失。表现为
+/// 歌词一会儿显示占位、一会儿只剩一行大字来回跳（回归修复，勿回退）。
+///
 /// 若 `offset` 把某个时间戳推到负值，则钳制为 0。
 pub fn parse(lrc: &str) -> Vec<LrcLine> {
     let lrc = lrc.trim_start_matches('\u{feff}');
@@ -20,8 +26,8 @@ pub fn parse(lrc: &str) -> Vec<LrcLine> {
     for raw in lrc.split('\n') {
         let line = raw.trim_end_matches('\r');
         let (times, text) = parse_lrc_line(line);
-        if times.is_empty() {
-            continue; // 无时间标签的行忽略
+        if times.is_empty() || text.trim().is_empty() {
+            continue; // 无时间标签、或只有时间标签没有正文的行忽略
         }
         for t in times {
             let shifted = (t + offset_ms as f64 / 1000.0).max(0.0);
@@ -261,6 +267,35 @@ mod tests {
         let lines = parse(lrc);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].text, "有标签的");
+    }
+
+    /// 只有时间标签、正文为空的行必须丢弃（QQ 音乐的换行节奏填充行）。
+    /// 回归：保留它们会让同步引擎切到空句，浮窗把空文本当「未播放」画出
+    /// 「等待播放…」占位，与正常歌词交替闪烁。
+    #[test]
+    fn parse_blank_text_timestamped_lines_dropped() {
+        let lrc = "[00:01.00]第一句\n[00:03.38]\n[00:05.00]   \n[00:07.00]第二句";
+        let lines = parse(lrc);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].time_secs, 1.0);
+        assert_eq!(lines[0].text, "第一句");
+        assert_eq!(lines[1].time_secs, 7.0);
+        assert_eq!(lines[1].text, "第二句");
+        // 空行的时间戳不会成为切行点：pos 落在空行处仍停留在上一句。
+        assert_eq!(current_line_index(&lines, 4.0), Some(0));
+        assert_eq!(
+            next_line(&lines, 4.0).map(|l| l.text.as_str()),
+            Some("第二句")
+        );
+    }
+
+    /// 多时间标签 + 空正文同样丢弃（每个时间戳都不该产生空句）。
+    #[test]
+    fn parse_blank_text_multi_timestamp_dropped() {
+        let lines = parse("[00:01.00][00:03.00]\n[00:05.00]歌词");
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].time_secs, 5.0);
+        assert_eq!(lines[0].text, "歌词");
     }
 
     #[test]
