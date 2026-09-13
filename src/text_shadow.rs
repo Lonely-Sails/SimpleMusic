@@ -345,6 +345,9 @@ fn box_filter_1d(src: &[f32], dst: &mut [f32], r: usize) {
 mod tests {
     use super::*;
 
+    /// 内嵌 Noto Sans SC 字节（与生产回退字体同一份 `include_bytes!` 静态数据）。
+    const EMBEDDED_NOTO: &[u8] = include_bytes!("../assets/NotoSansSC-Regular.otf");
+
     #[test]
     fn box_filter_on_constant_input_is_constant() {
         let src = vec![1.0_f32; 16];
@@ -425,13 +428,7 @@ mod tests {
             sigma: 5.0,
             strength: 0.6,
         };
-        let Some(bmp) = shadow_bitmap(
-            crate::fonts::NOTO_SC_BYTES_FOR_TEST,
-            0,
-            "测试 Lyrics",
-            26.0,
-            style,
-        ) else {
+        let Some(bmp) = shadow_bitmap(EMBEDDED_NOTO, 0, "测试 Lyrics", 26.0, style) else {
             panic!("内嵌 CJK 字体应能光栅化出阴影位图");
         };
         assert!(bmp.width > 10 && bmp.height > 10, "位图尺寸异常: {bmp:?}");
@@ -461,10 +458,8 @@ mod tests {
             sigma: 5.0,
             strength: 0.6,
         };
-        assert!(
-            shadow_bitmap(crate::fonts::NOTO_SC_BYTES_FOR_TEST, 0, "  ", 26.0, style).is_none()
-        );
-        assert!(shadow_bitmap(crate::fonts::NOTO_SC_BYTES_FOR_TEST, 0, "", 26.0, style).is_none());
+        assert!(shadow_bitmap(EMBEDDED_NOTO, 0, "  ", 26.0, style).is_none());
+        assert!(shadow_bitmap(EMBEDDED_NOTO, 0, "", 26.0, style).is_none());
     }
 
     /// 垃圾字体字节：安全返回 None（不 panic）。

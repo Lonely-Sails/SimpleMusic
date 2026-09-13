@@ -30,7 +30,7 @@
 //! 环境变量（`Specific` 失效回退时补充探测用）：
 //! - `SIMPLEMUSIC_EMBEDDED_FONTS=1`：跳过系统探测，全部用内嵌字体；
 //! - `SIMPLEMUSIC_FONT=/path/to/font.ttf`：直接指定系统字体文件。
-//! 无头测试一律用 [`install_embedded_fonts`]（度量不随宿主系统字体漂移）。
+//! 测试统一用 [`install_fonts`] + [`LyricsFont::Embedded`]（度量不随宿主系统字体漂移）。
 
 use crate::state::LyricsFont;
 use eframe::egui;
@@ -79,13 +79,9 @@ pub fn lyrics_font_id(size: f32) -> egui::FontId {
     egui::FontId::new(size, lyrics_family())
 }
 
-/// 内嵌 CJK 字体字节（include_bytes 静态数据；[`embedded_cjk_data`] 与
-/// [`active_text_font`] 共用同一份）。pub 供 text_shadow 无头测试直接使用。
-pub(crate) const NOTO_SC_BYTES_FOR_TEST: &[u8] = include_bytes!("../assets/NotoSansSC-Regular.otf");
-
-/// 内嵌 CJK 字体字节（include_bytes 静态数据；[`embedded_cjk_data`]、
-/// [`active_text_font`] 与 [`NOTO_SC_BYTES_FOR_TEST`] 共用同一份）。
-const NOTO_SC_BYTES: &[u8] = NOTO_SC_BYTES_FOR_TEST;
+/// 内嵌 CJK 字体字节（`include_bytes!` 静态数据；[`embedded_cjk_data`] 与
+/// [`active_lyrics_font`] 共用同一份）。
+const NOTO_SC_BYTES: &[u8] = include_bytes!("../assets/NotoSansSC-Regular.otf");
 
 /// 内嵌 CJK 字体在 FontDefinitions 里的键名。
 const EMBEDDED_KEY: &str = "noto_sc";
@@ -220,15 +216,6 @@ pub fn sanitize_text(text: &str) -> String {
 /// 内嵌 CJK 字体（`include_bytes!` 静态数据）。
 fn embedded_cjk_data() -> std::sync::Arc<egui::FontData> {
     std::sync::Arc::new(egui::FontData::from_static(NOTO_SC_BYTES))
-}
-
-/// 强制安装内嵌 Noto Sans SC + Phosphor（主界面与歌词 family 都恒内嵌）。
-///
-/// 供无头测试使用：字形度量不随宿主机器的系统字体变化，跨机器结果稳定。
-pub fn install_embedded_fonts(ctx: &egui::Context) {
-    let (fonts, _) = build_definitions(NOTO_SC_BYTES);
-    ctx.set_fonts(fonts);
-    set_active_lyrics_font(NOTO_SC_BYTES);
 }
 
 // ---------------------------------------------------------------------------
@@ -599,7 +586,7 @@ mod tests {
     }
 
     /// 主界面恒内嵌（Phosphor 次位），歌词 family 链为「歌词首选 → Phosphor →
-    /// 内嵌 CJK」。不读 Context（无头下 run 前不能访问字体视图），直接断言组装结果。
+    /// 内嵌 CJK」。直接断言组装结果（`build_definitions` 是纯函数）。
     #[test]
     fn install_keeps_phosphor_and_fallback_chain() {
         // 歌词也用内嵌 → 内嵌 CJK 在主界面两个 family 首位、歌词 family 首位。
@@ -645,7 +632,7 @@ mod tests {
     #[test]
     fn lyrics_family_glyphs_resolve_after_install() {
         let ctx = egui::Context::default();
-        install_embedded_fonts(&ctx);
+        install_fonts(&ctx, &LyricsFont::Embedded);
         let font_id = lyrics_font_id(26.0);
         assert_eq!(
             font_id.family,
@@ -772,13 +759,13 @@ mod tests {
     /// 兜底链最终形态：装上内嵌字体后，界面常用文本必须布局出非零尺寸，且 CJK 与
     /// 拉丁命中的是**不同**的真实字形（若两者都渲染成同一个 replacement 占位字形，
     /// 宽度必然相等 → 断言失败）。
-    /// 注 1：用 `install_embedded_fonts` 保证度量不随宿主机器的系统字体变化。
+    /// 注 1：用 `install_fonts(Embedded)` 保证度量不随宿主机器的系统字体变化。
     /// 注 2：不用 `has_glyphs`——epaint 0.36 的 `has_glyph` 是「命中面 ≠ replacement 面」，
     /// 本项目首个字体自己就是 replacement 字形提供者，它恒返回 false（渲染不受影响）。
     #[test]
     fn ui_text_glyphs_resolve_after_install() {
         let ctx = egui::Context::default();
-        install_embedded_fonts(&ctx);
+        install_fonts(&ctx, &LyricsFont::Embedded);
         let font_id = egui::FontId::proportional(14.0);
         let mut full = ctx.run_ui(egui::RawInput::default(), |ctx| {
             ctx.fonts_mut(|f| {
@@ -801,8 +788,10 @@ mod tests {
     }
 
     /// `SIMPLEMUSIC_FONT` 指向有效的 CJK 字体文件 → 被采用；指向图标字体 → 被拒绝
-    /// （校验会拦下没有文字覆盖的文件）。测试内改进程环境变量：没有其它测试读这个
-    /// 变量（生产读取点 `load_system_font` 的调用方均未在测试中使用），并行安全。
+    /// （校验会拦下没有文字覆盖的文件，随后按平台自动探测，故只断言「未被采用」而
+    /// 非「返回 None」——后者依赖宿主是否装了系统字体，跨机器不稳定）。
+    /// 测试内改进程环境变量：没有其它测试读这个变量（生产读取点 `load_system_font`
+    /// 的调用方均未在测试中使用），并行安全。
     #[test]
     fn simplemusic_font_env_is_adopted_or_rejected() {
         let dir =
@@ -821,7 +810,11 @@ mod tests {
         unsafe { std::env::set_var("SIMPLEMUSIC_FONT", &bad) };
         let picked = load_system_font();
         unsafe { std::env::remove_var("SIMPLEMUSIC_FONT") };
-        assert!(picked.is_none(), "图标字体不该被选作文字字体");
+        assert_ne!(
+            picked.map(|(p, _)| p),
+            Some(bad.clone()),
+            "图标字体不该被选作文字字体"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

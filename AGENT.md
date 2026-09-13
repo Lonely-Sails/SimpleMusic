@@ -6,29 +6,21 @@
 
 ---
 
-## 1. 构建与测试（沙箱环境必读）
-
-> ⚠️ **沙箱里 cargo 不在 PATH**，直接 `cargo` 会报 `command not found`；直接 `rustup` 会因 HOME 无写权限失败。**必须先 source 工具链环境**：
+## 1. 构建与测试（macOS）
 
 ```sh
-cd /data/dsh/home/SimpleMusic
-source .toolchain/env.sh          # 设置 RUSTUP_HOME / CARGO_HOME / PATH / CC / 链接器 等
 cargo check                       # 编译检查（默认 tray feature）
-cargo test --no-default-features  # 单测（196 个离线用例 + 2 个 #[ignore] 网络用例）
-cargo run --no-default-features -- --smoke  # 无窗口模块自检，打印 SMOKE_OK 退出
-cargo run                         # 真实 GUI 启动（需要显示环境）
+cargo test                        # 单测（离线用例 + 2 个 #[ignore] 网络用例）
+cargo run -- --smoke              # 无窗口模块自检，打印 SMOKE_OK 退出
+cargo run                         # 真实 GUI 启动
+cargo fmt                         # 格式化
 ```
 
-- 工具链/依赖全部离线缓存于 `.toolchain/`；`.sysroot/` 是构建系统根（gcc/alsa/x11 库）。
-- **沙箱里跑测试必须 `--no-default-features`**：默认 `tray` feature 要链接 GTK3/libxdo，
-  沙箱没有这些库，`cargo test`/`cargo run` 会在**链接期**报 `unable to find library -lgtk-3`——
-  注意 `cargo check` 是能过的，别被「check 绿了」骗去跑 test 再白白踩一次。
-  反过来，提交前 `cargo check`（默认 feature）也要跑：托盘相关代码只在默认 feature 下编译。
+- 开发环境为 **macOS**，cargo 已在 PATH，直接运行即可。
 - **系统托盘 feature**：默认启用 `tray`，跨平台（见 `src/tray.rs` 模块注释）：
-  Linux 走独立 GTK 线程 + libappindicator（需系统装 GTK3；沙箱无 GTK 库，改用
-  `cargo build --no-default-features` 跳过托盘，GUI 其余功能不受影响）；
   **macOS/Windows 用系统原生托盘（NSStatusItem / Shell_NotifyIcon），无需 GTK、无额外线程**，
-  图标由 `MusicApp::new` 在主线程创建（macOS 要求事件循环运行中创建）。
+  图标由 `MusicApp::new` 在主线程创建（macOS 要求事件循环运行中创建）；
+  Linux 走独立 GTK 线程 + libappindicator（需系统装 GTK3）。
 - **lib/bin 双 target**：`src/lib.rs`（库目标，crate 名 `simple_music`）+ `src/main.rs`
   （薄壳：命令行解析 + `--smoke` + eframe 启动）。业务代码全在 lib 里，`examples/` 探针
   直接 `use simple_music::…`，**不要再用 `#[path]` 桥接复制源码树**。
@@ -44,10 +36,10 @@ cargo run                         # 真实 GUI 启动（需要显示环境）
   显示入口统一走 `fonts::sanitize_text`（必删字符类 + 内嵌 Noto cmap 覆盖判定，
   见 `util/text.rs` 模块文档）；新增显示网络文本的地方必须接净化。
   环境变量：`SIMPLEMUSIC_EMBEDDED_FONTS=1` 强制全内嵌、
-  `SIMPLEMUSIC_FONT=/path/to.ttf` 手动指定。无头测试一律用 `fonts::install_embedded_fonts`
-  （度量不随宿主系统字体漂移）。
+  `SIMPLEMUSIC_FONT=/path/to.ttf` 手动指定。测试统一用
+  `fonts::install_fonts(&ctx, &LyricsFont::Embedded)`（度量不随宿主系统字体漂移）。
 - 已有 git 仓库（分支 `main`）：改动用增量编辑，提交信息用中文、说明动机；`SimpleMusic.zip`
-  手动备份包与 `.toolchain/`、`.sysroot/`、`target/` 均已在 `.gitignore` 中排除。
+  手动备份包与 `target/` 均已在 `.gitignore` 中排除。
 
 ---
 
@@ -198,7 +190,7 @@ CDN 403/410 自动换备用地址；写盘失败降级内存缓冲；无输出�
 
 ---
 
-## 3. 数据与持久化（Linux 路径）
+## 3. 数据与持久化（macOS 路径）
 
 ```
 ~/.config/simple-music/config.json      设置（桌面歌词开关/锁定/字号/位置/歌词字体/音量/音量均衡/音质/播放模式）
@@ -219,7 +211,7 @@ CDN 403/410 自动换备用地址；写盘失败降级内存缓冲；无输出�
 
 1. **借用手法**：`app/` 下各 UI 文件里大量「先 clone 数据（`rows`/`fav_items`/`snapshot`），再进闭包操作 `self`」来绕开借用检查。新增 UI 逻辑时沿用此模式，不要在闭包内同时 hold 两个 `&mut self` 借用。
 2. **窗口/弹窗开关**：用 `let mut open = self.xxx; ... .open(&mut open).show(...); self.xxx = open;` 模式。**闭包内不能改 `open`**——需要「操作后关窗」用外部 `let mut close_after = false;` 捕获进闭包，`show` 之后再改 `open`。
-3. **egui 自动 id 漂移与输入法（踩过的大坑）**：`TextEdit` 不给 `id_salt` 时用同 Ui 内自增的盐，id 随前面控件数量变化——条件渲染的按钮一插入，输入框 id 漂移导致失焦，中文输入法组合被打断（egui-winit 检测到无焦点即关 IME）。**输入框一律显式 `id_salt`**；条件出现/消失的相邻控件要常驻占位（分配空间不绘制），避免布局跳动连带 id 漂移。无头 egui 测试：必须先 `fonts::install_embedded_fonts`（默认字体表为空，光标定位会坍缩）；模拟打字时 Key press/release 与 `Event::Text` 必须同帧投递（复刻 egui-winit 行为）。
+3. **egui 自动 id 漂移与输入法（踩过的大坑）**：`TextEdit` 不给 `id_salt` 时用同 Ui 内自增的盐，id 随前面控件数量变化——条件渲染的按钮一插入，输入框 id 漂移导致失焦，中文输入法组合被打断（egui-winit 检测到无焦点即关 IME）。**输入框一律显式 `id_salt`**；条件出现/消失的相邻控件要常驻占位（分配空间不绘制），避免布局跳动连带 id 漂移。无头 egui 测试：必须先 `fonts::install_fonts(&ctx, &LyricsFont::Embedded)`（默认字体表为空，光标定位会坍缩）；模拟打字时 Key press/release 与 `Event::Text` 必须同帧投递（复刻 egui-winit 行为）。
 4. **键盘快捷键**在 `app/player.rs::handle_shortcuts`（`logic` 里调用），用 `ctx.memory(|m| m.focused().is_none())` 判断无输入焦点才生效。新增快捷键加在这里，别散落到 UI 闭包里。
 5. **主题**：一律用 `theme::` 语义色常量，不要写魔法色值；按钮样式用 `theme::primary_button`/`theme::small_button`。
 6. **图标**：所有界面图标用 `icons::*`（内嵌 Phosphor，PUA 码点渲染到 rect 中心），不要依赖 emoji 或媒体控制码点（跨平台字形缺失会显示 "?"）。

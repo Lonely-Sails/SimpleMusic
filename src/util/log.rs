@@ -20,6 +20,7 @@
 //! ```
 //! # use simple_music::util::log;
 //! log::info("app", "启动完成");
+//! let e = "timeout";
 //! log::error("audio", &format!("下载失败: {e}"));
 //! ```
 
