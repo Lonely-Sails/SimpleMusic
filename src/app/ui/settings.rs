@@ -56,7 +56,11 @@ impl MusicApp {
             .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
             .open(&mut open)
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
+                // 必须用 `horizontal_top`（顶部对齐）而非 `horizontal`（垂直居中）：
+                // 居中版本会让 egui 把这一行的高度撑满父 Ui 的可用高度，右侧
+                // ScrollArea 因此只能拿到「窗口高度」这么多空间，内容略长就溢出
+                // 并画出竖直滚动条，与内容是否真的超高无关。
+                ui.horizontal_top(|ui| {
                     // ── 左侧：分类导航 ──
                     ui.vertical(|ui| {
                         ui.set_min_width(104.0);
@@ -80,13 +84,17 @@ impl MusicApp {
                         .auto_shrink([false, false])
                         .max_height(360.0)
                         .show(ui, |ui| {
-                            ui.set_min_width(440.0);
-                            match self.settings_tab {
-                                SettingsTab::Appearance => self.appearance_page(ui),
-                                SettingsTab::DesktopLyrics => self.desktop_lyrics_page(ui, ctx),
-                                SettingsTab::Playback => self.playback_page(ui),
-                                SettingsTab::Shortcuts => self.shortcuts_page(ui),
-                            }
+                            // ScrollArea 的子 Ui 会继承父级布局，这里显式切回纵向，
+                            // 否则页面内容会按横向布局铺开。
+                            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                                ui.set_min_width(440.0);
+                                match self.settings_tab {
+                                    SettingsTab::Appearance => self.appearance_page(ui),
+                                    SettingsTab::DesktopLyrics => self.desktop_lyrics_page(ui, ctx),
+                                    SettingsTab::Playback => self.playback_page(ui),
+                                    SettingsTab::Shortcuts => self.shortcuts_page(ui),
+                                }
+                            });
                         });
                 });
             });
