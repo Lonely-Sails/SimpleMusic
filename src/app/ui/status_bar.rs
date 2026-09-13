@@ -83,7 +83,9 @@ impl MusicApp {
 
     /// 登出：清空会话与登录态，并重置收藏夹视图。
     fn do_logout(&mut self) {
-        if let Ok(mut b) = self.bili.lock() {
+        // UI 线程不做阻塞等待：若客户端正被后台解析占用，本次登出只清本地状态，
+        // 会话 cookies 会在下次空闲时的登出流程中补落盘（logout 本身幂等）。
+        if let Ok(mut b) = self.bili.try_lock() {
             let _ = b.logout();
         }
         // 直链带 Cookie 签名：换账号后必须重新解析，不能复用旧账号的直链。

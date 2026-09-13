@@ -8,8 +8,8 @@ use crate::app::player::enqueue_dedup;
 use crate::modules::bilibili::{BiliClient, FavFolder, FavItem, MusicHint, QrPoll, StreamUrl};
 use crate::modules::lyrics::{self, Lyrics, SongHint};
 use crate::state::{AudioQuality, QueueItem};
+use std::sync::Arc;
 use std::sync::atomic::Ordering as AtomicOrdering;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::MusicApp;
@@ -81,21 +81,16 @@ impl MusicApp {
         let bili = self.bili.clone();
         let tx = self.tx.clone();
         let stop = self.login_stop.clone();
-        std::thread::spawn(move || {
+        crate::net::spawn(async move {
             loop {
                 if stop.load(AtomicOrdering::Relaxed) {
                     let _ = tx.send(AsyncMsg::LoginEnded { gen_id });
                     return;
                 }
-                let start = match bili.lock() {
-                    Ok(b) => b.generate_qrcode(),
-                    Err(e) => {
-                        let _ = tx.send(AsyncMsg::LoginFailed {
-                            gen_id,
-                            msg: format!("客户端锁中毒: {e}"),
-                        });
-                        return;
-                    }
+                // 二维码生成：tokio Mutex 的 guard 是 Send，可直接跨 await 持锁。
+                let start = {
+                    let b = bili.lock().await;
+                    b.generate_qrcode().await
                 };
                 let start = match start {
                     Ok(s) => s,
@@ -113,20 +108,14 @@ impl MusicApp {
                     matrix,
                 });
                 loop {
-                    std::thread::sleep(Duration::from_secs(2));
+                    tokio::time::sleep(Duration::from_secs(2)).await;
                     if stop.load(AtomicOrdering::Relaxed) {
                         let _ = tx.send(AsyncMsg::LoginEnded { gen_id });
                         return;
                     }
-                    let poll = match bili.lock() {
-                        Ok(mut b) => b.poll_login(&start.qrcode_key),
-                        Err(e) => {
-                            let _ = tx.send(AsyncMsg::LoginFailed {
-                                gen_id,
-                                msg: format!("客户端锁中毒: {e}"),
-                            });
-                            return;
-                        }
+                    let poll = {
+                        let mut b = bili.lock().await;
+                        b.poll_login(&start.qrcode_key).await
                     };
                     match poll {
                         Ok(QrPoll::WaitingScan) => {
@@ -168,21 +157,21 @@ impl MusicApp {
     pub(crate) fn spawn_user_info_fetch(&mut self) {
         let bili = self.bili.clone();
         let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            let (uname, face) = match bili.lock() {
-                Ok(b) => match b.nav_user().ok().flatten() {
+        crate::net::spawn(async move {
+            let (uname, face) = {
+                let b = bili.lock().await;
+                match b.nav_user().await.ok().flatten() {
                     Some(u) => (Some(u.uname), Some(u.face)),
                     None => (None, None),
-                },
-                Err(_) => (None, None),
+                }
             };
             let _ = tx.send(AsyncMsg::UserInfo { uname, face });
         });
     }
 
     /// 后台扫描系统字体（设置页「界面字体」候选列表）。
-    /// 只扫一次（`font_scan_started` 幂等）；阻塞 IO 在后台线程，结果经
-    /// [`AsyncMsg::FontsScanned`] 回主线程。
+    /// 只扫一次（`font_scan_started` 幂等）；文件系统扫描（CPU/IO 密集）
+    /// 走 blocking 池，结果经 [`AsyncMsg::FontsScanned`] 回主线程。
     pub(crate) fn spawn_font_scan(&mut self) {
         if self.font_scan_started {
             return;
@@ -190,8 +179,10 @@ impl MusicApp {
         self.font_scan_started = true;
         self.font_scanning = true;
         let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            let fonts = crate::fonts::scan_system_fonts();
+        crate::net::spawn(async move {
+            let fonts = crate::net::spawn_blocking(crate::fonts::scan_system_fonts)
+                .await
+                .unwrap_or_default();
             let _ = tx.send(AsyncMsg::FontsScanned(fonts));
         });
     }
@@ -205,10 +196,10 @@ impl MusicApp {
         self.fav_folders_loading = true;
         let bili = self.bili.clone();
         let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            let result = match bili.lock() {
-                Ok(b) => b.list_favorite_folders().map_err(|e| e.to_string()),
-                Err(e) => Err(format!("客户端锁中毒: {e}")),
+        crate::net::spawn(async move {
+            let result = {
+                let b = bili.lock().await;
+                b.list_favorite_folders().await.map_err(|e| e.to_string())
             };
             let _ = tx.send(AsyncMsg::FavFolders(result));
         });
@@ -221,12 +212,12 @@ impl MusicApp {
         self.fav_loading = true;
         let bili = self.bili.clone();
         let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            let result = match bili.lock() {
-                Ok(b) => b
-                    .list_favorite_resources(media_id, pn)
-                    .map_err(|e| e.to_string()),
-                Err(e) => Err(format!("客户端锁中毒: {e}")),
+        crate::net::spawn(async move {
+            let result = {
+                let b = bili.lock().await;
+                b.list_favorite_resources(media_id, pn)
+                    .await
+                    .map_err(|e| e.to_string())
             };
             let _ = tx.send(AsyncMsg::FavResources {
                 media_id,
@@ -256,7 +247,7 @@ impl MusicApp {
         let streams = self.streams.clone();
         let tx = self.tx.clone();
         let quality = self.settings.audio_quality;
-        std::thread::spawn(move || {
+        crate::net::spawn(async move {
             let started = std::time::Instant::now();
 
             // 直链缓存命中（10 分钟内、同音质）→ 跳过 video_info + playurl 直接播放。
@@ -276,7 +267,7 @@ impl MusicApp {
                 return;
             }
 
-            let result = resolve_playable(&bili, &bvid, quality);
+            let result = resolve_playable(&bili, &bvid, quality).await;
             match &result {
                 Ok((item, stream)) => {
                     // 写入直链缓存：10 分钟内再播同一首可跳过解析直接出声。
@@ -309,25 +300,24 @@ impl MusicApp {
         let bili = self.bili.clone();
         let tx = self.tx.clone();
         let quality = self.settings.audio_quality;
-        std::thread::spawn(move || {
-            let result = (|| -> Result<(QueueItem, StreamUrl), String> {
-                // 每个网络请求只在极短临界区内持锁：网络耗时（video_info /
-                // resolve_stream / b23.tv 重定向）都在锁外进行，否则后台线程串行
-                // 排队且任何需要 bili 的调用（含渲染线程）都会被长时间阻塞。
+        crate::net::spawn(async move {
+            let result = async {
+                // 每个网络请求都在持锁状态下进行（tokio Mutex guard 是 Send）。
                 let bvid = {
-                    let guard = bili.lock().map_err(|e| format!("客户端锁中毒: {e}"))?;
-                    guard.parse_bvid(&raw).ok_or_else(|| {
+                    let guard = bili.lock().await;
+                    guard.parse_bvid(&raw).await.ok_or_else(|| {
                         "无法识别 BV 号或链接（支持纯 BV / video/BV.. / b23.tv 短链）".to_string()
                     })?
                 };
                 let detail = {
-                    let guard = bili.lock().map_err(|e| format!("客户端锁中毒: {e}"))?;
-                    guard.video_info(&bvid).map_err(|e| e.to_string())?
+                    let guard = bili.lock().await;
+                    guard.video_info(&bvid).await.map_err(|e| e.to_string())?
                 };
                 let stream = {
-                    let guard = bili.lock().map_err(|e| format!("客户端锁中毒: {e}"))?;
+                    let guard = bili.lock().await;
                     guard
                         .resolve_stream_with_cid(&bvid, detail.cid, quality)
+                        .await
                         .map_err(|e| e.to_string())?
                 };
                 let item = QueueItem::new_with_cover(
@@ -340,8 +330,9 @@ impl MusicApp {
                 // cid 一并带上（歌词线程「识别音乐」用）。
                 let mut item = item;
                 item.cid = detail.cid;
-                Ok((item, stream))
-            })();
+                Ok::<(QueueItem, StreamUrl), String>((item, stream))
+            }
+            .await;
             let _ = tx.send(AsyncMsg::PlayReady { seq, result });
         });
     }
@@ -366,7 +357,7 @@ impl MusicApp {
         let bili = self.bili.clone();
         let cache = self.lyrics_cache.clone();
         let tx = self.tx.clone();
-        std::thread::spawn(move || {
+        crate::net::spawn(async move {
             // 1) 缓存命中：selected 或 candidates 任一存在即直接回放（零网络）。
             let cached = cache
                 .lock()
@@ -386,19 +377,20 @@ impl MusicApp {
 
             // 2) 未命中：识别音乐 → 多源搜索。
             crate::util::log::debug("lyrics", &format!("歌词缓存未命中，发起在线抓取: {key}"));
-            let hint = bili
-                .lock()
-                .ok()
-                .and_then(|b| b.detect_music(&key, cid))
-                .map(|m| hint_from_bili(m, duration_secs));
+            let hint = {
+                let b = bili.lock().await;
+                b.detect_music(&key, cid)
+                    .await
+                    .map(|m| hint_from_bili(m, duration_secs))
+            };
             let candidates =
-                lyrics::LyricsProvider::fetch_all_with_hint(&title, &uploader, hint.as_ref());
+                lyrics::LyricsProvider::fetch_all_with_hint(&title, &uploader, hint.as_ref()).await;
             // 3) 抓取成功写回缓存（空结果不缓存：以后源覆盖了这首歌还能自动补上）。
             let selected = candidates.first().cloned();
             if !candidates.is_empty() {
                 if let Ok(mut m) = cache.lock() {
                     lyrics::cache_store_fetch(&mut m, &key, selected.clone(), candidates.clone());
-                    // 落盘就在本线程做（本就是后台线程）；失败静默，只丢缓存不丢功能。
+                    // 落盘就在本任务做（本就是后台）；失败静默，只丢缓存不丢功能。
                     match crate::modules::storage::save_lyrics_cache(&m) {
                         Ok(_) => crate::util::log::debug("lyrics", "歌词缓存已落盘"),
                         Err(e) => {
@@ -608,21 +600,22 @@ impl MusicApp {
 }
 
 /// 后台解析一首歌（bvid → VideoDetail → StreamUrl），返回可播对的 (QueueItem, StreamUrl)。
-fn resolve_playable(
-    bili: &Arc<Mutex<BiliClient>>,
+async fn resolve_playable(
+    bili: &Arc<tokio::sync::Mutex<BiliClient>>,
     bvid: &str,
     quality: AudioQuality,
 ) -> Result<(QueueItem, StreamUrl), String> {
-    // 每个网络请求只在极短临界区内持锁：video_info / resolve_stream 的耗时都在锁外，
-    // 后台线程之间不再互相排队，也不会让任何需要 bili 的调用（含渲染线程）长时间阻塞。
+    // tokio Mutex 的 guard 是 Send，可跨 await 持锁；解析全程只占用该客户端，
+    // 不阻塞 UI（UI 只在登出等少数场景同步取锁）。
     let detail = {
-        let guard = bili.lock().map_err(|e| format!("客户端锁中毒: {e}"))?;
-        guard.video_info(bvid).map_err(|e| e.to_string())?
+        let guard = bili.lock().await;
+        guard.video_info(bvid).await.map_err(|e| e.to_string())?
     };
     let stream = {
-        let guard = bili.lock().map_err(|e| format!("客户端锁中毒: {e}"))?;
+        let guard = bili.lock().await;
         guard
             .resolve_stream_with_cid(bvid, detail.cid, quality)
+            .await
             .map_err(|e| e.to_string())?
     };
     let mut item = QueueItem::new_with_cover(

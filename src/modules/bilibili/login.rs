@@ -2,6 +2,7 @@
 //! 成功时捕获 cookies 并落盘会话。
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use super::client::{BiliClient, parse_query_params};
 use super::error::{BiliError, BiliResult};
@@ -12,11 +13,13 @@ impl BiliClient {
     // ---- 扫码登录 ----
 
     /// 生成登录二维码。
-    pub fn generate_qrcode(&self) -> BiliResult<QrLoginStart> {
-        let data: QrGenerateResp = self.get_data(
-            "https://passport.bilibili.com/x/passport-login/web/qrcode/generate",
-            "qrcode/generate",
-        )?;
+    pub async fn generate_qrcode(&self) -> BiliResult<QrLoginStart> {
+        let data: QrGenerateResp = self
+            .get_data(
+                "https://passport.bilibili.com/x/passport-login/web/qrcode/generate",
+                "qrcode/generate",
+            )
+            .await?;
         Ok(QrLoginStart {
             qrcode_key: data.qrcode_key,
             url: data.url,
@@ -37,14 +40,16 @@ impl BiliClient {
     }
 
     /// 轮询扫码登录结果。成功时自动捕获 cookies 并落盘（含 buvid）。
-    pub fn poll_login(&mut self, qrcode_key: &str) -> BiliResult<QrPoll> {
+    pub async fn poll_login(&mut self, qrcode_key: &str) -> BiliResult<QrPoll> {
         let url = "https://passport.bilibili.com/x/passport-login/web/qrcode/poll";
-        let resp = self
-            .http
+        let resp = crate::net::http_client()
             .get(url)
+            .headers(self.default_headers.clone())
             .header(reqwest::header::COOKIE, self.cookie_header())
             .query(&[("qrcode_key", qrcode_key)])
-            .send()?;
+            .timeout(Duration::from_secs(20))
+            .send()
+            .await?;
 
         // 先捕获 Set-Cookie（成功时才有 SESSDATA/bili_jct/DedeUserID）。
         let mut cookies = BTreeMap::new();
@@ -55,7 +60,7 @@ impl BiliClient {
         }
 
         let status = resp.status().as_u16();
-        let text = resp.text()?;
+        let text = resp.text().await?;
         let env: ApiEnvelope<QrPollResp> = serde_json::from_str(&text).map_err(|e| {
             BiliError::Local(format!(
                 "poll 响应解析失败: {e}; body[:200]={}",

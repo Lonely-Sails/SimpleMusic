@@ -4,7 +4,7 @@
 
 极简桌面音乐播放器 —— **纯原生 GUI（无 WebView）**，音源来自 B 站视频，歌词来自 LRCLIB 在线搜索，带**桌面歌词悬浮窗**。
 
-技术栈：**Rust 2024 + eframe/egui 0.36（glow 渲染）** · reqwest(rustls) · rodio + symphonia（音频解码）· serde。
+技术栈：**Rust 2024 + eframe/egui 0.36（glow 渲染）** · reqwest(rustls) + tokio（异步网络） · rodio + symphonia（音频解码） · serde。
 
 跨平台：Windows / macOS / Linux（X11 与 Wayland 均可）。
 
@@ -63,9 +63,10 @@ sudo apt install build-essential pkg-config libasound2-dev libxkbcommon-dev libw
 ```
 src/
 ├── main.rs            启动入口（--width/--height/--smoke）
+├── net.rs             全局异步网络层：唯一 tokio runtime + 共享 HTTP 客户端 + 任务派发
 ├── app/               应用层：MusicApp 结构 + 主界面 + 异步调度（按职责拆文件）
 │   ├── mod.rs         结构定义 + eframe 生命周期（ui/logic/on_exit）
-│   ├── messages.rs    后台线程消息（AsyncMsg + spawn_* + handle_msg）
+│   ├── messages.rs    异步网络任务（AsyncMsg + spawn_* + handle_msg）
 │   ├── player.rs      播放控制 + 键盘快捷键
 │   ├── playlists.rs   歌单管理
 │   ├── lyrics.rs      歌词同步
@@ -99,7 +100,7 @@ src/
 - **桌面歌词悬浮窗**：egui 子 viewport（`show_viewport_immediate`），`with_transparent(true) + with_decorations(false) + with_always_on_top()`，固定 800×64；锁定状态通过 `ViewportCommand::MousePassthrough` 运行期切换鼠标穿透（egui 0.36 支持），未锁定时用 `ViewportCommand::StartDrag` 系统级拖动；大号歌词文本用多次偏移重绘近似描边阴影。
 - **音频链路**：`BiliClient::resolve_stream` 取 dash 音频流（优先最高码率，未签名请求失败自动补 WBI 签名重试）→ 按 `required_headers`（UA/Referer/Cookie）流式下载 → symphonia (AAC/MP4) 解码 → rodio 输出；播放线程与 UI 线程用 mpsc 命令通道解耦，进度/错误经共享状态轮询；无输出设备绝不 panic，进入错误状态展示。
 - **歌词匹配**：`LyricsProvider::fetch` 生成多组候选查询（"上传者+标题"/"标题"），对 LRCLIB 结果按标题相似度 + 上传者命中 + 时长接近打分取最优（阈值 40 分），全失败再走精确 `/get`；LRC 解析支持多时间标签/BOM/CRLF/`[offset:]`，同步引擎二分定位当前句。
-- **异步模型**：所有阻塞网络/IO 在后台 `std::thread` 执行，结果经单个 `mpsc` 回主线程；`BiliClient` 以 `Arc<Mutex<..>>` 共享，`AudioEngine` 仅在 UI 线程持有。
+- **异步模型**：所有网络/IO 都是异步的，统一跑在 `net` 模块的**单个 tokio runtime**（2 个 worker 线程）上，共享一个 reqwest 异步客户端；结果经单个 `mpsc` 回主线程。`BiliClient` 以 `Arc<tokio::sync::Mutex<..>>` 共享（guard 可跨 await），`AudioEngine` 仅在 UI 线程持有、播放跑专用线程。
 - **字体**：主界面**文字/图标**恒用编译期内嵌字体（Noto Sans SC + Phosphor 图标字体），跨机器观感一致、不依赖系统字形；**桌面歌词**字体可单独选择（跟随界面 / 内嵌 / 任意系统字体文件，skrifa 校验可解析，失效回退内嵌），文字走专用字体 family 与主界面解耦。**缺字净化**：标题/歌词等网络文本里的 emoji、私用区、零宽字符等内嵌字体渲染不出的码点会被自动过滤（不出现「?」占位）。环境变量：`SIMPLEMUSIC_EMBEDDED_FONTS=1` 强制全内嵌、`SIMPLEMUSIC_FONT=/path/to.ttf` 手动指定字体文件。
 
 ## 已知限制

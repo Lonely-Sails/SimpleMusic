@@ -5,6 +5,7 @@
 //! 的集成测试都从这里 `use simple_music::…`，不再用 `#[path]` 复制源码。
 //!
 //! 模块地图（自上而下 = 依赖方向）：
+//! - `net`：全局异步网络层——唯一 tokio runtime + 共享 HTTP 客户端 + 任务派发。
 //! - `modules/`：纯后端能力，不依赖 egui —— `bilibili`（B 站 HTTP 客户端）、
 //!   `lyrics`（歌词多源搜索/LRC 解析/缓存）、`audio`（下载缓存 + symphonia 解码
 //!   + rodio 输出）、`storage`（config/session/歌单/歌词缓存的 JSON 持久化）。
@@ -20,6 +21,7 @@ pub mod cover;
 pub mod fonts;
 pub mod icons;
 pub mod modules;
+pub mod net;
 pub mod state;
 pub mod text_shadow;
 pub mod theme;

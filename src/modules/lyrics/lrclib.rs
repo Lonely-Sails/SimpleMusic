@@ -24,8 +24,9 @@ impl LyricsProvider {
     ///
     /// 等价于 [`fetch_all_with_hint`](LyricsProvider::fetch_all_with_hint)（`hint=None`）
     /// 的第一个候选（最优先命中）。全链路失败返回 `None`（网络错误、无命中、无歌词）。
-    pub fn fetch(title: &str, uploader: &str) -> Option<Lyrics> {
+    pub async fn fetch(title: &str, uploader: &str) -> Option<Lyrics> {
         Self::fetch_all_with_hint(title, uploader, None)
+            .await
             .into_iter()
             .next()
     }
@@ -43,13 +44,13 @@ impl LyricsProvider {
     /// `hint` 来自 B 站「识别音乐」+ 稿件时长（见 [`SongHint`]），用于生成更准的
     /// 查询词并校准打分（查询与打分见 [`search_queries_with_hint`] /
     /// [`match_score_with_hint`]）；`None` 时按 title/uploader 原样搜索。
-    pub fn fetch_all_with_hint(
+    pub async fn fetch_all_with_hint(
         title: &str,
         uploader: &str,
         hint: Option<&SongHint>,
     ) -> Vec<Lyrics> {
         let started = std::time::Instant::now();
-        let client = http_client();
+        let client = crate::net::http_client();
         let queries = search_queries_with_hint(title, uploader, hint);
         let mut out: Vec<Lyrics> = Vec::new();
 
@@ -59,11 +60,13 @@ impl LyricsProvider {
             if q.is_empty() {
                 continue;
             }
-            if let Some(ly) = vkeys_source_fetch(&client, VkSource::Qq, q, title, uploader, hint) {
+            if let Some(ly) =
+                vkeys_source_fetch(client, VkSource::Qq, q, title, uploader, hint).await
+            {
                 push_unique_lyrics(&mut out, ly);
             }
             if let Some(ly) =
-                vkeys_source_fetch(&client, VkSource::Netease, q, title, uploader, hint)
+                vkeys_source_fetch(client, VkSource::Netease, q, title, uploader, hint).await
             {
                 push_unique_lyrics(&mut out, ly);
             }
@@ -75,7 +78,7 @@ impl LyricsProvider {
             if q.is_empty() {
                 continue;
             }
-            if let Some(results) = search(&client, q) {
+            if let Some(results) = search(client, q).await {
                 if let Some((_, best)) =
                     best_match_if_acceptable(&results, title, uploader, hint, MIN_ACCEPT_SCORE)
                 {
@@ -96,7 +99,7 @@ impl LyricsProvider {
             ),
         };
         if !track.is_empty() {
-            if let Some(res) = get(&client, &artist, &track) {
+            if let Some(res) = get(client, &artist, &track).await {
                 push_unique_lyrics(&mut out, lyrics_from(&res));
             }
         }
@@ -142,22 +145,20 @@ fn lyrics_from(res: &LrcSearchResult) -> Lyrics {
     }
 }
 
-/// 构建带 UA、连接/总超时的 blocking 客户端。
-fn http_client() -> reqwest::blocking::Client {
-    reqwest::blocking::Client::builder()
-        .user_agent(LRCLIB_UA)
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(15))
-        // 歌词请求是低频小请求：连接池只保留 2 个空闲连接、30s 不用即断。
-        .pool_max_idle_per_host(2)
-        .pool_idle_timeout(Duration::from_secs(30))
-        .build()
-        .expect("构建 LRCLIB HTTP 客户端失败")
-}
+/// 构建带 UA、连接/总超时的客户端。
+/// 歌词请求是低频小请求，复用全局共享客户端（连接池与 B 站/封面共用）。
+const LRCLIB_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// LRCLIB 搜索：`GET /api/search?q=…`，命中为空或失败返回 `None`。
-fn search(client: &reqwest::blocking::Client, query: &str) -> Option<Vec<LrcSearchResult>> {
-    let resp = match client.get(LRCLIB_SEARCH).query(&[("q", query)]).send() {
+async fn search(client: &reqwest::Client, query: &str) -> Option<Vec<LrcSearchResult>> {
+    let resp = match client
+        .get(LRCLIB_SEARCH)
+        .header(reqwest::header::USER_AGENT, LRCLIB_UA)
+        .query(&[("q", query)])
+        .timeout(LRCLIB_TIMEOUT)
+        .send()
+        .await
+    {
         Ok(r) => r,
         Err(e) => {
             crate::util::log::warn("lyrics", &format!("LRCLIB 搜索失败: {e}"));
@@ -168,15 +169,18 @@ fn search(client: &reqwest::blocking::Client, query: &str) -> Option<Vec<LrcSear
         crate::util::log::debug("lyrics", &format!("LRCLIB 搜索 HTTP {}", resp.status()));
         return None;
     }
-    resp.json::<Vec<LrcSearchResult>>().ok()
+    resp.json::<Vec<LrcSearchResult>>().await.ok()
 }
 
 /// LRCLIB 精确 `GET /api/get?artist_name=..&track_name=..`，未命中/失败返回 `None`。
-fn get(client: &reqwest::blocking::Client, artist: &str, track: &str) -> Option<LrcSearchResult> {
+async fn get(client: &reqwest::Client, artist: &str, track: &str) -> Option<LrcSearchResult> {
     let resp = match client
         .get(LRCLIB_GET)
+        .header(reqwest::header::USER_AGENT, LRCLIB_UA)
         .query(&[("artist_name", artist), ("track_name", track)])
+        .timeout(LRCLIB_TIMEOUT)
         .send()
+        .await
     {
         Ok(r) => r,
         Err(e) => {
@@ -188,7 +192,7 @@ fn get(client: &reqwest::blocking::Client, artist: &str, track: &str) -> Option<
         crate::util::log::debug("lyrics", &format!("LRCLIB 精确查询 HTTP {}", resp.status()));
         return None;
     }
-    resp.json::<LrcSearchResult>().ok()
+    resp.json::<LrcSearchResult>().await.ok()
 }
 
 // ===========================================================================

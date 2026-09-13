@@ -57,10 +57,11 @@ cargo fmt                         # 格式化
 ```
 src/
 ├── lib.rs            库目标：模块声明 + 模块地图文档（main.rs/examples 都从这里引用）
+├── net.rs            全局异步网络层：唯一 tokio runtime(2 worker) + 共享 HTTP 客户端 + spawn/block_on 派发
 ├── main.rs           薄壳：解析 --width/--height/--smoke；run_smoke 自检；eframe 启动
 ├── app/              应用层（均为 `impl MusicApp` 块）
 │   ├── mod.rs        MusicApp 结构 + new() + 跨模块小工具 + eframe::App 实现（ui/logic/on_exit）
-│   ├── messages.rs   后台线程消息 AsyncMsg + spawn_* 派发 + handle_msg
+│   ├── messages.rs   异步网络任务 AsyncMsg + spawn_* 派发 + handle_msg
 │   ├── player.rs     播放控制（上下曲/seek/音量/移除）+ 快捷键 + playback_songs() 快照
 │   ├── playlists.rs  歌单管理（切换/删除/重命名/添加到歌单/在线歌单定位）
 │   ├── lyrics.rs     歌词同步（update_lyrics_line + pick_plain_line_index + next_switch_delay_secs）
@@ -85,7 +86,7 @@ src/
 │   │   ├── cache.rs  缓存路径规则(<dir>/<md5(key)>.m4s)与命中判定
 │   │   ├── decode.rs symphonia 解码源 SymphoniaSource（文件/内存输入、seek、position 推算）
 │   │   ├── normalize.rs 响度均衡：整曲预分析(RMS dBFS) → 固定增益 + 硬限幅
-│   │   ├── download.rs fetch_to_cache 流式下载(.part 原子重命名)/CDN 备援/降级内存
+│   │   ├── download.rs fetch_to_cache 异步流式下载(.part 原子重命名)/CDN 备援/降级内存
 │   │   ├── player.rs worker_loop 播放线程主循环 + load_and_play + LoadErr
 │   │   └── engine.rs AudioEngine UI 句柄（play/pause/resume/seek/stop/volume/normalize/status）
 │   ├── lyrics/       歌词（原单文件拆 8 个子模块）
@@ -103,7 +104,7 @@ src/
 ├── text_shadow.rs    文字真·模糊柔影：skrifa 轮廓 → vello_cpu 光栅化 → 盒滤波高斯 → egui 纹理
 ├── theme.rs          主题色板 + 按钮/样式辅助（BG_*/TEXT_*/ACCENT 等语义常量）
 ├── icons.rs          图标：内嵌 Phosphor 图标字体（PUA 码点），不依赖 emoji/系统字形
-├── cover.rs          封面缩略图：后台下载 + 解码（不在主线程）→ egui 纹理缓存（失败 30 分钟冷却）
+├── cover.rs          封面缩略图：异步下载 + 解码（不在主线程，最多 6 个并发任务）→ egui 纹理缓存（失败 30 分钟冷却）
 ├── fonts.rs          字体：主界面恒内嵌 Noto Sans SC + Phosphor；桌面歌词专用 family（设置可选系统字体）+ 缺字净化
 ├── util/             fmt.rs(format_secs) / rand.rs(rand_idx) / filter.rs(song_matches_query) / text.rs(sanitize_ui_text 缺字过滤) / log.rs(分级日志)
 └── tray.rs           系统托盘（feature=tray）：Linux=GTK 线程；macOS/Win=原生；无 feature 时 no-op 桩
@@ -115,7 +116,11 @@ src/
 > 不放逻辑。examples/ 下的探针是手工网络诊断工具，依赖 lib 目标的 pub API。
 
 ### 线程模型（最重要的一条约定）
-- **所有阻塞网络/IO 都放后台 `std::thread`**，结果经**单个 `mpsc` 通道** `AsyncMsg` 发回主线程；`MusicApp::logic` 每帧 `try_recv` 排空并更新状态。
+- **所有网络/IO 都是异步的，统一跑在 `net` 模块里的单个 tokio runtime**（`src/net.rs`，`new_multi_thread().worker_threads(2)`，线程名 `simple-music-net`）。**不要**再新建 `reqwest::blocking::Client`——它每实例起一条 `reqwest-internal-sync-runtime` OS 线程，会造成线程数无界增长（历史 bug：歌词抓取时线程从 12 涨到 25）。共享客户端走 `net::http_client()`（`OnceLock`，连接池 + 10s connect timeout），逐请求用 `.timeout(..)`/`.header(..)` 叠加。
+- **派发 API**：`net::spawn(future)`（`F: Future + Send + 'static`）、`net::spawn_blocking(f)`（CPU/阻塞活，如字体扫描、封面解码）、`net::block_on(future)`（非 async 上下文桥接，如 `main.rs` smoke、examples、播放线程；基于 `Handle::block_on`，**不要求 Future: Send**）。
+- **结果经单个 `mpsc` 通道** `AsyncMsg` 发回主线程；`MusicApp::logic` 每帧 `try_recv` 排空并更新状态。
+- **`BiliClient` 用 `Arc<tokio::sync::Mutex<..>>`**（不是 `std::sync::Mutex`）：其 guard 是 `Send`，能跨 `.await` 持有；`std::sync::MutexGuard` 不是 `Send`，跨 await 会让 `tokio::spawn` 拒绝编译。锁跨 await 处务必短临界区（见 `resolve.rs::wbi_keys` 的三段式：查缓存 → 放锁请求 → 回写）。UI 线程读它用 `try_lock()` 避免卡帧。
+- **播放仍在专用 OS 线程**（`simple-music-audio`，`audio/player.rs::worker_loop`）：rodio `OutputStream` 是 `!Send`，只能待在专属线程。该线程需要下载时用 `net::block_on(fetch_to_cache(..))` 桥进 runtime。`AudioEngine` 仅在 UI 线程持有，命令经 mpsc 发往播放线程，状态经 `Arc<Mutex<PlaybackStatus>>` 轮询。
 - **重绘保活线程**（`app/mod.rs`，线程名 `render-keepalive`，200ms 一拍）：后台线程持续
   `ctx.request_repaint()`，规避 eframe/winit「最小化后恢复界面卡死」的上游缺陷
   （egui #8246：macOS 上 `ViewportCommand::Minimized(true)` 把 `info.minimized` 锁死；
@@ -123,8 +128,7 @@ src/
   但窗口已恢复」的矛盾态并补发 `Minimized(false)` 清锁。**改最小化/托盘隐藏相关代码前先读
   这两个 issue**；`on_exit` 里必须置位 `keepalive_stop`。经验：这类「只在最小化/恢复后出现
   的冻结」不是死锁，是事件循环饿死——应用层保活 + 恢复补绘兜底。
-- `BiliClient` 以 `Arc<Mutex<..>>` 跨线程共享（有锁中毒保护）；`AudioEngine` 仅在 UI 线程持有，
-  命令经 mpsc 发往专用播放线程（`audio/player.rs::worker_loop`），状态经 `Arc<Mutex<PlaybackStatus>>` 轮询。
+- **预期线程数 ≈ 9**：main + NSEventThread + render-keepalive + simple-music-audio + 2× simple-music-net + 1 匿名 + macOS GCD dispatch。**不应出现 `reqwest-internal-sync-runtime`**（出现即说明某处又建了 blocking 客户端）。
 - **桌面歌词浮窗**通过 `egui::Context::show_viewport_deferred`（延迟模式）渲染，**不与主窗口共享
   重绘节奏**：浮窗只在内容指纹（当前句/下一句/字号/锁定）变化或输入事件时重绘。切歌过渡动画的
   过渡状态存在共享 `Context` data 槽（`TRANSITION_SLOT`），动画期间 `request_repaint()` 连续唤醒
@@ -135,7 +139,7 @@ src/
   「节流间隔」与「下一个歌词切换点 − 20ms 提前量」的较早者（`app/lyrics.rs::next_switch_delay_secs`），
   进度条平滑且切行动画不迟到。**不要恢复 `playing ⇒ request_repaint()` 的全速连续重绘**——
   浮窗动画期间主窗口全速重绘会在 winit 全局重绘队列里互相踩踏，是浮窗掉帧主因。
-- UI 闭包里禁止直接做网络请求；需要结果就 `spawn_*` 一个后台线程 + 发消息。
+- UI 闭包里禁止直接做网络请求；需要结果就 `spawn_*` 一个异步任务（`net::spawn`）+ 发消息。
 - **egui `Context` 是一把大写锁**（`RwLock<ContextImpl>`，memory/data、viewports、input、
   fonts 全在里面；epaint RwLock **不可重入**）。**绝不能在 `ctx.data_mut`/`data`/`input`/
   `fonts` 等闭包里再调任何 `Context` API**（如 `load_texture`、`pixels_per_point`）——
@@ -184,7 +188,7 @@ CDN 403/410 自动换备用地址；写盘失败降级内存缓冲；无输出�
 `LyricsProvider::fetch_all_with_hint` → 按候选查询（提示词最优先，标题清洗词兜底，去重 ≤5 条）
 依次尝试 **vkeys.cn 聚合源**（QQ 音乐 `mid` 优先 → 网易云 `id`，翻译按时间戳并入同行）→
 全部未命中再回退 **LRCLIB**（搜索 + 精确 GET；打分阈值 `MIN_ACCEPT_SCORE=40`，命中判定统一走
-`matching::best_match_if_acceptable`）→ 抓取成功写回缓存并当场落盘（后台线程）；
+`matching::best_match_if_acceptable`）→ 抓取成功写回缓存并当场落盘（异步任务）；
 `LyricsFetched{key, candidates, selected}` 按 bvid 回主线程；**用户手选**走 `apply_lyrics`
 （应用 + 写缓存 + 落盘）；同步歌词用二分定位当前句，无同步时按进度近似取纯文本行。
 
@@ -224,7 +228,7 @@ CDN 403/410 自动换备用地址；写盘失败降级内存缓冲；无输出�
 6. **图标**：所有界面图标用 `icons::*`（内嵌 Phosphor，PUA 码点渲染到 rect 中心），不要依赖 emoji 或媒体控制码点（跨平台字形缺失会显示 "?"）。
 7. **错误处理**：音频错误不 panic，写 `PlaybackStatus.error` 由 UI 展示；网络错误经 `AsyncMsg` 回 `ui_error`（红色）或 `notice`（金色轻提示，4 秒）。
 8. **文本宽度**：动态文案先 `truncate_label`/`fit_text` 再 `painter.text`。
-9. **单测**：纯函数（解析/打分/格式化/过滤）放同文件 `#[cfg(test)] mod tests`，离线跑；真实网络用 `#[ignore]` 标注（如 `detect_music_live`）。新增纯逻辑尽量带测试。测试数 207 + 2 ignored。
+9. **单测**：纯函数（解析/打分/格式化/过滤）放同文件 `#[cfg(test)] mod tests`，离线跑；真实网络用 `#[ignore]` 标注（如 `detect_music_live`）。新增纯逻辑尽量带测试。测试数 221 + 2 ignored。
 10. **UI 状态与数据解耦（稳定标识模式）**：凡是「UI 里选中的东西」跨帧/跨列表操作要记住时，**存稳定标识（如 bvid），不要存列表下标**——下标在过滤/删歌/刷新后静默漂移出 bug，标识找不到时按 `None` 处理即可自然降级。
 11. **不要让「执行动作」顺手改数据**：副作用（入单/落盘/置 dirty）必须由用户的显式操作触发；新功能如果发现自己「顺手」改了用户数据，几乎一定是设计错了。
 12. **行为不变量改动要写迁移/清理**：改持久化语义时在启动路径加一次性数据清理，并考虑旧文件兼容（`#[serde(default)]`）。
@@ -303,7 +307,7 @@ CDN 403/410 自动换备用地址；写盘失败降级内存缓冲；无输出�
 | WBI 签名 | `modules/bilibili/wbi.rs` |
 | 音频引擎对外接口 | `modules/audio/engine.rs`（`AudioEngine`） |
 | 音频下载/缓存 | `modules/audio/{download,cache}.rs` |
-| 音频解码/播放线程 | `modules/audio/{decode,player}.rs` |
+| 音频解码/播放线程 | `modules/audio/{decode,player}.rs`（下载经 `net::block_on` 桥入 runtime） |
 | 音量均衡（响度归一化） | `modules/audio/normalize.rs`（设置项 `Settings::volume_normalize`，默认关闭） |
 | 歌词搜索/打分 | `modules/lyrics/{lrclib,vkeys,matching}.rs` |
 | LRC 解析/同步 | `modules/lyrics/lrc.rs`（`parse` 丢弃无正文的行，勿回退） |

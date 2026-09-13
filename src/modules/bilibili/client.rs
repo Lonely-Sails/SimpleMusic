@@ -18,12 +18,14 @@ use crate::modules::storage::{self, BiliSession};
 // 客户端
 // ---------------------------------------------------------------------------
 
-/// B 站 API 客户端（blocking）。
+/// B 站 API 客户端（异步）。
 ///
-/// UI 集成建议：在 `std::thread` 中持有 `BiliClient`，用 channel 把结果发回 GUI 线程，
-/// 避免 blocking IO 阻塞渲染。
+/// 网络请求走进程内共享的 tokio runtime（见 [`crate::net`]）：客户端自身**不再**
+/// 持有 blocking 连接池，也不新建 OS 线程。调用方在 async 上下文里 `.await` 即可。
 pub struct BiliClient {
-    pub(super) http: reqwest::blocking::Client,
+    /// 请求级默认头（UA / Referer / Origin / Accept-Language）。
+    /// 连接池本身是 [`crate::net::http_client`] 的共享实例，这里只存头。
+    pub(super) default_headers: reqwest::header::HeaderMap,
     /// 会话（cookies + buvid），与磁盘 session.json 同步。
     pub(super) session: BiliSession,
     /// WBI key 缓存（约 30 分钟刷新一次）。
@@ -52,19 +54,12 @@ impl BiliClient {
             reqwest::header::ACCEPT_LANGUAGE,
             reqwest::header::HeaderValue::from_static("zh-CN,zh;q=0.9,en;q=0.8"),
         );
-        let http = reqwest::blocking::Client::builder()
-            .user_agent(USER_AGENT)
-            .default_headers(headers)
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(20))
-            .redirect(reqwest::redirect::Policy::limited(10))
-            // 空闲连接上限：API 请求是短平快的小包，几个常驻连接足够；
-            // 30s 无复用即断开，避免 CDN/API 连接常驻内存。
-            .pool_max_idle_per_host(4)
-            .pool_idle_timeout(Duration::from_secs(30))
-            .build()?;
+        headers.insert(
+            reqwest::header::USER_AGENT,
+            reqwest::header::HeaderValue::from_static(USER_AGENT),
+        );
         Ok(Self {
-            http,
+            default_headers: headers,
             session: BiliSession::default(),
             wbi_cache: Mutex::new(None),
         })
@@ -99,12 +94,13 @@ impl BiliClient {
 
     /// 拉取当前登录用户的昵称/头像（nav 接口）。未登录返回 `None`。
     ///
-    /// 阻塞网络调用，应在后台线程使用。
-    pub fn nav_user(&self) -> BiliResult<Option<NavUser>> {
+    /// 异步网络调用，直接在 async 上下文 `.await` 即可。
+    pub async fn nav_user(&self) -> BiliResult<Option<NavUser>> {
         // 游客访问 nav 返回 code=-101 但 data.wbi_img 照常下发（见 wbi_keys 注释），
         // 所以这里同样不能走 get_data 的严格 code==0 校验，直接看 data 字段。
-        let (_http, env) =
-            self.get_json::<NavResp>("https://api.bilibili.com/x/web-interface/nav", &[])?;
+        let (_http, env) = self
+            .get_json::<NavResp>("https://api.bilibili.com/x/web-interface/nav", &[])
+            .await?;
         let Some(data) = env.data else {
             return Err(BiliError::Api {
                 code: env.code,
@@ -143,7 +139,7 @@ impl BiliClient {
     }
 
     /// 未登录也需要 buvid3/buvid4：从 finger/spi 获取并持久化（已有时跳过）。
-    pub fn ensure_buvid(&mut self) -> BiliResult<()> {
+    pub async fn ensure_buvid(&mut self) -> BiliResult<()> {
         if self.session.get("buvid3").map_or(false, |v| !v.is_empty()) {
             return Ok(());
         }
@@ -154,10 +150,12 @@ impl BiliClient {
             #[serde(rename = "b_4")]
             buvid4: String,
         }
-        let data: SpiData = self.get_data(
-            "https://api.bilibili.com/x/frontend/finger/spi",
-            "finger/spi",
-        )?;
+        let data: SpiData = self
+            .get_data(
+                "https://api.bilibili.com/x/frontend/finger/spi",
+                "finger/spi",
+            )
+            .await?;
         self.session.set("buvid3", data.buvid3);
         self.session.set("buvid4", data.buvid4);
         // 落盘尽力而为：沙箱/只读文件系统下失败不应阻断取流（会话仍在内存）。
@@ -174,7 +172,7 @@ impl BiliClient {
 
     /// GET 一个 B 站 JSON 接口，自动带 UA/Referer/Cookie。
     /// 返回 `(HTTP 状态码, 反序列化后的信封)`。
-    pub fn get_json<T: for<'de> Deserialize<'de>>(
+    pub async fn get_json<T: for<'de> Deserialize<'de>>(
         &self,
         url: &str,
         extra_query: &[(String, String)],
@@ -190,13 +188,15 @@ impl BiliClient {
             url = format!("{url}{sep}{qs}");
         }
         let started = Instant::now();
-        let resp = self
-            .http
+        let resp = crate::net::http_client()
             .get(&url)
+            .headers(self.default_headers.clone())
             .header(reqwest::header::COOKIE, self.cookie_header())
-            .send()?;
+            .timeout(Duration::from_secs(20))
+            .send()
+            .await?;
         let status = resp.status().as_u16();
-        let text = resp.text()?;
+        let text = resp.text().await?;
         // 诊断日志只记路径（query 里是 WBI 签名等长参数，无诊断价值）。
         crate::util::log::debug(
             "bilibili",
@@ -217,8 +217,12 @@ impl BiliClient {
     }
 
     /// GET 并校验 code==0，直接返回 data。`api` 用于错误信息。
-    pub fn get_data<T: for<'de> Deserialize<'de>>(&self, url: &str, api: &str) -> BiliResult<T> {
-        let (http, env) = self.get_json(url, &[])?;
+    pub async fn get_data<T: for<'de> Deserialize<'de>>(
+        &self,
+        url: &str,
+        api: &str,
+    ) -> BiliResult<T> {
+        let (http, env) = self.get_json(url, &[]).await?;
         Self::unwrap_api(http, env, api)
     }
 

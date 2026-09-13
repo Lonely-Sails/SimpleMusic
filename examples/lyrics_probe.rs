@@ -28,7 +28,7 @@ fn main() {
         simple_music::modules::lyrics::search_queries(&title, &uploader)
     );
 
-    match LyricsProvider::fetch(&title, &uploader) {
+    match simple_music::net::block_on(LyricsProvider::fetch(&title, &uploader)) {
         Some(lyrics) => {
             if let Some(src) = &lyrics.source {
                 println!(

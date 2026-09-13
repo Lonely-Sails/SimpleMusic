@@ -21,7 +21,13 @@ eframe = { version = "0.36.1", default-features = false, features = ["glow", "x1
 libc = "0.2"
 md5 = "0.7"
 qrcode = { version = "0.14.1", default-features = false }
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
+# 异步 HTTP 客户端。全进程共享一个 tokio runtime（见 src/net.rs），
+# reqwest 的 async 客户端**不会**自建线程（不像 blocking 版每实例一条 runtime 线程）。
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+# 异步运行时：承载全部网络请求。worker 线程数在 net.rs 里固定为 2。
+# `sync` 提供 tokio::sync::Mutex——它的 guard 是 Send，可安全跨 await 持锁
+# （BiliClient 需在持锁状态下发多个网络请求，std Mutex 的 guard 非 Send）。
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync"] }
 # 系统字体校验：epaint 同款解析器（安装前确认可解析、覆盖拉丁/汉字，避免 egui panic）。
 skrifa = { version = "0.44", default-features = false, features = ["std"] }
 # 桌面歌词「真·模糊阴影」：skrifa 取字形轮廓 + vello_cpu（epaint 0.36 的 CPU 光栅化

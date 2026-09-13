@@ -57,19 +57,6 @@ pub(super) fn worker_loop(
     set_status(&status, |s| s.volume = volume);
     log_worker_started(&cache_dir);
 
-    // HTTP 客户端只建一次；失败则所有下载报错（不影响本地文件播放）。
-    // 总超时兜底：连接后若长期无数据（CDN 挂起/网络黑洞），blocking read 会永久阻塞，
-    // 导致 st.loading 永远为 true、UI 一直转圈。给整个请求设上限，超时即报错退出。
-    // 连接池：空闲连接上限 4、空闲 30s 断开——单流播放用不到更多常驻连接。
-    let http = reqwest::blocking::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(180))
-        .redirect(reqwest::redirect::Policy::limited(5))
-        .pool_max_idle_per_host(4)
-        .pool_idle_timeout(Duration::from_secs(30))
-        .build()
-        .ok();
-
     loop {
         // 有活跃会话时短超时轮询；空闲时阻塞等待命令。
         let cmd = if session.is_some() {
@@ -100,7 +87,7 @@ pub(super) fn worker_loop(
                     };
                     s.loading = true;
                 });
-                match load_and_play(&req, &status, &cache_dir, &http, &rx, volume, normalize) {
+                match load_and_play(&req, &status, &cache_dir, &rx, volume, normalize) {
                     Ok((stream, sink, shared, sample_rate, duration)) => {
                         set_status(&status, |s| {
                             s.loading = false;
@@ -231,21 +218,29 @@ pub(super) fn worker_loop(
 
 /// Play 命令的执行体：取媒体 → 打开解码器 → 打开输出设备。
 /// 成功返回输出流组件；`LoadErr::Aborted` 表示下载被新命令打断（不进错误状态）。
+///
+/// 下载走全局 runtime：这里用 [`crate::net::block_on`] 同步等待，
+/// 而 `abort` 闭包让下载/分析过程能感知 Stop/新 Play（非阻塞地抽干命令通道）。
 #[allow(clippy::type_complexity)]
 fn load_and_play(
     req: &PlayRequest,
     status: &Mutex<PlaybackStatus>,
     cache_dir: &Path,
-    http: &Option<reqwest::blocking::Client>,
     rx: &Receiver<Command>,
     volume: f32,
     normalize: bool,
 ) -> Result<(rodio::OutputStream, Sink, Arc<SourceShared>, u32, f64), LoadErr> {
+    // 非阻塞检查是否有抢占性命令（Stop / 新 Play / 退出）。
+    // 下载与响度分析共用；期间到达的 Pause/Resume/Seek/Volume 被丢弃
+    // （这些命令对「尚未开始出声」的加载阶段没有意义）。
+    // 闭包需 `Send + Sync`（会传进异步下载）：只借用 `&Receiver`，
+    // 每次调用现场 `try_recv`，不持有任何非 Sync 状态。
+    let abort = || poll_abort(rx);
     // 1. 取得媒体数据（本地文件 or 下载缓存）。
     let (mut input, was_cached) = if let Some(p) = &req.local_file {
         (MediaInput::File(p.clone()), false)
     } else {
-        match fetch_to_cache(req, status, cache_dir, http, rx) {
+        match crate::net::block_on(fetch_to_cache(req, status, cache_dir, &abort)) {
             Ok((m, hit)) => (m, hit),
             Err(FetchErr::Aborted) => return Err(LoadErr::Aborted),
             Err(FetchErr::Failed(e)) => return Err(LoadErr::Failed(e)),
@@ -277,7 +272,7 @@ fn load_and_play(
                 &format!("缓存文件解码失败，删除后重新下载: {}", cached.display()),
             );
             let _ = fs::remove_file(&cached);
-            match fetch_to_cache(req, status, cache_dir, http, rx) {
+            match crate::net::block_on(fetch_to_cache(req, status, cache_dir, &abort)) {
                 Ok((m, _)) => {
                     set_status(status, |s| s.cache_hit = false);
                     input = m;
@@ -312,7 +307,6 @@ fn load_and_play(
     // 5. 响度均衡：整曲预分析后应用固定增益（开关开启时才扫，否则零开销）。
     if normalize {
         set_status(status, |s| s.normalizing = true);
-        let abort = || poll_abort(rx);
         let gain = match analyze(&input, &abort) {
             Ok(loud) => loud.gain(),
             Err(AnalyzeErr::Aborted) => {

@@ -13,14 +13,20 @@ use crate::state::AudioQuality;
 impl BiliClient {
     /// 从任意输入解析 BV 号：支持完整/移动端 URL（含 ?p= 分 P）、纯 BV 号、
     /// b23.tv 短链（需网络跟随重定向）。
-    pub fn parse_bvid(&self, input: &str) -> Option<String> {
+    pub async fn parse_bvid(&self, input: &str) -> Option<String> {
         if let Some(bv) = Self::parse_bvid_direct(input) {
             return Some(bv);
         }
         // b23.tv 短链：跟随重定向拿最终 URL 再解析。
         let trimmed = input.trim();
         if trimmed.contains("b23.tv") {
-            if let Ok(resp) = self.http.get(trimmed).send() {
+            if let Ok(resp) = crate::net::http_client()
+                .get(trimmed)
+                .headers(self.default_headers.clone())
+                .timeout(Duration::from_secs(20))
+                .send()
+                .await
+            {
                 let final_url = resp.url().as_str();
                 return Self::parse_bvid_direct(final_url);
             }
@@ -41,9 +47,9 @@ impl BiliClient {
     }
 
     /// 拉取视频详情（title/owner/duration/cid/pages）。
-    pub fn video_info(&self, bvid: &str) -> BiliResult<VideoDetail> {
+    pub async fn video_info(&self, bvid: &str) -> BiliResult<VideoDetail> {
         let url = format!("https://api.bilibili.com/x/web-interface/view?bvid={bvid}");
-        let data: ViewResp = self.get_data(&url, "web-interface/view")?;
+        let data: ViewResp = self.get_data(&url, "web-interface/view").await?;
         Ok(VideoDetail {
             cid: data.cid,
             pages: data.videos.max(1) as u64,
@@ -58,9 +64,10 @@ impl BiliClient {
     }
 
     /// 解析音频流（自动先取 video_info 拿 cid，再走 playurl）。
-    pub fn resolve_stream(&self, bvid: &str, quality: AudioQuality) -> BiliResult<StreamUrl> {
-        let detail = self.video_info(bvid)?;
+    pub async fn resolve_stream(&self, bvid: &str, quality: AudioQuality) -> BiliResult<StreamUrl> {
+        let detail = self.video_info(bvid).await?;
         self.resolve_stream_with_cid(bvid, detail.cid, quality)
+            .await
     }
 
     /// 识别视频的背景/插播音乐（B 站官方「识别音乐」数据），用于提升歌词搜索准确率。
@@ -74,30 +81,31 @@ impl BiliClient {
     ///
     /// 全链路失败（无音乐卡、接口挂了、被风控）返回 `None`，调用方照旧走标题搜索——
     /// 识别只是增强，绝不阻塞歌词获取。
-    pub fn detect_music(&self, bvid: &str, cid: i64) -> Option<MusicHint> {
-        let music_id = self
-            .music_id_from_player(bvid, cid)
-            .or_else(|| self.music_id_from_bgm_tag(bvid))?;
-        let hint = self.music_detail(&music_id).ok()?;
+    pub async fn detect_music(&self, bvid: &str, cid: i64) -> Option<MusicHint> {
+        let music_id = match self.music_id_from_player(bvid, cid).await {
+            Some(id) => Some(id),
+            None => self.music_id_from_bgm_tag(bvid).await,
+        }?;
+        let hint = self.music_detail(&music_id).await.ok()?;
         if hint.is_usable() { Some(hint) } else { None }
     }
 
     /// 从 `/x/player/v2` 拿 `bgm_info.music_id`（UP 主挂载的 BGM 音乐卡）。
-    fn music_id_from_player(&self, bvid: &str, cid: i64) -> Option<String> {
+    async fn music_id_from_player(&self, bvid: &str, cid: i64) -> Option<String> {
         if cid <= 0 {
             return None;
         }
         let url = format!("https://api.bilibili.com/x/player/v2?bvid={bvid}&cid={cid}");
-        let env: ApiEnvelope<PlayerInfoResp> = self.get_json(&url, &[]).ok()?.1;
+        let env: ApiEnvelope<PlayerInfoResp> = self.get_json(&url, &[]).await.ok()?.1;
         let data = env.data?;
         let bgm = data.bgm_info?;
         Self::valid_music_id(&bgm.music_id)
     }
 
     /// 从 `view/detail/tag` 拿 `tag_type == "bgm"` 的 TAG music_id。
-    fn music_id_from_bgm_tag(&self, bvid: &str) -> Option<String> {
+    async fn music_id_from_bgm_tag(&self, bvid: &str) -> Option<String> {
         let url = format!("https://api.bilibili.com/x/web-interface/view/detail/tag?bvid={bvid}");
-        let env: ApiEnvelope<Vec<BgmTagItem>> = self.get_json(&url, &[]).ok()?.1;
+        let env: ApiEnvelope<Vec<BgmTagItem>> = self.get_json(&url, &[]).await.ok()?.1;
         let data = env.data?;
         data.into_iter()
             .filter(|t| t.tag_type == "bgm")
@@ -115,11 +123,11 @@ impl BiliClient {
     }
 
     /// 曲库 `MA…` id → 官方曲名/歌手/专辑（音乐开放平台接口，无需登录）。
-    fn music_detail(&self, music_id: &str) -> BiliResult<MusicHint> {
+    async fn music_detail(&self, music_id: &str) -> BiliResult<MusicHint> {
         let url = format!(
             "https://api.bilibili.com/x/copyright-music-publicity/bgm/detail?music_id={music_id}"
         );
-        let env: ApiEnvelope<CopyrightMusicDetail> = self.get_json(&url, &[])?.1;
+        let env: ApiEnvelope<CopyrightMusicDetail> = self.get_json(&url, &[]).await?.1;
         let data = env
             .data
             .ok_or_else(|| BiliError::Local(format!("bgm/detail {music_id} 缺少 data")))?;
@@ -136,14 +144,14 @@ impl BiliClient {
     /// 策略：先无签名请求 playurl；若被风控拒绝（code != 0 / 无 dash）则自动补 WBI
     /// 签名重试一次。返回 [`StreamUrl`]，其中 `required_headers` 是音频 Worker
     /// 下载时必须携带的请求头。
-    pub fn resolve_stream_with_cid(
+    pub async fn resolve_stream_with_cid(
         &self,
         bvid: &str,
         cid: i64,
         quality: AudioQuality,
     ) -> BiliResult<StreamUrl> {
         // 第一次：不带 WBI。
-        let (http, raw) = self.fetch_playurl_raw(bvid, cid, false)?;
+        let (http, raw) = self.fetch_playurl_raw(bvid, cid, false).await?;
         let usable = raw.code == 0
             && raw
                 .data
@@ -158,12 +166,12 @@ impl BiliClient {
         }
         // 第二次：带 WBI 签名重试。
         crate::util::log::debug("bilibili", "playurl 未签名请求不可用，补 WBI 签名重试");
-        let (http2, raw2) = self.fetch_playurl_raw(bvid, cid, true)?;
+        let (http2, raw2) = self.fetch_playurl_raw(bvid, cid, true).await?;
         self.build_stream_url(http2, raw2, true, bvid, quality)
     }
 
     /// 请求 playurl 接口，返回 `(HTTP code, 原始响应)`。`use_wbi` 控制是否加 WBI 签名。
-    pub fn fetch_playurl_raw(
+    pub async fn fetch_playurl_raw(
         &self,
         bvid: &str,
         cid: i64,
@@ -171,7 +179,7 @@ impl BiliClient {
     ) -> BiliResult<(u16, PlayUrlResp)> {
         let mut url = format!("https://api.bilibili.com/x/player/playurl?bvid={bvid}&cid={cid}");
         if use_wbi {
-            let keys = self.wbi_keys()?;
+            let keys = self.wbi_keys().await?;
             let mut params = vec![
                 ("bvid".to_string(), bvid.to_string()),
                 ("cid".to_string(), cid.to_string()),
@@ -188,7 +196,7 @@ impl BiliClient {
         } else {
             url.push_str("&fnval=16&fourk=1");
         }
-        let (http, env) = self.get_json::<PlayUrlData>(&url, &[])?;
+        let (http, env) = self.get_json::<PlayUrlData>(&url, &[]).await?;
         Ok((
             http,
             PlayUrlResp {
@@ -200,20 +208,29 @@ impl BiliClient {
     }
 
     /// 获取（并缓存）WBI key。缓存约 30 分钟。
-    pub fn wbi_keys(&self) -> BiliResult<WbiKeys> {
-        let mut cache = self
-            .wbi_cache
-            .lock()
-            .map_err(|_| BiliError::Local("wbi 缓存锁中毒".into()))?;
-        if let Some((keys, at)) = cache.as_ref() {
-            if at.elapsed() < Duration::from_secs(30 * 60) {
-                return Ok(keys.clone());
+    ///
+    /// **锁纪律**：`std::sync::Mutex` 的 guard 不是 `Send`，跨 `.await` 持有会导致
+    /// future 非 Send。因此这里分两段短临界区：先取缓存（命中直接返回），
+    /// 未命中则**在锁外**发 nav 请求，拿到后再加锁写回。
+    pub async fn wbi_keys(&self) -> BiliResult<WbiKeys> {
+        // 段 1：查缓存（短临界区，立即释放）。
+        {
+            let cache = self
+                .wbi_cache
+                .lock()
+                .map_err(|_| BiliError::Local("wbi 缓存锁中毒".into()))?;
+            if let Some((keys, at)) = cache.as_ref() {
+                if at.elapsed() < Duration::from_secs(30 * 60) {
+                    return Ok(keys.clone());
+                }
             }
         }
+        // 段 2：锁外请求（可 await）。
         // 注意：游客访问 nav 返回 code=-101（账号未登录）但 data.wbi_img 照常下发，
         // 所以这里不能走 unwrap_api 的严格 code==0 校验。
-        let (_http, env) =
-            self.get_json::<NavResp>("https://api.bilibili.com/x/web-interface/nav", &[])?;
+        let (_http, env) = self
+            .get_json::<NavResp>("https://api.bilibili.com/x/web-interface/nav", &[])
+            .await?;
         let data = match env.data {
             Some(d) => d,
             None => {
@@ -227,26 +244,33 @@ impl BiliClient {
             return Err(BiliError::Local("nav 缺少 wbi_img".into()));
         }
         let keys = WbiKeys::from_urls(&data.wbi_img.img_url, &data.wbi_img.sub_url);
-        *cache = Some((keys.clone(), Instant::now()));
+        // 段 3：写回缓存（短临界区）。并发重复请求时后写者覆盖，内容等价。
+        if let Ok(mut cache) = self.wbi_cache.lock() {
+            *cache = Some((keys.clone(), Instant::now()));
+        }
         Ok(keys)
     }
 
     // ---- 内部 ----
 
     /// 诊断用：按给定头做一次 Range 下载探测，返回 `(HTTP 状态码, 实际收到字节数)`。
-    pub fn probe_download(
+    pub async fn probe_download(
         &self,
         url: &str,
         headers: &[(String, String)],
         range: &str,
     ) -> BiliResult<(u16, usize)> {
-        let mut req = self.http.get(url).header(reqwest::header::RANGE, range);
+        let mut req = crate::net::http_client()
+            .get(url)
+            .headers(self.default_headers.clone())
+            .header(reqwest::header::RANGE, range)
+            .timeout(Duration::from_secs(20));
         for (k, v) in headers {
             req = req.header(k.as_str(), v.as_str());
         }
-        let resp = req.send()?;
+        let resp = req.send().await?;
         let status = resp.status().as_u16();
-        let bytes = resp.bytes()?;
+        let bytes = resp.bytes().await?;
         Ok((status, bytes.len()))
     }
 
@@ -370,8 +394,7 @@ mod tests {
         let client = BiliClient::new().expect("client");
         // BV1M741177Kg（aid=89772773）：带官方 BGM 卡（player/v2 bgm_info 实测有值），
         // 识别 → 曲库详情应得 Other Side — MIYAVI。
-        let hint = client
-            .detect_music("BV1M741177Kg", 153322313)
+        let hint = crate::net::block_on(client.detect_music("BV1M741177Kg", 153322313))
             .expect("应识别到音乐");
         println!("hint = {hint:?}");
         assert_eq!(hint.title.to_lowercase(), "other side");

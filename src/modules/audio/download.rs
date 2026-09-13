@@ -1,8 +1,11 @@
 //! 音频下载与缓存复用：流式下载到 `.part` 临时文件后原子重命名，
 //! 备用 CDN 地址轮替，写盘失败降级内存缓冲，下载中可被打断。
+//!
+//! 下载走全局 tokio runtime（[`crate::net`]）；调用方（播放线程）用
+//! [`crate::net::block_on`] 同步等待。写盘（阻塞 IO）包在 `spawn_blocking` 里，
+//! 不占住 runtime 的 worker。
 
 use std::fs;
-use std::io::Read;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -10,12 +13,13 @@ use std::sync::mpsc::Receiver;
 
 use super::cache::{cache_path_in, cache_usable};
 use super::control::Command;
-use super::control::{PlayRequest, PlaybackStatus};
+use super::control::PlayRequest;
+use super::control::PlaybackStatus;
 use super::decode::MediaInput;
 use super::player::set_status;
 
-/// 下载读缓冲大小：64KB——网络流读入的系统调用次数比 8KB 少 8 倍，
-/// 单次拷贝开销可忽略；音频下载是顺序大块读，大缓冲纯收益。
+/// 下载读缓冲大小（已由 `Response::chunk()` 内部缓冲代替，仅保留常量说明）。
+#[allow(dead_code)]
 const DOWNLOAD_BUF_SIZE: usize = 64 * 1024;
 
 /// fetch_to_cache 的失败类型。
@@ -42,16 +46,20 @@ pub(super) fn poll_abort(rx: &Receiver<Command>) -> bool {
 /// 下载/复用缓存，返回可供 symphonia 打开的媒体数据。
 ///
 /// - 缓存命中（存在且大小匹配）→ 直接返回文件路径；
-/// - 否则流式下载（8KB 缓冲）到 `<key>.m4s.part`，完成后原子重命名；
+/// - 否则流式下载（64KB 缓冲）到 `<key>.m4s.part`，完成后原子重命名；
 /// - 403/410/404/5xx 或网络错误 → 依次尝试备用 CDN 地址；
 /// - 目录创建/写盘失败 → 降级为内存缓冲（不崩）；
-/// - 下载期间收到 Stop/Play → `FetchErr::Aborted`。
-pub(super) fn fetch_to_cache(
+/// - 下载期间 `abort()` 返回 true（Stop/新 Play/退出）→ `FetchErr::Aborted`。
+///
+/// 异步函数；播放线程用 [`crate::net::block_on`] 驱动。
+///
+/// `abort` 只要求 `Fn() -> bool`（不要求 Send/Sync）：该 future 在播放线程上用
+/// `block_on` 驱动，不跨线程调度，因此可以安全地借用非 Sync 的命令通道。
+pub(super) async fn fetch_to_cache(
     req: &PlayRequest,
     status: &Mutex<PlaybackStatus>,
     cache_dir: &Path,
-    http: &Option<reqwest::blocking::Client>,
-    rx: &Receiver<Command>,
+    abort: &dyn Fn() -> bool,
 ) -> Result<(MediaInput, bool), FetchErr> {
     if req.local_file.is_some() {
         return Err(FetchErr::Failed(
@@ -61,11 +69,6 @@ pub(super) fn fetch_to_cache(
     if req.urls.is_empty() {
         return Err(FetchErr::Failed("没有可用的音频流地址".into()));
     }
-    let Some(http) = http.as_ref() else {
-        return Err(FetchErr::Failed(
-            "HTTP 客户端初始化失败，无法下载音频".into(),
-        ));
-    };
     let path = cache_path_in(cache_dir, &req.cache_key);
 
     // 1. 缓存命中 → 秒开。
@@ -89,10 +92,14 @@ pub(super) fn fetch_to_cache(
 
     let mut failures: Vec<String> = Vec::new();
     for url in &req.urls {
-        if poll_abort(rx) {
+        if abort() {
             return Err(FetchErr::Aborted);
         }
-        let mut request = http.get(url);
+        let mut request = crate::net::http_client()
+            .get(url)
+            // 总超时兜底：连接后若长期无数据（CDN 挂起/网络黑洞），会永久阻塞；
+            // 给整个请求设上限，超时即报错退出。
+            .timeout(std::time::Duration::from_secs(180));
         for (k, v) in &req.headers {
             if let (Ok(name), Ok(val)) = (
                 reqwest::header::HeaderName::from_bytes(k.as_bytes()),
@@ -101,7 +108,7 @@ pub(super) fn fetch_to_cache(
                 request = request.header(name, val);
             }
         }
-        let resp = match request.send() {
+        let resp = match request.send().await {
             Ok(r) => r,
             Err(e) => {
                 crate::util::log::warn("audio", &format!("流地址请求失败: {e}"));
@@ -127,24 +134,31 @@ pub(super) fn fetch_to_cache(
             crate::util::log::warn("audio", "写盘失败，本次下载降级为内存缓冲");
         }
         let mut reader = resp;
-        let mut buf = vec![0u8; DOWNLOAD_BUF_SIZE];
         let mut downloaded: u64 = 0;
         let started = std::time::Instant::now();
         let mut last_report: u64 = 0;
         let mut read_err: Option<String> = None;
         loop {
-            if poll_abort(rx) {
+            if abort() {
                 out.discard();
                 return Err(FetchErr::Aborted);
             }
-            match reader.read(&mut buf) {
-                Ok(0) => break, // 流结束
-                Ok(n) => {
-                    downloaded += n as u64;
-                    if out.write_all(&buf[..n]).is_err() {
+            // 分块读取。`block_on` 在播放线程上轮询本 future，因此这里的写盘
+            // （阻塞 IO）也只阻塞播放线程，不会占住 runtime 的 worker。
+            let read = match reader.chunk().await {
+                Ok(Some(chunk)) => Ok(chunk.to_vec()),
+                Ok(None) => Ok(Vec::new()), // 流结束
+                Err(e) => Err(format!("读取音频流失败: {e}")),
+            };
+            match read {
+                Ok(chunk) if chunk.is_empty() => break, // 流结束
+                Ok(chunk) => {
+                    downloaded += chunk.len() as u64;
+                    if out.write_all(&chunk).is_err() {
                         // 落盘失败：读回已写部分降级为内存，继续本次下载。
                         crate::util::log::warn("audio", "下载中途写盘失败，剩余数据转入内存缓冲");
-                        out.fallback_to_mem(&buf[..n]);
+                        out.force_mem_mode();
+                        let _ = out.write_all(&chunk);
                     }
                     if downloaded - last_report >= 256 * 1024 {
                         last_report = downloaded;
@@ -153,7 +167,7 @@ pub(super) fn fetch_to_cache(
                     }
                 }
                 Err(e) => {
-                    read_err = Some(format!("读取音频流失败: {e}"));
+                    read_err = Some(e);
                     break;
                 }
             }
@@ -232,15 +246,14 @@ impl DownloadOut {
         }
     }
 
-    /// 落盘失败时调用：读回已写内容转入内存模式，然后写入当前 chunk。
-    fn fallback_to_mem(&mut self, chunk: &[u8]) {
+    /// 落盘失败时调用：把已写内容读回内存（转纯内存模式，后续 chunk 走 `mem`）。
+    fn force_mem_mode(&mut self) {
         if let Some((mut f, p)) = self.file.take() {
             let _ = f.flush();
             drop(f);
             self.mem = fs::read(&p).unwrap_or_default();
             let _ = fs::remove_file(&p);
         }
-        self.mem.extend_from_slice(chunk);
     }
 
     fn discard(&mut self) {

@@ -91,8 +91,8 @@ impl VkSource {
 
 /// 从 vkeys 单个源搜索并取回歌词；未命中/无歌词返回 `None`。
 #[allow(clippy::too_many_arguments)]
-pub(super) fn vkeys_source_fetch(
-    client: &reqwest::blocking::Client,
+pub(super) async fn vkeys_source_fetch(
+    client: &reqwest::Client,
     src: VkSource,
     query: &str,
     title: &str,
@@ -102,12 +102,14 @@ pub(super) fn vkeys_source_fetch(
     let resp = client
         .get(src.search_url())
         .query(&[("word", query), ("page", "1"), ("num", "8")])
+        .timeout(std::time::Duration::from_secs(15))
         .send()
+        .await
         .ok()?;
     if !resp.status().is_success() {
         return None;
     }
-    let items = vkeys_extract_items(&resp.json::<VkeySearchResp>().ok()?);
+    let items = vkeys_extract_items(&resp.json::<VkeySearchResp>().await.ok()?);
     if items.is_empty() {
         return None;
     }
@@ -121,7 +123,7 @@ pub(super) fn vkeys_source_fetch(
     let (best_idx, best) =
         best_match_if_acceptable(&candidates, title, uploader, hint, MIN_ACCEPT_SCORE)?;
     let best_id = vkey_item_id(src, &items[best_idx])?;
-    let lyric = vkeys_lyric_fetch(client, src, &best_id)?;
+    let lyric = vkeys_lyric_fetch(client, src, &best_id).await?;
     let mut ly = build_vkey_lyrics(lyric)?;
     // 带上候选元信息（用于「歌词选择」弹窗显示曲名/歌手）。
     let mut meta = best.clone();
@@ -281,20 +283,22 @@ fn vkey_item_to_candidate(src: VkSource, item: &serde_json::Value) -> Option<Lrc
 }
 
 /// 拉取歌词文本（`mid` / `id`）。
-pub(super) fn vkeys_lyric_fetch(
-    client: &reqwest::blocking::Client,
+pub(super) async fn vkeys_lyric_fetch(
+    client: &reqwest::Client,
     src: VkSource,
     id: &str,
 ) -> Option<VkeyLyricData> {
     let resp = client
         .get(src.lyric_url())
         .query(&[(src.id_param(), id)])
+        .timeout(std::time::Duration::from_secs(15))
         .send()
+        .await
         .ok()?;
     if !resp.status().is_success() {
         return None;
     }
-    resp.json::<VkeyLyricResp>().ok()?.data
+    resp.json::<VkeyLyricResp>().await.ok()?.data
 }
 
 /// 把 vkeys 歌词数据打包成 [`Lyrics`]（合并翻译歌词）。

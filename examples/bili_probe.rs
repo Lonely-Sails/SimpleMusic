@@ -14,6 +14,10 @@
 use simple_music::modules::bilibili::{BiliClient, BiliError};
 
 fn main() {
+    simple_music::net::block_on(run());
+}
+
+async fn run() {
     let input = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "BV1GJ411x7h7".to_string());
@@ -28,7 +32,7 @@ fn main() {
             std::process::exit(1);
         }
     };
-    match client.ensure_buvid() {
+    match client.ensure_buvid().await {
         Ok(()) => {
             let buvid3 = client.session().get("buvid3").unwrap_or("");
             let buvid4 = client.session().get("buvid4").unwrap_or("");
@@ -75,7 +79,7 @@ fn main() {
     let mut bvid =
         BiliClient::parse_bvid_direct(&input).unwrap_or_else(|| input.trim().to_string());
     println!("[view] 目标 BV: {bvid}");
-    let detail = match client.video_info(&bvid) {
+    let detail = match client.video_info(&bvid).await {
         Ok(d) => d,
         Err(BiliError::Api { code, message }) => {
             println!("[view] API code={code} message=\"{message}\"");
@@ -83,7 +87,7 @@ fn main() {
                 // 任务指定视频可能已下架，回退一个确定可用的公开视频继续验证取流链路。
                 bvid = "BV1xx411c7mD".to_string();
                 println!("[view] {bvid} 已不可见，回退公开测试视频 {bvid}");
-                match client.video_info(&bvid) {
+                match client.video_info(&bvid).await {
                     Ok(d) => d,
                     Err(e) => {
                         eprintln!("[view] 回退视频仍失败: {e}");
@@ -110,7 +114,7 @@ fn main() {
 
     // ---- 4. playurl：未签名 vs WBI 签名 ----
     println!("[playurl] 未签名 fnval=16 fourk=1:");
-    match client.fetch_playurl_raw(&bvid, detail.cid, false) {
+    match client.fetch_playurl_raw(&bvid, detail.cid, false).await {
         Ok((http, raw)) => {
             println!("[playurl] HTTP={http} APIcode={}", raw.code);
             if let Some(d) = raw.data.as_ref().and_then(|d| d.dash.as_ref()) {
@@ -138,7 +142,7 @@ fn main() {
     }
 
     println!("[playurl] WBI 签名:");
-    match client.wbi_keys() {
+    match client.wbi_keys().await {
         Ok(keys) => {
             let mix = keys.mixin_key();
             println!("[wbi] img_key={} sub_key={}", keys.img_key, keys.sub_key);
@@ -147,7 +151,7 @@ fn main() {
         Err(e) => println!("[wbi] nav 失败: {e}"),
     }
     let (signed_http, signed_code, signed_audio, signed_url80, signed_bw, signed_codec) =
-        match client.fetch_playurl_raw(&bvid, detail.cid, true) {
+        match client.fetch_playurl_raw(&bvid, detail.cid, true).await {
             Ok((http, raw)) => {
                 let d = raw.data.as_ref().and_then(|d| d.dash.as_ref());
                 let (n, url80, bw, codec) = match d.and_then(|dash| dash.audio.first()) {
@@ -175,7 +179,9 @@ fn main() {
     println!("[playurl] 选中最高码率音频 bandwidth={signed_bw}bps codec={signed_codec}");
 
     // ---- 5. resolve_stream 端到端（含备用 CDN 与必需请求头） ----
-    match client.resolve_stream_with_cid(&bvid, detail.cid, simple_music::state::AudioQuality::High)
+    match client
+        .resolve_stream_with_cid(&bvid, detail.cid, simple_music::state::AudioQuality::High)
+        .await
     {
         Ok(s) => {
             let mut url80 = s.audio_url.clone();
@@ -197,7 +203,10 @@ fn main() {
             }
 
             // 尝试拉流前 1KB（沙箱出口 IP 很可能被 CDN 拒绝，如实报告）。
-            match client.probe_download(&s.audio_url, &s.required_headers, "bytes=0-1023") {
+            match client
+                .probe_download(&s.audio_url, &s.required_headers, "bytes=0-1023")
+                .await
+            {
                 Ok((status, n)) => {
                     println!("[cdn] GET Range 0-1023 -> HTTP {status}, body {n} bytes");
                     if status != 200 && status != 206 {

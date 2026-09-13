@@ -7,25 +7,29 @@ use super::util::dedup_folders;
 
 impl BiliClient {
     /// 列出当前登录用户的全部收藏夹（创建 + 收藏，创建的在前）。
-    pub fn list_favorite_folders(&self) -> BiliResult<Vec<FavFolder>> {
+    pub async fn list_favorite_folders(&self) -> BiliResult<Vec<FavFolder>> {
         let mid = self.mid().ok_or_else(|| BiliError::Api {
             code: -101,
             message: "未登录（缺少 DedeUserID）".into(),
         })?;
-        let mut folders = self.list_folder_pages("created", mid)?;
-        folders.extend(self.list_folder_pages("collected", mid).unwrap_or_default());
+        let mut folders = self.list_folder_pages("created", mid).await?;
+        folders.extend(
+            self.list_folder_pages("collected", mid)
+                .await
+                .unwrap_or_default(),
+        );
         Ok(dedup_folders(folders))
     }
 
     /// 分页拉取一类收藏夹（`api` = created / collected），ps 上限 20，最多翻 50 页。
-    fn list_folder_pages(&self, api: &str, mid: u64) -> BiliResult<Vec<FavFolder>> {
+    async fn list_folder_pages(&self, api: &str, mid: u64) -> BiliResult<Vec<FavFolder>> {
         let mut folders = Vec::new();
         let mut pn: u32 = 1;
         loop {
             let url = format!(
                 "https://api.bilibili.com/x/v3/fav/folder/{api}/list?up_mid={mid}&pn={pn}&ps=20"
             );
-            let (http, env) = self.get_json::<FolderListResp>(&url, &[])?;
+            let (http, env) = self.get_json::<FolderListResp>(&url, &[]).await?;
             let page = if http >= 400 {
                 return Err(BiliError::Api {
                     code: http as i64,
@@ -55,7 +59,7 @@ impl BiliClient {
     }
 
     /// 列出收藏夹资源（type=2 仅视频），返回 `(条目, 收藏夹总数)`。
-    pub fn list_favorite_resources(
+    pub async fn list_favorite_resources(
         &self,
         media_id: i64,
         pn: u32,
@@ -64,7 +68,7 @@ impl BiliClient {
         let url = format!(
             "https://api.bilibili.com/x/v3/fav/resource/list?media_id={media_id}&pn={pn}&ps=20&order=mtime&type=2&platform=web"
         );
-        let data: ResourceListResp = self.get_data(&url, "fav/resource/list")?;
+        let data: ResourceListResp = self.get_data(&url, "fav/resource/list").await?;
         let items = data
             .medias
             .into_iter()

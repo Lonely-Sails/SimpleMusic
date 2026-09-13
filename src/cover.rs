@@ -1,20 +1,19 @@
 //! 封面缩略图系统：异步下载 B 站视频封面 → 解码 → 小尺寸纹理缓存。
 //!
-//! - 后台线程用 reqwest blocking 下载（带 UA；上限 2MB），下载后立即解码 + 居中
-//!   方形裁剪 + 缩略到 96px，结果经 mpsc 回主线程；
+//! - 下载走全局 tokio runtime（[`crate::net`]，不再占用专用 OS 线程），解码（CPU 密集）
+//!   在 `spawn_blocking` 上执行，结果经 mpsc 回主线程；
 //! - 主线程每帧 [`CoverCache::poll`] 排空 channel，存入缓存并注册（lazy）egui 纹理；
-//! - 解码放入后台线程，避免主线程因大量封面解码而卡顿；
-//! - **固定工作线程池**（[`WORKERS`] 个线程从共享任务队列取活）而不是每张封面
-//!   开一个线程：大歌单启动预取上百张封面时不会线程爆炸；
-//! - **共享 HTTP 客户端**：进程内一份（每次下载新建客户端会白白多一次 TLS 握手）；
+//! - **并发有界**：同时最多 [`MAX_IN_FLIGHT`] 张在飞（大歌单启动预取上百张时
+//!   不会一次性发出上百个请求）；
+//! - **共享 HTTP 客户端**：复用 [`crate::net::http_client`]（不再自建客户端与线程）；
 //! - 失败缓存 30 分钟不重试；内存条目上限 400，超出按最久未访问清理 100 条。
 //!
 //! 本模块不依赖项目的主题色板（不 import crate::theme），保持可独立测试。
 
 use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// 缩略图边长（方形裁剪）。
@@ -28,41 +27,31 @@ const MAX_ENTRIES: usize = 400;
 const PRUNE_KEEP: usize = 300;
 /// 失败冷却表的整理阈值：超过这么多条失败记录时顺手清掉已过冷却期的。
 const FAILED_PRUNE_THRESHOLD: usize = 64;
-/// 后台工作线程数：封面是小文件，4 线程足够打满；再多只是无谓的栈内存。
-const WORKERS: usize = 4;
+/// 同时在飞的封面下载上限。
+///
+/// 封面是小文件（≤2MB）、顺序不重要；限制在飞数量可以避免大歌单启动时
+/// 一次性排队上百个请求，也让共享 runtime 的 worker 留给解析/歌词等关键任务。
+const MAX_IN_FLIGHT: usize = 6;
 /// B 站图床也校验 UA（防盗链）。
 const COVER_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
 /// 单个条目的缓存态。
 type CoverImage = Arc<ColorImage>;
 
-/// 一个待下载任务（`request` 投递，工作线程消费）。
+/// 一个待下载任务（`request` 投递，调度器消费）。
 struct CoverJob {
     key: String,
     url: String,
-}
-
-/// 进程内共享的下载客户端。封面是一次性短请求：连接不复用（`pool_max_idle_per_host(0)`），
-/// 但客户端只建一次——每张封面新建客户端意味着每张一次完整 TLS 握手。
-fn shared_http() -> &'static reqwest::blocking::Client {
-    static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
-    CLIENT.get_or_init(|| {
-        reqwest::blocking::Client::builder()
-            .user_agent(COVER_UA)
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(15))
-            .pool_max_idle_per_host(0)
-            .build()
-            .expect("构建封面 HTTP 客户端失败")
-    })
 }
 
 /// 封面缓存（UI 线程持有；`request` 可随时调用，内部自行去重）。
 pub struct CoverCache {
     ctx: egui::Context,
     rx: Receiver<(String, Result<CoverImage, String>)>,
-    /// 任务队列的发送端（工作线程共享接收端；Drop 队列断开 → 工作线程退出）。
-    job_tx: Sender<CoverJob>,
+    /// 结果回传端（派发的异步任务各持一份）。
+    tx: Sender<(String, Result<CoverImage, String>)>,
+    /// 待下载队列（UI 线程推入，`poll` 限流取出派发）。
+    pending: VecDeque<CoverJob>,
     /// key(bvid) -> (解码图(注册纹理后释放), 延迟注册的纹理, 最近访问时间)。
     images: HashMap<String, (Option<CoverImage>, Option<TextureHandle>, Instant)>,
     /// key -> 最近失败时间。
@@ -72,38 +61,43 @@ pub struct CoverCache {
 }
 
 impl CoverCache {
-    /// 用 egui context 创建缓存，并启动 [`WORKERS`] 个固定下载工作线程。
+    /// 用 egui context 创建缓存。
+    ///
+    /// 不启动任何专用线程：下载任务在 [`Self::poll`]（每帧调用）里限流派发到全局
+    /// runtime（[`crate::net::spawn`]），解码在 `spawn_blocking` 上执行。
     pub fn new(ctx: egui::Context) -> Self {
         let (tx, rx) = mpsc::channel();
-        let (job_tx, job_rx) = mpsc::channel::<CoverJob>();
-        let job_rx = Arc::new(Mutex::new(job_rx));
-        for _ in 0..WORKERS {
-            let job_rx = Arc::clone(&job_rx);
-            let tx = tx.clone();
-            std::thread::Builder::new()
-                .name("simple-music-cover".into())
-                .spawn(move || {
-                    loop {
-                        // 队列断开（CoverCache 已销毁）→ 工作线程退出。
-                        let job = { job_rx.lock().ok().and_then(|q| q.recv().ok()) };
-                        let Some(job) = job else { break };
-                        let result = download_cover(&job.key, &job.url).and_then(|bytes| {
-                            decode_cover(&bytes)
-                                .map(Arc::new)
-                                .ok_or_else(|| "封面解码失败".to_string())
-                        });
-                        let _ = tx.send((job.key, result));
-                    }
-                })
-                .expect("启动封面工作线程失败");
-        }
         Self {
             ctx,
             rx,
-            job_tx,
+            tx,
+            pending: VecDeque::new(),
             images: HashMap::new(),
             failed: HashMap::new(),
             in_flight: HashSet::new(),
+        }
+    }
+
+    /// 把 `pending` 里的任务限流派发到全局 runtime（在飞数不超过 [`MAX_IN_FLIGHT`]）。
+    fn dispatch_pending(&mut self) {
+        while self.in_flight.len() < MAX_IN_FLIGHT {
+            let Some(job) = self.pending.pop_front() else {
+                break;
+            };
+            let tx = self.tx.clone();
+            crate::net::spawn(async move {
+                let result = match fetch_cover_bytes(&job.url).await {
+                    Ok(bytes) => crate::net::spawn_blocking(move || {
+                        decode_cover(&bytes)
+                            .map(Arc::new)
+                            .ok_or_else(|| "封面解码失败".to_string())
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("解码任务失败: {e}"))),
+                    Err(e) => Err(e),
+                };
+                let _ = tx.send((job.key, result));
+            });
         }
     }
 
@@ -123,22 +117,16 @@ impl CoverCache {
             self.failed.remove(key); // 过期失败：允许重试
         }
         self.in_flight.insert(key.to_string());
-        // 投递给固定工作线程池（不再每张封面开一个线程）。
-        if self
-            .job_tx
-            .send(CoverJob {
-                key: key.to_string(),
-                url: url.to_string(),
-            })
-            .is_err()
-        {
-            // 队列已断（理论上不发生：job_tx 活着才有这个调用）。
-            self.in_flight.remove(key);
-        }
+        // 入待下载队列；实际派发在 `poll`（限流，不一次性发上百个请求）。
+        self.pending.push_back(CoverJob {
+            key: key.to_string(),
+            url: url.to_string(),
+        });
     }
 
-    /// 每帧调用：排空下载结果，成功入缓存，失败记入失败表。
+    /// 每帧调用：限流派发待下载任务 + 排空下载结果，成功入缓存，失败记入失败表。
     pub fn poll(&mut self) {
+        self.dispatch_pending();
         while let Ok((key, result)) = self.rx.try_recv() {
             self.in_flight.remove(&key);
             match result {
@@ -179,19 +167,23 @@ impl CoverCache {
     }
 }
 
-/// 下载封面（工作线程调用）。用进程内共享客户端；超过上限放弃。
-fn download_cover(key: &str, url: &str) -> Result<Vec<u8>, String> {
-    let client = shared_http();
+/// 异步下载封面字节（工作线程调用）。用全局共享客户端；超过上限放弃。
+async fn fetch_cover_bytes(url: &str) -> Result<Vec<u8>, String> {
+    let client = crate::net::http_client();
     let resp = client
         .get(url)
+        .header(reqwest::header::USER_AGENT, COVER_UA)
+        .timeout(Duration::from_secs(15))
         .send()
-        .map_err(|e| format!("下载封面失败({key}): {e}"))?;
+        .await
+        .map_err(|e| format!("下载封面失败: {e}"))?;
     if !resp.status().is_success() {
-        return Err(format!("下载封面失败({key}): HTTP {}", resp.status()));
+        return Err(format!("下载封面失败: HTTP {}", resp.status()));
     }
     let bytes = resp
         .bytes()
-        .map_err(|e| format!("读取封面失败({key}): {e}"))?;
+        .await
+        .map_err(|e| format!("读取封面失败: {e}"))?;
     if bytes.len() > MAX_IMAGE_BYTES {
         return Err(format!("封面过大({} bytes)，放弃", bytes.len()));
     }
@@ -317,21 +309,21 @@ mod tests {
     #[test]
     #[ignore]
     fn network_cover_decode_real_bilibili_cover() {
-        let client = reqwest::blocking::Client::builder()
-            .user_agent(COVER_UA)
-            .build()
-            .unwrap();
-        let resp = client
-            .get("https://api.bilibili.com/x/web-interface/view?bvid=BV1xx411c7mD")
-            .send()
-            .expect("view 请求失败");
-        let body: serde_json::Value = resp.json().expect("json 解析失败");
+        let client = crate::net::http_client();
+        let resp = crate::net::block_on(
+            client
+                .get("https://api.bilibili.com/x/web-interface/view?bvid=BV1xx411c7mD")
+                .header(reqwest::header::USER_AGENT, COVER_UA)
+                .send(),
+        )
+        .expect("view 请求失败");
+        let body: serde_json::Value = crate::net::block_on(resp.json()).expect("json 解析失败");
         let cover = body["data"]["pic"]
             .as_str()
             .expect("无 pic 字段")
             .to_string();
         eprintln!("[cover] cover_url = {cover}");
-        let bytes = download_cover("BV1xx411c7mD", &cover).expect("封面下载失败");
+        let bytes = crate::net::block_on(fetch_cover_bytes(&cover)).expect("封面下载失败");
         eprintln!("[cover] downloaded {} bytes", bytes.len());
         let img = decode_cover(&bytes).expect("封面解码失败");
         eprintln!("[cover] decoded {}x{}", img.size[0], img.size[1]);

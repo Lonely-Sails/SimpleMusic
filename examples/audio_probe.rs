@@ -24,6 +24,10 @@ use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 
 fn main() {
+    simple_music::net::block_on(run());
+}
+
+async fn run() {
     let input = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "BV1xx411c7mD".to_string());
@@ -37,19 +41,25 @@ fn main() {
             std::process::exit(1);
         }
     };
-    if let Err(e) = client.ensure_buvid() {
+    if let Err(e) = client.ensure_buvid().await {
         eprintln!("[buvid] 获取失败: {e}");
     }
     println!("[login] logged_in={}", client.logged_in());
 
     let bvid = BiliClient::parse_bvid_direct(&input).unwrap_or_else(|| input.trim().to_string());
     println!("[stream] 目标 BV: {bvid}");
-    let stream = match client.resolve_stream(&bvid, simple_music::state::AudioQuality::High) {
+    let stream = match client
+        .resolve_stream(&bvid, simple_music::state::AudioQuality::High)
+        .await
+    {
         Ok(s) => s,
         Err(BiliError::Api { code, message }) if code == -404 => {
             println!("[stream] API code=-404 message=\"{message}\"，回退公开测试视频 BV1GJ411x7h7");
             let fallback = "BV1GJ411x7h7";
-            match client.resolve_stream(fallback, simple_music::state::AudioQuality::High) {
+            match client
+                .resolve_stream(fallback, simple_music::state::AudioQuality::High)
+                .await
+            {
                 Ok(s) => s,
                 Err(e) => {
                     println!("[stream] resolve_stream 失败: {e}");
@@ -81,7 +91,9 @@ fn main() {
         &stream.required_headers,
         2 * 1024 * 1024,
         &partial,
-    ) {
+    )
+    .await
+    {
         Ok(n) => println!(
             "[download] Range 0-{} -> {} bytes -> {}",
             2 * 1024 * 1024 - 1,
@@ -132,7 +144,9 @@ fn main() {
             &stream.required_headers,
             usize::MAX,
             &full,
-        ) {
+        )
+        .await
+        {
             Ok(n) => println!("[download] 完整下载 -> {n} bytes -> {}", full.display()),
             Err(e) => {
                 println!("[download] 完整下载失败: {e}");
@@ -196,25 +210,21 @@ fn main() {
 
 /// 用 StreamUrl 的必需请求头做（可限长的）下载，返回实际写入字节数。
 /// `max_bytes` 为 usize::MAX 表示完整下载（不带 Range 头）。
-fn download_partial(
+async fn download_partial(
     url: &str,
     headers: &[(String, String)],
     max_bytes: usize,
     out: &std::path::Path,
 ) -> Result<usize, String> {
-    let client = reqwest::blocking::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(300))
-        .build()
-        .map_err(|e| format!("HTTP 客户端构建失败: {e}"))?;
-    let mut req = client.get(url);
+    let client = simple_music::net::http_client();
+    let mut req = client.get(url).timeout(Duration::from_secs(300));
     if max_bytes != usize::MAX {
         req = req.header(reqwest::header::RANGE, format!("bytes=0-{}", max_bytes - 1));
     }
     for (k, v) in headers {
         req = req.header(k.as_str(), v.as_str());
     }
-    let mut resp = req.send().map_err(|e| format!("请求失败: {e}"))?;
+    let mut resp = req.send().await.map_err(|e| format!("请求失败: {e}"))?;
     let status = resp.status().as_u16();
     if !resp.status().is_success() {
         return Err(format!(
@@ -231,17 +241,14 @@ fn download_partial(
             .and_then(|v| v.to_str().ok())
     );
     let mut file = std::fs::File::create(out).map_err(|e| format!("创建临时文件失败: {e}"))?;
-    let mut buf = [0u8; 8192];
     let mut total = 0usize;
     loop {
-        let n = resp
-            .read(&mut buf)
-            .map_err(|e| format!("读取流失败: {e}"))?;
-        if n == 0 {
+        let chunk = resp.chunk().await.map_err(|e| format!("读取流失败: {e}"))?;
+        let Some(chunk) = chunk else {
             break;
-        }
-        total += n;
-        std::io::Write::write_all(&mut file, &buf[..n]).map_err(|e| format!("写盘失败: {e}"))?;
+        };
+        total += chunk.len();
+        std::io::Write::write_all(&mut file, &chunk).map_err(|e| format!("写盘失败: {e}"))?;
         if total >= max_bytes {
             break;
         }

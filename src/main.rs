@@ -93,7 +93,7 @@ fn run_smoke() -> i32 {
     match modules::bilibili::BiliClient::new() {
         Ok(mut c) => {
             println!("[smoke] BiliClient::new: OK");
-            match c.ensure_buvid() {
+            match simple_music::net::block_on(c.ensure_buvid()) {
                 Ok(_) => println!("[smoke] ensure_buvid (network): OK"),
                 Err(e) => println!("[smoke] ensure_buvid (network): {e}（不影响后续自检）"),
             }
@@ -124,7 +124,7 @@ fn run_smoke() -> i32 {
     drop(engine);
 
     // 5. LyricsProvider 空探针（一次网络查询，预期 None）。
-    let probe = modules::lyrics::LyricsProvider::fetch("", "");
+    let probe = simple_music::net::block_on(modules::lyrics::LyricsProvider::fetch("", ""));
     println!(
         "[smoke] LyricsProvider empty probe: {}",
         if probe.is_some() {

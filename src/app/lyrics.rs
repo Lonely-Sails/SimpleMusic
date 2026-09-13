@@ -113,12 +113,16 @@ impl MusicApp {
         if let Some(bvid) = self.current_bvid().map(|b| b.to_string()) {
             let cache = self.lyrics_cache.clone();
             let ly = li.clone();
-            // 缓存表更新 + 落盘都在后台线程（磁盘 IO 不进 UI 线程）。
-            std::thread::spawn(move || {
-                if let Ok(mut m) = cache.lock() {
-                    lyrics::cache_update_selected(&mut m, &bvid, ly);
-                    let _ = crate::modules::storage::save_lyrics_cache(&m);
-                }
+            // 缓存表更新 + 落盘都在后台（磁盘 IO 不进 UI 线程）。
+            crate::net::spawn(async move {
+                crate::net::spawn_blocking(move || {
+                    if let Ok(mut m) = cache.lock() {
+                        lyrics::cache_update_selected(&mut m, &bvid, ly);
+                        let _ = crate::modules::storage::save_lyrics_cache(&m);
+                    }
+                })
+                .await
+                .ok();
             });
         }
     }

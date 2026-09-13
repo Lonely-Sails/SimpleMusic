@@ -51,7 +51,9 @@ const LYRICS_SWITCH_WAKE_EARLY: f64 = 0.02;
 pub struct MusicApp {
     // 引擎与客户端
     audio: AudioEngine,
-    bili: Arc<Mutex<BiliClient>>,
+    /// B 站客户端。用 `tokio::sync::Mutex`（而非 std）是因为它的 guard 是 `Send`：
+    /// 后台任务需在持锁状态下 `.await` 多个网络请求，std 的 guard 会让 future 非 Send。
+    bili: Arc<tokio::sync::Mutex<BiliClient>>,
     /// 已解析音频直链缓存（键 `(bvid, 音质)` → `(QueueItem, StreamUrl)`，TTL 10 分钟）。
     /// B 站 playurl 直链带签名会过期，缓存只为「短时间内重复播放」省一次解析；
     /// 超时或下载 403/410 都会强制重新解析（见 `spawn_play_resolve_forced`）。
@@ -178,13 +180,12 @@ impl MusicApp {
         let login_state = bili.logged_in();
         // 后台补齐 buvid3/buvid4 设备指纹（阻塞网络，不能放 UI 线程）：
         // 部分接口缺 buvid 易被 B 站风控 412；失败静默（smoke 之外这是唯一调用点）。
-        let bili = Arc::new(Mutex::new(bili));
+        let bili = Arc::new(tokio::sync::Mutex::new(bili));
         {
             let bili = Arc::clone(&bili);
-            std::thread::spawn(move || {
-                if let Ok(mut c) = bili.lock() {
-                    let _ = c.ensure_buvid();
-                }
+            crate::net::spawn(async move {
+                let mut c = bili.lock().await;
+                let _ = c.ensure_buvid().await;
             });
         }
         let (tx, rx) = mpsc::channel();
