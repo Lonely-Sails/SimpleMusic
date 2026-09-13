@@ -3,8 +3,9 @@
 //! 本文件是薄壳：命令行解析、`--smoke` 模块自检与 eframe 启动；
 //! 全部应用逻辑在库目标 `simple_music`（见 `lib.rs` 的模块地图）。
 
-use simple_music::{app, fonts, modules, state, theme, tray};
+use simple_music::{app, fonts, modules, state, theme, tray, util};
 use state::{Settings, LyricsFont};
+use util::log;
 
 /// 简易命令行/环境变量解析（保持依赖少，不引入 clap）。
 struct LaunchOptions {
@@ -139,6 +140,16 @@ fn run_smoke() -> i32 {
 
 fn main() -> eframe::Result<()> {
     let opts = LaunchOptions::parse();
+    log::info(
+        "app",
+        &format!(
+            "SimpleMusic v{} 启动（{}x{}，SIMPLEMUSIC_LOG={}）",
+            env!("CARGO_PKG_VERSION"),
+            opts.width,
+            opts.height,
+            std::env::var("SIMPLEMUSIC_LOG").as_deref().unwrap_or("info"),
+        ),
+    );
 
     if opts.smoke {
         let code = run_smoke();
@@ -172,12 +183,11 @@ fn main() -> eframe::Result<()> {
             // 主界面恒用内嵌 Noto Sans SC + Phosphor；歌词 family 按设置解析。
             let adopted = fonts::install_fonts(&cc.egui_ctx, &settings.lyrics_font);
             match &adopted {
-                LyricsFont::Specific(p) => println!(
-                    "[font] 界面字体: 内嵌 Noto Sans SC + Phosphor 图标；歌词字体: {p}（桌面歌词）"
+                LyricsFont::Specific(p) => log::info(
+                    "font",
+                    &format!("界面字体: 内嵌 Noto Sans SC + Phosphor；歌词字体: {p}（桌面歌词）"),
                 ),
-                _ => println!(
-                    "[font] 界面字体: 内嵌 Noto Sans SC + Phosphor 图标；歌词字体: 内嵌 Noto Sans SC"
-                ),
+                _ => log::info("font", "界面字体: 内嵌 Noto Sans SC + Phosphor；歌词字体: 内嵌 Noto Sans SC"),
             }
             // 应用深色淡雅主题。
             theme::apply(&cc.egui_ctx);

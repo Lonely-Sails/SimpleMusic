@@ -35,7 +35,7 @@ impl MediaInput {
         }
     }
 
-    fn describe(&self) -> String {
+    pub(super) fn describe(&self) -> String {
         match self {
             MediaInput::File(p) => p.display().to_string(),
             MediaInput::Mem(v) => format!("<内存缓冲 {} 字节>", v.len()),

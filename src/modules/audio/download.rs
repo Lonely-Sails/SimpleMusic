@@ -61,6 +61,10 @@ pub(super) fn fetch_to_cache(
     // 1. 缓存命中 → 秒开。
     if cache_usable(&path, req.expected_size) {
         let len = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        crate::util::log::debug(
+            "audio",
+            &format!("缓存命中: {}（{} 字节）", path.display(), len),
+        );
         set_status(status, |s| {
             s.cache_hit = true;
             s.downloaded_bytes = len;
@@ -90,12 +94,14 @@ pub(super) fn fetch_to_cache(
         let resp = match request.send() {
             Ok(r) => r,
             Err(e) => {
+                crate::util::log::warn("audio", &format!("流地址请求失败: {e}"));
                 failures.push(format!("请求失败: {e}"));
                 continue;
             }
         };
         let code = resp.status().as_u16();
         if !resp.status().is_success() {
+            crate::util::log::warn("audio", &format!("流地址返回 HTTP {code}，换备用地址"));
             failures.push(format!("HTTP {code}"));
             continue; // 403/410/… → 换备用地址
         }
@@ -107,9 +113,13 @@ pub(super) fn fetch_to_cache(
 
         // 输出端：优先落盘，失败降级内存。
         let mut out = DownloadOut::new(dir_ok.then(|| tmp.clone()));
+        if out.is_mem_only() {
+            crate::util::log::warn("audio", "写盘失败，本次下载降级为内存缓冲");
+        }
         let mut reader = resp;
         let mut buf = [0u8; 8192];
         let mut downloaded: u64 = 0;
+        let started = std::time::Instant::now();
         let mut last_report: u64 = 0;
         let mut read_err: Option<String> = None;
         loop {
@@ -123,6 +133,7 @@ pub(super) fn fetch_to_cache(
                     downloaded += n as u64;
                     if out.write_all(&buf[..n]).is_err() {
                         // 落盘失败：读回已写部分降级为内存，继续本次下载。
+                        crate::util::log::warn("audio", "下载中途写盘失败，剩余数据转入内存缓冲");
                         out.fallback_to_mem(&buf[..n]);
                     }
                     if downloaded - last_report >= 256 * 1024 {
@@ -139,10 +150,12 @@ pub(super) fn fetch_to_cache(
         }
         if let Some(e) = read_err {
             out.discard();
+            crate::util::log::warn("audio", &format!("{e}，换备用地址"));
             failures.push(e);
             continue; // 换下一个地址
         }
         // 下载完成：落盘模式原子重命名；内存模式直接用。
+        let mem_only = out.is_mem_only();
         match out.finish(&path) {
             Ok(m) => {
                 let d = downloaded;
@@ -150,6 +163,15 @@ pub(super) fn fetch_to_cache(
                     s.downloaded_bytes = d;
                     s.total_bytes = Some(d);
                 });
+                crate::util::log::info(
+                    "audio",
+                    &format!(
+                        "下载完成: {} 字节，用时 {:.2}s（{}）",
+                        d,
+                        started.elapsed().as_secs_f32(),
+                        if mem_only { "内存缓冲" } else { "已写缓存" },
+                    ),
+                );
                 return Ok((m, false));
             }
             Err(e) => {
@@ -179,6 +201,11 @@ impl DownloadOut {
             file,
             mem: Vec::new(),
         }
+    }
+
+    /// 是否处于纯内存模式（建临时文件失败 = 全程内存缓冲）。
+    fn is_mem_only(&self) -> bool {
+        self.file.is_none()
     }
 
     fn write_all(&mut self, chunk: &[u8]) -> std::io::Result<()> {

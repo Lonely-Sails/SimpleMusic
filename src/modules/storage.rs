@@ -97,11 +97,21 @@ pub fn load_session_from(path: &Path) -> std::io::Result<BiliSession> {
 
 /// 把序列化文本写入指定路径（目录不存在会自动创建）。
 /// 各 `save_*_to` 的公共落盘通道；`mode` 提供时额外收紧文件权限（如会话 0600）。
+/// 写失败统一在此打 ERROR 日志（调用方无需重复打点）。
 fn write_json_at(path: &Path, text: String, mode: Option<u32>) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+        if let Err(e) = fs::create_dir_all(parent) {
+            crate::util::log::error(
+                "storage",
+                &format!("创建目录失败 {}: {e}", parent.display()),
+            );
+            return Err(e);
+        }
     }
-    fs::write(path, text)?;
+    if let Err(e) = fs::write(path, text) {
+        crate::util::log::error("storage", &format!("写文件失败 {}: {e}", path.display()));
+        return Err(e);
+    }
     #[cfg(unix)]
     if let Some(m) = mode {
         use std::os::unix::fs::PermissionsExt;
@@ -196,13 +206,26 @@ pub fn playlists_path() -> PathBuf {
 pub fn load_playlists() -> Vec<Playlist> {
     let path = playlists_path();
     if path.exists() {
-        return load_playlists_from(&path).unwrap_or_default();
+        match load_playlists_from(&path) {
+            Ok(p) => return p,
+            Err(e) => {
+                crate::util::log::warn(
+                    "storage",
+                    &format!("歌单文件解析失败（{}: {e}），回退默认歌单", path.display()),
+                );
+                return Vec::new();
+            }
+        }
     }
     // 尝试从旧版 playlist.json 迁移。
     let legacy = playlist_path();
     if legacy.exists() {
         if let Ok(text) = fs::read_to_string(&legacy) {
             if let Ok(items) = serde_json::from_str::<Vec<QueueItem>>(&text) {
+                crate::util::log::info(
+                    "storage",
+                    &format!("检测到旧版单队列文件，迁移 {} 首歌到默认歌单", items.len()),
+                );
                 let playlist = Playlist::local("默认歌单");
                 let result = vec![Playlist {
                     songs: items,
@@ -261,7 +284,16 @@ pub fn load_lyrics_cache_from(
         Ok(t) => t,
         Err(_) => return BTreeMap::new(),
     };
-    serde_json::from_str(&text).unwrap_or_default()
+    match serde_json::from_str(&text) {
+        Ok(m) => m,
+        Err(e) => {
+            crate::util::log::warn(
+                "storage",
+                &format!("歌词缓存文件损坏（{}: {e}），按空缓存继续", path.display()),
+            );
+            BTreeMap::new()
+        }
+    }
 }
 
 /// 保存歌词缓存到默认路径（目录不存在自动创建；失败由调用方静默处理）。

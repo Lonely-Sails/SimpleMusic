@@ -208,7 +208,7 @@ mod inner {
             ready: std::sync::mpsc::Sender<()>,
         ) {
             if gtk::init().is_err() {
-                eprintln!("[tray] GTK 初始化失败（无显示环境？），托盘不可用");
+                crate::util::log::warn("tray", "GTK 初始化失败（无显示环境？），托盘不可用");
                 let _ = ready.send(());
                 return;
             }
@@ -216,7 +216,7 @@ mod inner {
             let icon = match make_icon() {
                 Ok(i) => i,
                 Err(e) => {
-                    eprintln!("[tray] 生成图标失败: {e}");
+                    crate::util::log::error("tray", &format!("生成图标失败: {e}"));
                     let _ = ready.send(());
                     return;
                 }
@@ -236,17 +236,17 @@ mod inner {
                 Ok(_tray_icon) => {
                     enabled.store(true, Ordering::Relaxed);
                     let _ = ready.send(());
-                    eprintln!("[tray] 托盘图标已就绪");
+                    crate::util::log::info("tray", "托盘图标已就绪");
 
                     // GTK 主循环迭代（非阻塞，配合 shutdown 信号退出）。
                     while !shutdown.load(Ordering::Relaxed) {
                         gtk::main_iteration_do(false);
                         thread::sleep(Duration::from_millis(50));
                     }
-                    eprintln!("[tray] 托盘线程退出");
+                    crate::util::log::debug("tray", "托盘线程退出");
                 }
                 Err(e) => {
-                    eprintln!("[tray] 创建托盘失败: {e}");
+                    crate::util::log::error("tray", &format!("创建托盘失败: {e}"));
                     let _ = ready.send(());
                 }
             }
@@ -283,7 +283,7 @@ mod inner {
                 let icon = match make_icon() {
                     Ok(i) => i,
                     Err(e) => {
-                        eprintln!("[tray] 生成图标失败: {e}");
+                        crate::util::log::error("tray", &format!("生成图标失败: {e}"));
                         return;
                     }
                 };
@@ -297,11 +297,11 @@ mod inner {
                     .build()
                 {
                     Ok(tray) => {
-                        eprintln!("[tray] 托盘图标已就绪");
+                        crate::util::log::info("tray", "托盘图标已就绪");
                         self.icon = Some(tray);
                     }
                     Err(e) => {
-                        eprintln!("[tray] 创建托盘失败: {e}");
+                        crate::util::log::error("tray", &format!("创建托盘失败: {e}"));
                     }
                 }
             }

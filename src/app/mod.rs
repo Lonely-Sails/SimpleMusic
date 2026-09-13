@@ -599,7 +599,7 @@ impl eframe::App for MusicApp {
         self.keepalive_stop
             .store(true, std::sync::atomic::Ordering::Relaxed);
         self.tray.stop();
-        eprintln!("[app] 托盘已关闭，应用退出。");
+        crate::util::log::info("app", "应用退出，资源已清理");
     }
 }
 

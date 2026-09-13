@@ -48,6 +48,7 @@ impl LyricsProvider {
         uploader: &str,
         hint: Option<&SongHint>,
     ) -> Vec<Lyrics> {
+        let started = std::time::Instant::now();
         let client = http_client();
         let queries = search_queries_with_hint(title, uploader, hint);
         let mut out: Vec<Lyrics> = Vec::new();
@@ -98,6 +99,14 @@ impl LyricsProvider {
                 push_unique_lyrics(&mut out, lyrics_from(&res));
             }
         }
+        crate::util::log::info(
+            "lyrics",
+            &format!(
+                "歌词抓取完成: 「{title}」 候选 {} 条，用时 {:.2}s",
+                out.len(),
+                started.elapsed().as_secs_f32()
+            ),
+        );
         out
     }
 }
@@ -144,12 +153,18 @@ fn http_client() -> reqwest::blocking::Client {
 
 /// LRCLIB 搜索：`GET /api/search?q=…`，命中为空或失败返回 `None`。
 fn search(client: &reqwest::blocking::Client, query: &str) -> Option<Vec<LrcSearchResult>> {
-    let resp = client
-        .get(LRCLIB_SEARCH)
-        .query(&[("q", query)])
-        .send()
-        .ok()?;
+    let resp = match client.get(LRCLIB_SEARCH).query(&[("q", query)]).send() {
+        Ok(r) => r,
+        Err(e) => {
+            crate::util::log::warn("lyrics", &format!("LRCLIB 搜索失败: {e}"));
+            return None;
+        }
+    };
     if !resp.status().is_success() {
+        crate::util::log::debug(
+            "lyrics",
+            &format!("LRCLIB 搜索 HTTP {}", resp.status()),
+        );
         return None;
     }
     resp.json::<Vec<LrcSearchResult>>().ok()
@@ -157,12 +172,19 @@ fn search(client: &reqwest::blocking::Client, query: &str) -> Option<Vec<LrcSear
 
 /// LRCLIB 精确 `GET /api/get?artist_name=..&track_name=..`，未命中/失败返回 `None`。
 fn get(client: &reqwest::blocking::Client, artist: &str, track: &str) -> Option<LrcSearchResult> {
-    let resp = client
+    let resp = match client
         .get(LRCLIB_GET)
         .query(&[("artist_name", artist), ("track_name", track)])
         .send()
-        .ok()?;
+    {
+        Ok(r) => r,
+        Err(e) => {
+            crate::util::log::warn("lyrics", &format!("LRCLIB 精确查询失败: {e}"));
+            return None;
+        }
+    };
     if !resp.status().is_success() {
+        crate::util::log::debug("lyrics", &format!("LRCLIB 精确查询 HTTP {}", resp.status()));
         return None;
     }
     resp.json::<LrcSearchResult>().ok()

@@ -160,6 +160,7 @@ impl BiliClient {
             return self.build_stream_url(http, raw, false, bvid, quality);
         }
         // 第二次：带 WBI 签名重试。
+        crate::util::log::debug("bilibili", "playurl 未签名请求不可用，补 WBI 签名重试");
         let (http2, raw2) = self.fetch_playurl_raw(bvid, cid, true)?;
         self.build_stream_url(http2, raw2, true, bvid, quality)
     }
@@ -270,6 +271,15 @@ impl BiliClient {
             let best = pick_dash_audio(&dash.audio, quality)
                 .expect("audio 非空已检查")
                 .clone();
+            crate::util::log::debug(
+                "bilibili",
+                &format!(
+                    "取流成功(DASH): 音质 id={} 码率={}kbps 备用地址 {} 个",
+                    best.id,
+                    best.bandwidth / 1000,
+                    best.backup_url.len()
+                ),
+            );
             // 视频流：纯听歌可不取，这里带出最高清视频 url 供后续 MV 模式用。
             let video = dash
                 .video

@@ -52,6 +52,7 @@ pub(super) fn worker_loop(
     let mut session: Option<PlayerSession> = None;
     let mut volume = initial_volume;
     set_status(&status, |s| s.volume = volume);
+    log_worker_started(&cache_dir);
 
     // HTTP 客户端只建一次；失败则所有下载报错（不影响本地文件播放）。
     // 总超时兜底：连接后若长期无数据（CDN 挂起/网络黑洞），blocking read 会永久阻塞，
@@ -80,6 +81,10 @@ pub(super) fn worker_loop(
 
         match cmd {
             Some(Command::Play(req)) => {
+                crate::util::log::info(
+                    "audio",
+                    &format!("开始加载: {}（{} 个流地址）", req.cache_key, req.urls.len()),
+                );
                 // 丢弃旧会话，重置状态（保留音量）。
                 session = None;
                 set_status(&status, |s| {
@@ -98,6 +103,10 @@ pub(super) fn worker_loop(
                             s.duration_secs = duration;
                             s.error = None;
                         });
+                        crate::util::log::info(
+                            "audio",
+                            &format!("播放开始: {} 采样率={sample_rate} 时长={duration:.1}s", req.cache_key),
+                        );
                         session = Some(PlayerSession {
                             _stream: stream,
                             sink,
@@ -108,13 +117,15 @@ pub(super) fn worker_loop(
                     Err(LoadErr::Aborted) => {
                         // 被新命令打断：不加错误，交给下一条命令。
                         set_status(&status, |s| s.loading = false);
+                        crate::util::log::debug("audio", "加载被打断（新命令抢占）");
                     }
                     Err(LoadErr::Failed(e)) => {
                         set_status(&status, |s| {
                             s.loading = false;
                             s.playing = false;
-                            s.error = Some(e);
+                            s.error = Some(e.clone());
                         });
+                        crate::util::log::error("audio", &format!("加载失败: {e}"));
                     }
                 }
             }
@@ -214,6 +225,10 @@ fn load_and_play(
             Err(FetchErr::Failed(e)) => return Err(LoadErr::Failed(e)),
         }
     };
+    crate::util::log::debug(
+        "audio",
+        &format!("媒体就绪: {}（{}）", input.describe(), if was_cached { "缓存命中" } else { "新下载" }),
+    );
 
     // 2. 解码器。缓存命中的文件若解码失败，可能是缓存损坏：删除后重下载一次。
     let source = match SymphoniaSource::new(input.clone()) {
@@ -223,6 +238,10 @@ fn load_and_play(
                 return Err(LoadErr::Failed(e));
             }
             let cached = cache_path_in(cache_dir, &req.cache_key);
+            crate::util::log::warn(
+                "audio",
+                &format!("缓存文件解码失败，删除后重新下载: {}", cached.display()),
+            );
             let _ = fs::remove_file(&cached);
             match fetch_to_cache(req, status, cache_dir, http, rx) {
                 Ok((m, _)) => {
@@ -257,4 +276,12 @@ fn load_and_play(
     sink.set_volume(volume);
     sink.append(source);
     Ok((stream, sink, shared, sample_rate, duration))
+}
+
+/// 专用播放线程主循环入口的日志包装（线程名 + 缓存目录，只打一条）。
+pub(super) fn log_worker_started(cache_dir: &Path) {
+    crate::util::log::debug(
+        "audio",
+        &format!("音频线程已启动（缓存目录 {}）", cache_dir.display()),
+    );
 }

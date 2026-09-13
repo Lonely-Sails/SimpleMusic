@@ -183,6 +183,7 @@ impl BiliClient {
                 .join("&");
             url = format!("{url}{sep}{qs}");
         }
+        let started = Instant::now();
         let resp = self
             .http
             .get(&url)
@@ -190,6 +191,16 @@ impl BiliClient {
             .send()?;
         let status = resp.status().as_u16();
         let text = resp.text()?;
+        // 诊断日志只记路径（query 里是 WBI 签名等长参数，无诊断价值）。
+        crate::util::log::debug(
+            "bilibili",
+            &format!(
+                "GET {} -> {status}（{:.0}ms，{} 字节）",
+                url_path(&url),
+                started.elapsed().as_secs_f32() * 1000.0,
+                text.len()
+            ),
+        );
         let env: ApiEnvelope<T> = serde_json::from_str(&text).map_err(|e| {
             BiliError::Local(format!("响应解析失败({url}): {e}; body[:200]={}", &text[..text.len().min(200)]))
         })?;
@@ -205,12 +216,17 @@ impl BiliClient {
     /// 校验信封 code==0 并取出 data。
     fn unwrap_api<T>(http: u16, env: ApiEnvelope<T>, api: &str) -> BiliResult<T> {
         if http >= 400 {
+            crate::util::log::warn("bilibili", &format!("{api} HTTP {http}"));
             return Err(BiliError::Api {
                 code: http as i64,
                 message: format!("{api} HTTP {http}"),
             });
         }
         if env.code != 0 {
+            crate::util::log::warn(
+                "bilibili",
+                &format!("{api} 业务错误 code={} {}", env.code, env.message),
+            );
             return Err(BiliError::Api {
                 code: env.code,
                 message: env.message,
@@ -235,4 +251,13 @@ pub(super) fn parse_query_params(url: &str) -> Vec<(String, String)> {
             Some((k.to_string(), v.to_string()))
         })
         .collect()
+}
+
+/// 取 URL 的「域名 + 路径」片段（日志用：不带 query/fragment）。
+fn url_path(url: &str) -> &str {
+    let no_scheme = url.split("://").nth(1).unwrap_or(url);
+    let end = no_scheme
+        .find(['?', '#'])
+        .unwrap_or(no_scheme.len());
+    no_scheme[..end].trim_end_matches('/')
 }

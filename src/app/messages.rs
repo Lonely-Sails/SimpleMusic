@@ -240,11 +240,28 @@ impl MusicApp {
             self.pending_import = false;
             self.import_seq = None;
         }
+        crate::util::log::debug("app", &format!("后台解析播放: {bvid}（seq={seq}）"));
         let bili = self.bili.clone();
         let tx = self.tx.clone();
         let quality = self.settings.audio_quality;
         std::thread::spawn(move || {
+            let started = std::time::Instant::now();
             let result = resolve_playable(&bili, &bvid, quality);
+            match &result {
+                Ok((item, _)) => crate::util::log::info(
+                    "app",
+                    &format!(
+                        "解析完成: {}《{}》用时 {:.2}s",
+                        bvid,
+                        item.title,
+                        started.elapsed().as_secs_f32()
+                    ),
+                ),
+                Err(e) => crate::util::log::error(
+                    "app",
+                    &format!("解析失败: {bvid}（{e}）"),
+                ),
+            }
             let _ = tx.send(AsyncMsg::PlayReady { seq, result });
         });
     }
@@ -323,6 +340,7 @@ impl MusicApp {
             });
             if let Some(entry) = cached {
                 if entry.selected.is_some() || !entry.candidates.is_empty() {
+                    crate::util::log::debug("lyrics", &format!("歌词缓存命中: {key}"));
                     let _ = tx.send(AsyncMsg::LyricsFetched {
                         key,
                         candidates: entry.candidates,
@@ -333,6 +351,7 @@ impl MusicApp {
             }
 
             // 2) 未命中：识别音乐 → 多源搜索。
+            crate::util::log::debug("lyrics", &format!("歌词缓存未命中，发起在线抓取: {key}"));
             let hint = bili
                 .lock()
                 .ok()
@@ -346,7 +365,10 @@ impl MusicApp {
                 if let Ok(mut m) = cache.lock() {
                     lyrics::cache_store_fetch(&mut m, &key, selected.clone(), candidates.clone());
                     // 落盘就在本线程做（本就是后台线程）；失败静默，只丢缓存不丢功能。
-                    let _ = crate::modules::storage::save_lyrics_cache(&m);
+                    match crate::modules::storage::save_lyrics_cache(&m) {
+                        Ok(_) => crate::util::log::debug("lyrics", "歌词缓存已落盘"),
+                        Err(e) => crate::util::log::warn("lyrics", &format!("歌词缓存落盘失败: {e}")),
+                    }
                 }
             }
             let _ = tx.send(AsyncMsg::LyricsFetched {
@@ -379,6 +401,7 @@ impl MusicApp {
                 self.login_state = true;
                 self.uname = None;
                 self.login_status = format!("已登录，mid={mid}");
+                crate::util::log::info("app", "B 站扫码登录成功");
                 self.fav_initiated = false;
                 // 若当前活跃歌单是在线收藏夹，登录后恢复其选中（避免跳回第一个）。
                 self.restore_favorites_selection();
@@ -392,6 +415,7 @@ impl MusicApp {
                 self.login_running = false;
                 self.login_visible = false;
                 self.login_stop.store(true, AtomicOrdering::Relaxed);
+                crate::util::log::warn("app", &format!("登录失败: {msg}"));
                 self.error(format!("登录失败: {msg}"));
             }
             AsyncMsg::UserInfo { uname, face } => {

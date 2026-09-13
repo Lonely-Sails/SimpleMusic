@@ -117,16 +117,16 @@ fn resolve_lyrics_font(font: &LyricsFont) -> (Vec<u8>, LyricsFont) {
         LyricsFont::Specific(path) => match std::fs::read(path) {
             Ok(bytes) if font_file_is_loadable(&bytes) => (bytes, font.clone()),
             Ok(_) => {
-                eprintln!(
-                    "[font] 歌词字体 {path} 无法解析（egui 不支持该格式），回退内嵌 Noto Sans SC",
-                    path = path
+                crate::util::log::warn(
+                    "font",
+                    &format!("歌词字体 {path} 无法解析（egui 不支持该格式），回退内嵌 Noto Sans SC"),
                 );
                 (NOTO_SC_BYTES.to_vec(), LyricsFont::Embedded)
             }
             Err(e) => {
-                eprintln!(
-                    "[font] 歌词字体 {path} 读取失败（{e}），回退内嵌 Noto Sans SC",
-                    path = path
+                crate::util::log::warn(
+                    "font",
+                    &format!("歌词字体 {path} 读取失败（{e}），回退内嵌 Noto Sans SC"),
                 );
                 (NOTO_SC_BYTES.to_vec(), LyricsFont::Embedded)
             }
@@ -395,13 +395,16 @@ pub fn load_system_font() -> Option<(PathBuf, Vec<u8>)> {
         let p = PathBuf::from(p);
         match std::fs::read(&p) {
             Ok(bytes) if font_file_is_suitable(&bytes) => return Some((p, bytes)),
-            Ok(_) => eprintln!(
-                "[font] SIMPLEMUSIC_FONT 指定的 {} 无法用作界面字体（解析失败或缺少拉丁/汉字覆盖），改用自动探测",
-                p.display()
+            Ok(_) => crate::util::log::warn(
+                "font",
+                &format!(
+                    "SIMPLEMUSIC_FONT 指定的 {} 无法用作界面字体（解析失败或缺少拉丁/汉字覆盖），改用自动探测",
+                    p.display()
+                ),
             ),
-            Err(e) => eprintln!(
-                "[font] SIMPLEMUSIC_FONT 指定的 {} 读取失败（{e}），改用自动探测",
-                p.display()
+            Err(e) => crate::util::log::warn(
+                "font",
+                &format!("SIMPLEMUSIC_FONT 指定的 {} 读取失败（{e}），改用自动探测", p.display()),
             ),
         }
     }
