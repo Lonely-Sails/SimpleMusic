@@ -3330,6 +3330,7 @@ dependencies = [
  "eframe",
  "gtk",
  "image",
+ "libc",
  "md5",
  "qrcode",
  "reqwest",

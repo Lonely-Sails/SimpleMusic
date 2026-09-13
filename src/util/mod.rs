@@ -7,8 +7,8 @@
 //! - `rand`：极简随机数（Xorshift，不引入 rand crate）。
 //! - `filter`：歌曲搜索过滤。
 //! - `text`：文本净化（过滤内嵌字体渲染不出的 emoji/PUA/零宽等字符）。
-//! - `log`：极简分级日志（stderr，级别经 `SIMPLEMUSIC_LOG` 控制；唯一例外——
-//!   它写 stderr 但无外部依赖，放在 util 是为了全层可用）。
+//! - `log`：极简分级日志（stderr，格式 `时间 [级别] 模块 | 消息`，级别经
+//!   `SIMPLEMUSIC_LOG` 控制；唯一例外——它写 stderr 但无外部依赖，放在 util 是为了全层可用）。
 
 pub mod filter;
 pub mod fmt;

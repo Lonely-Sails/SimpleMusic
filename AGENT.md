@@ -105,7 +105,7 @@ src/
 ├── icons.rs          图标：内嵌 Phosphor 图标字体（PUA 码点），不依赖 emoji/系统字形
 ├── cover.rs          封面缩略图：后台下载 + 解码（不在主线程）→ egui 纹理缓存（失败 30 分钟冷却）
 ├── fonts.rs          字体：主界面恒内嵌 Noto Sans SC + Phosphor；桌面歌词专用 family（设置可选系统字体）+ 缺字净化
-├── util/             fmt.rs(format_secs) / rand.rs(rand_idx) / filter.rs(song_matches_query) / text.rs(sanitize_ui_text 缺字过滤)
+├── util/             fmt.rs(format_secs) / rand.rs(rand_idx) / filter.rs(song_matches_query) / text.rs(sanitize_ui_text 缺字过滤) / log.rs(分级日志)
 └── tray.rs           系统托盘（feature=tray）：Linux=GTK 线程；macOS/Win=原生；无 feature 时 no-op 桩
 ```
 
