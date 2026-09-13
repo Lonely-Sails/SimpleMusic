@@ -6,7 +6,6 @@ use std::io::Read;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
-use std::sync::Arc;
 use std::sync::Mutex;
 
 use super::cache::{cache_path_in, cache_usable};
@@ -15,6 +14,9 @@ use super::control::Command;
 use super::decode::MediaInput;
 use super::player::set_status;
 
+/// 下载读缓冲大小：64KB——网络流读入的系统调用次数比 8KB 少 8 倍，
+/// 单次拷贝开销可忽略；音频下载是顺序大块读，大缓冲纯收益。
+const DOWNLOAD_BUF_SIZE: usize = 64 * 1024;
 
 /// fetch_to_cache 的失败类型。
 pub(super) enum FetchErr {
@@ -117,7 +119,7 @@ pub(super) fn fetch_to_cache(
             crate::util::log::warn("audio", "写盘失败，本次下载降级为内存缓冲");
         }
         let mut reader = resp;
-        let mut buf = [0u8; 8192];
+        let mut buf = vec![0u8; DOWNLOAD_BUF_SIZE];
         let mut downloaded: u64 = 0;
         let started = std::time::Instant::now();
         let mut last_report: u64 = 0;
@@ -251,7 +253,10 @@ impl DownloadOut {
         if self.mem.is_empty() {
             return Err("音频流内容为空".into());
         }
-        Ok(MediaInput::Mem(Arc::from(std::mem::take(&mut self.mem))))
+        // Vec → Arc<[u8]>：把容量冗余 shrink 掉后零拷贝转共享切片，
+        // 内存模式整首歌都驻留内存，容量按实际字节数对齐。
+        let vec = std::mem::take(&mut self.mem);
+        Ok(MediaInput::Mem(vec.into()))
     }
 }
 

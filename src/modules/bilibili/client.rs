@@ -58,6 +58,10 @@ impl BiliClient {
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(20))
             .redirect(reqwest::redirect::Policy::limited(10))
+            // 空闲连接上限：API 请求是短平快的小包，几个常驻连接足够；
+            // 30s 无复用即断开，避免 CDN/API 连接常驻内存。
+            .pool_max_idle_per_host(4)
+            .pool_idle_timeout(Duration::from_secs(30))
             .build()?;
         Ok(Self {
             http,

@@ -4,6 +4,9 @@
 //!   方形裁剪 + 缩略到 96px，结果经 mpsc 回主线程；
 //! - 主线程每帧 [`CoverCache::poll`] 排空 channel，存入缓存并注册（lazy）egui 纹理；
 //! - 解码放入后台线程，避免主线程因大量封面解码而卡顿；
+//! - **固定工作线程池**（[`WORKERS`] 个线程从共享任务队列取活）而不是每张封面
+//!   开一个线程：大歌单启动预取上百张封面时不会线程爆炸；
+//! - **共享 HTTP 客户端**：进程内一份（每次下载新建客户端会白白多一次 TLS 握手）；
 //! - 失败缓存 30 分钟不重试；内存条目上限 400，超出按最久未访问清理 100 条。
 //!
 //! 本模块不依赖项目的主题色板（不 import crate::theme），保持可独立测试。
@@ -11,7 +14,7 @@
 use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// 缩略图边长（方形裁剪）。
@@ -23,20 +26,45 @@ const FAILED_RETRY_AFTER: Duration = Duration::from_secs(30 * 60);
 /// 内存缓存上限与清理后保留数。
 const MAX_ENTRIES: usize = 400;
 const PRUNE_KEEP: usize = 300;
+/// 失败冷却表的整理阈值：超过这么多条失败记录时顺手清掉已过冷却期的。
+const FAILED_PRUNE_THRESHOLD: usize = 64;
+/// 后台工作线程数：封面是小文件，4 线程足够打满；再多只是无谓的栈内存。
+const WORKERS: usize = 4;
 /// B 站图床也校验 UA（防盗链）。
 const COVER_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
 /// 单个条目的缓存态。
 type CoverImage = Arc<ColorImage>;
 
+/// 一个待下载任务（`request` 投递，工作线程消费）。
+struct CoverJob {
+    key: String,
+    url: String,
+}
+
+/// 进程内共享的下载客户端。封面是一次性短请求：连接不复用（`pool_max_idle_per_host(0)`），
+/// 但客户端只建一次——每张封面新建客户端意味着每张一次完整 TLS 握手。
+fn shared_http() -> &'static reqwest::blocking::Client {
+    static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::blocking::Client::builder()
+            .user_agent(COVER_UA)
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(15))
+            .pool_max_idle_per_host(0)
+            .build()
+            .expect("构建封面 HTTP 客户端失败")
+    })
+}
+
 /// 封面缓存（UI 线程持有；`request` 可随时调用，内部自行去重）。
 pub struct CoverCache {
     ctx: egui::Context,
-    /// 后台线程发回已解码的 `ColorImage`（Arc 共享，零拷贝）。
-    tx: Sender<(String, Result<CoverImage, String>)>,
     rx: Receiver<(String, Result<CoverImage, String>)>,
-    /// key(bvid) -> (解码图, 延迟注册的纹理, 最近访问时间)。
-    images: HashMap<String, (CoverImage, Option<TextureHandle>, Instant)>,
+    /// 任务队列的发送端（工作线程共享接收端；Drop 队列断开 → 工作线程退出）。
+    job_tx: Sender<CoverJob>,
+    /// key(bvid) -> (解码图(注册纹理后释放), 延迟注册的纹理, 最近访问时间)。
+    images: HashMap<String, (Option<CoverImage>, Option<TextureHandle>, Instant)>,
     /// key -> 最近失败时间。
     failed: HashMap<String, Instant>,
     /// 正在下载中的 key。
@@ -44,13 +72,34 @@ pub struct CoverCache {
 }
 
 impl CoverCache {
-    /// 用 egui context 创建缓存。context 仅用于延迟注册纹理。
+    /// 用 egui context 创建缓存，并启动 [`WORKERS`] 个固定下载工作线程。
     pub fn new(ctx: egui::Context) -> Self {
         let (tx, rx) = mpsc::channel();
+        let (job_tx, job_rx) = mpsc::channel::<CoverJob>();
+        let job_rx = Arc::new(Mutex::new(job_rx));
+        for _ in 0..WORKERS {
+            let job_rx = Arc::clone(&job_rx);
+            let tx = tx.clone();
+            std::thread::Builder::new()
+                .name("simple-music-cover".into())
+                .spawn(move || loop {
+                    // 队列断开（CoverCache 已销毁）→ 工作线程退出。
+                    let job = { job_rx.lock().ok().and_then(|q| q.recv().ok()) };
+                    let Some(job) = job else { break };
+                    let result = download_cover(&job.key, &job.url)
+                        .and_then(|bytes| {
+                            decode_cover(&bytes)
+                                .map(Arc::new)
+                                .ok_or_else(|| "封面解码失败".to_string())
+                        });
+                    let _ = tx.send((job.key, result));
+                })
+                .expect("启动封面工作线程失败");
+        }
         Self {
             ctx,
-            tx,
             rx,
+            job_tx,
             images: HashMap::new(),
             failed: HashMap::new(),
             in_flight: HashSet::new(),
@@ -73,18 +122,18 @@ impl CoverCache {
             self.failed.remove(key); // 过期失败：允许重试
         }
         self.in_flight.insert(key.to_string());
-        let tx = self.tx.clone();
-        let key = key.to_string();
-        let url = url.to_string();
-        std::thread::spawn(move || {
-            let result = download_cover(&key, &url)
-                .and_then(|bytes| {
-                    decode_cover(&bytes)
-                        .map(Arc::new)
-                        .ok_or_else(|| "封面解码失败".to_string())
-                });
-            let _ = tx.send((key, result));
-        });
+        // 投递给固定工作线程池（不再每张封面开一个线程）。
+        if self
+            .job_tx
+            .send(CoverJob {
+                key: key.to_string(),
+                url: url.to_string(),
+            })
+            .is_err()
+        {
+            // 队列已断（理论上不发生：job_tx 活着才有这个调用）。
+            self.in_flight.remove(key);
+        }
     }
 
     /// 每帧调用：排空下载结果，成功入缓存，失败记入失败表。
@@ -93,31 +142,34 @@ impl CoverCache {
             self.in_flight.remove(&key);
             match result {
                 Ok(img) => {
-                    self.images.insert(
-                        key,
-                        (img, None, Instant::now()),
-                    );
-                    prune_oldest(
-                        &mut self.images,
-                        MAX_ENTRIES,
-                        PRUNE_KEEP,
-                    );
+                    self.images.insert(key, (Some(img), None, Instant::now()));
+                    prune_oldest(&mut self.images, MAX_ENTRIES, PRUNE_KEEP);
                 }
-                Err(_) => {
+                Err(e) => {
+                    crate::util::log::warn("cover", &format!("封面加载失败 {key}: {e}"));
                     self.failed.insert(key, Instant::now());
                 }
             }
         }
+        // 失败冷却表攒多了顺手整理一次（已过冷却期的条目没有保留价值）。
+        if self.failed.len() > FAILED_PRUNE_THRESHOLD {
+            let now = Instant::now();
+            self.failed.retain(|_, t| is_failed_active(*t, now));
+        }
     }
 
-    /// 获取（或延迟创建）egui 纹理 id。
+    /// 获取（或延迟创建）egui 纹理 id。纹理注册后立即释放解码缓冲——
+    /// egui 的纹理管理器自留一份 CPU 拷贝，我们再留一份纯属双倍内存。
     pub fn texture(&mut self, key: &str) -> Option<egui::TextureId> {
         let entry = self.images.get_mut(key)?;
         entry.2 = Instant::now();
         if entry.1.is_none() {
+            let Some(img) = entry.0.take() else {
+                return None;
+            };
             let handle = self.ctx.load_texture(
                 format!("simple-music-cover:{key}"),
-                (*entry.0).clone(),
+                (*img).clone(),
                 TextureOptions::LINEAR,
             );
             entry.1 = Some(handle);
@@ -126,13 +178,9 @@ impl CoverCache {
     }
 }
 
-/// 下载封面（后台线程调用）。带 UA；超过上限放弃。
+/// 下载封面（工作线程调用）。用进程内共享客户端；超过上限放弃。
 fn download_cover(key: &str, url: &str) -> Result<Vec<u8>, String> {
-    let client = reqwest::blocking::Client::builder()
-        .user_agent(COVER_UA)
-        .timeout(Duration::from_secs(15))
-        .build()
-        .map_err(|e| format!("http 客户端构建失败: {e}"))?;
+    let client = shared_http();
     let resp = client
         .get(url)
         .send()
@@ -237,12 +285,24 @@ mod tests {
 
     #[test]
     fn request_skips_bad_input() {
-        // request 不立刻网络请求（线程异步），只要不 panic 且 in_flight 正确标记即可。
-        // 空 url 不应入 in_flight；直接验证逻辑分支。
+        // request 不立刻网络请求（任务进队列由工作线程消费），
+        // 空 url 不应入队；直接验证逻辑分支。
         let ctx = egui::Context::default();
         let mut cc = CoverCache::new(ctx);
         cc.request("BV1", "");
         assert!(cc.in_flight.is_empty());
+    }
+
+    #[test]
+    fn request_dedups_and_enqueues() {
+        let ctx = egui::Context::default();
+        let mut cc = CoverCache::new(ctx);
+        cc.request("BV1", "https://example.com/a.jpg");
+        assert!(cc.in_flight.contains("BV1"), "首次请求应入队");
+        // 已在下载中：不重复入队。
+        cc.request("BV1", "https://example.com/a.jpg");
+        // 已缓存/失败分支在 poll 侧，这里只验证 in_flight 去重不 panic。
+        assert_eq!(cc.in_flight.len(), 1);
     }
 
     /// 真实网络验证：B 站公开视频 → view 接口封面 URL → 下载 → 解码。

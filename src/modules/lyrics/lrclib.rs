@@ -147,6 +147,9 @@ fn http_client() -> reqwest::blocking::Client {
         .user_agent(LRCLIB_UA)
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(15))
+        // 歌词请求是低频小请求：连接池只保留 2 个空闲连接、30s 不用即断。
+        .pool_max_idle_per_host(2)
+        .pool_idle_timeout(Duration::from_secs(30))
         .build()
         .expect("构建 LRCLIB HTTP 客户端失败")
 }
