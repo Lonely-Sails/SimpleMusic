@@ -13,23 +13,31 @@ use eframe::egui::{
 // 语义色板（低饱和、淡雅）
 // ===========================================================================
 
-/// 窗口底（中央内容区）
-pub const BG_WINDOW: Color32 = Color32::from_rgb(0x15, 0x1A, 0x21);
-/// 面板/列表底（顶部栏、左侧队列、底部播放条）
-pub const BG_PANEL: Color32 = Color32::from_rgb(0x20, 0x26, 0x2E);
+/// 窗口底（中央内容区，全窗最暗层）
+pub const BG_WINDOW: Color32 = Color32::from_rgb(0x12, 0x16, 0x1C);
+/// 面板/列表底（顶部栏、歌单栏、底部播放条）
+pub const BG_PANEL: Color32 = Color32::from_rgb(0x1B, 0x21, 0x29);
 /// 卡片/条目底（按钮、输入框、队列条目）
-pub const BG_CARD: Color32 = Color32::from_rgb(0x26, 0x2D, 0x37);
+pub const BG_CARD: Color32 = Color32::from_rgb(0x24, 0x2B, 0x35);
 /// 悬停底（hover 亮一档）
-pub const BG_HOVER: Color32 = Color32::from_rgb(0x2C, 0x35, 0x40);
+pub const BG_HOVER: Color32 = Color32::from_rgb(0x2E, 0x37, 0x43);
 /// 激活/按下底
-pub const BG_ACTIVE: Color32 = Color32::from_rgb(0x32, 0x3C, 0x49);
+pub const BG_ACTIVE: Color32 = Color32::from_rgb(0x36, 0x41, 0x4F);
 /// 滑块轨道底（未播段低对比灰蓝）
 pub const BG_TRACK: Color32 = Color32::from_rgb(0x2A, 0x33, 0x3E);
+/// 输入框/搜索框底（比卡片更暗一档，凹陷感）
+pub const BG_INPUT: Color32 = Color32::from_rgb(0x1A, 0x20, 0x28);
+/// 输入框/搜索框悬停底
+pub const BG_INPUT_HOVER: Color32 = Color32::from_rgb(0x20, 0x27, 0x31);
 
 /// 主点缀色（雾青蓝，低饱和）
 pub const ACCENT: Color32 = Color32::from_rgb(0x7F, 0xA8, 0xC9);
 /// 点缀色 hover 亮一档
-pub const ACCENT_HOVER: Color32 = Color32::from_rgb(0x8F, 0xB8, 0xD0);
+pub const ACCENT_HOVER: Color32 = Color32::from_rgb(0x93, 0xBC, 0xD8);
+/// 点缀色按下（暗一档）
+pub const ACCENT_ACTIVE: Color32 = Color32::from_rgb(0x6B, 0x93, 0xB4);
+/// 点缀色的低饱和填充（选中行底色：暗底里透一点雾青，比纯灰更有归属感）
+pub const ACCENT_SOFT: Color32 = Color32::from_rgb(0x21, 0x2C, 0x39);
 /// 辅助强调色（淡金，极少使用）
 pub const GOLD: Color32 = Color32::from_rgb(0xC9, 0xA8, 0x7C);
 
@@ -52,15 +60,23 @@ pub const LYRIC_BG: Color32 = Color32::from_rgba_premultiplied(0x1A, 0x20, 0x28,
 
 /// 弱分隔线/描边
 pub const BORDER_SOFT: Color32 = Color32::from_rgb(0x2E, 0x36, 0x40);
+/// 强描边（卡片外框、输入框聚焦态）
+pub const BORDER_STRONG: Color32 = Color32::from_rgb(0x3A, 0x45, 0x53);
 /// 自定义标题栏底色（比窗口底略亮一档，像悬浮卡片的“檐”）
-pub const TITLEBAR_BG: Color32 = Color32::from_rgb(0x1C, 0x22, 0x2A);
+pub const TITLEBAR_BG: Color32 = Color32::from_rgb(0x1A, 0x20, 0x28);
+/// 关闭按钮 hover 底（macOS 交通灯同款暖红，柔和版）
+pub const CLOSE_HOVER: Color32 = Color32::from_rgb(0xC4, 0x5B, 0x5B);
 
 // ===========================================================================
 // 圆角常量
 // ===========================================================================
 
+/// 小圆角（小按钮、徽标、封面缩略图）
+pub const CORNER_SM: u8 = 6;
 /// 统一圆角（按钮、输入框、卡片、弹窗、桌面歌词条）
 pub const CORNER: u8 = 9;
+/// 大圆角（歌曲行、播放条容器等宽扁元素）
+pub const CORNER_LG: u8 = 12;
 /// 悬浮主窗口卡片的大圆角（浮窗感）
 pub const CORNER_XL: u8 = 18;
 
@@ -85,6 +101,35 @@ pub fn small_button(text: impl Into<RichText>) -> egui::Button<'static> {
         .fill(BG_CARD)
         .stroke(Stroke::NONE)
         .corner_radius(CORNER)
+}
+
+/// 创建一个「幽灵按钮」（无底、次级文字），悬停才显底——用于不抢视线的次要操作。
+pub fn ghost_button(text: impl Into<RichText>) -> egui::Button<'static> {
+    let rich = text.into().color(TEXT_SECONDARY);
+    egui::Button::new(rich)
+        .fill(Color32::TRANSPARENT)
+        .stroke(Stroke::NONE)
+        .corner_radius(CORNER)
+}
+
+/// 强调色描边按钮（未选中但需要提示可点的操作，如登录）。
+pub fn accent_outline_button(text: impl Into<RichText>) -> egui::Button<'static> {
+    let rich = text.into().color(ACCENT_HOVER);
+    egui::Button::new(rich)
+        .fill(ACCENT_SOFT)
+        .stroke(Stroke::new(1.0, ACCENT))
+        .corner_radius(CORNER)
+}
+
+/// 一张「卡片」容器：卡片底 + 细描边 + 统一圆角 + 内边距。
+///
+/// 用于把一组相关控件（如导入区）聚成一个视觉单元，与背景拉开层次。
+pub fn card_frame() -> egui::Frame {
+    egui::Frame::new()
+        .fill(BG_CARD)
+        .stroke(Stroke::new(1.0, BORDER_SOFT))
+        .corner_radius(CORNER_LG)
+        .inner_margin(Margin::symmetric(14, 12))
 }
 
 // ===========================================================================
@@ -145,22 +190,23 @@ fn visuals() -> egui::Visuals {
 
     v.hyperlink_color = ACCENT_HOVER;
     v.faint_bg_color = BG_HOVER;
-    v.extreme_bg_color = BG_CARD;
-    v.text_edit_bg_color = Some(BG_CARD);
-    v.code_bg_color = BG_CARD;
+    // 输入框：比卡片更暗一档 + 细描边，形成「凹陷」的层次（列表/按钮是凸起）。
+    v.extreme_bg_color = BG_INPUT;
+    v.text_edit_bg_color = Some(BG_INPUT);
+    v.code_bg_color = BG_INPUT;
     v.warn_fg_color = GOLD;
     v.error_fg_color = TEXT_ERROR;
 
     // Window
-    v.window_fill = BG_WINDOW;
-    v.window_corner_radius = CornerRadius::same(CORNER);
+    v.window_fill = BG_PANEL;
+    v.window_corner_radius = CornerRadius::same(CORNER_LG);
     v.window_shadow = egui::epaint::Shadow {
         offset: [8, 16],
-        blur: 20,
+        blur: 24,
         spread: 0,
-        color: Color32::from_black_alpha(120),
+        color: Color32::from_black_alpha(150),
     };
-    v.window_stroke = Stroke::new(1.0, BORDER_SOFT);
+    v.window_stroke = Stroke::new(1.0, BORDER_STRONG);
 
     // Panel
     v.panel_fill = BG_PANEL;
@@ -168,9 +214,9 @@ fn visuals() -> egui::Visuals {
     // Popup shadow
     v.popup_shadow = egui::epaint::Shadow {
         offset: [4, 8],
-        blur: 12,
+        blur: 16,
         spread: 0,
-        color: Color32::from_black_alpha(120),
+        color: Color32::from_black_alpha(150),
     };
 
     // Text cursor
@@ -208,7 +254,7 @@ fn spacing() -> egui::style::Spacing {
     s.indent = 24.0;
     s.interact_size = Vec2::new(32.0, 28.0);
     s.slider_width = 140.0;
-    s.slider_rail_height = 6.0;
+    s.slider_rail_height = 5.0;
     s.text_edit_width = 240.0;
     s.combo_width = 160.0;
     s.combo_height = 240.0;
@@ -225,18 +271,18 @@ fn spacing() -> egui::style::Spacing {
     s.scroll = ScrollStyle {
         floating: false,
         content_margin: Margin::ZERO,
-        bar_width: 6.0,
-        handle_min_length: 20.0,
-        bar_inner_margin: 2.0,
-        bar_outer_margin: 0.0,
-        floating_width: 3.0,
+        bar_width: 8.0,
+        handle_min_length: 24.0,
+        bar_inner_margin: 3.0,
+        bar_outer_margin: 2.0,
+        floating_width: 4.0,
         floating_allocated_width: 0.0,
         foreground_color: false,
         dormant_background_opacity: 0.0,
-        active_background_opacity: 0.2,
-        interact_background_opacity: 0.5,
+        active_background_opacity: 0.18,
+        interact_background_opacity: 0.4,
         dormant_handle_opacity: 0.0,
-        active_handle_opacity: 0.75,
+        active_handle_opacity: 0.7,
         interact_handle_opacity: 1.0,
         fade: Default::default(),
     };

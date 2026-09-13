@@ -91,7 +91,7 @@ pub(crate) fn song_search_field(ui: &mut egui::Ui, text: &mut String) -> egui::R
             } else if resp.hovered() {
                 theme::BG_HOVER
             } else {
-                theme::BG_CARD
+                theme::BG_INPUT
             };
             painter.rect_filled(rect, theme::CORNER, bg);
             icons::cross(painter, rect.shrink(24.0 * 0.24), theme::TEXT_SECONDARY);
@@ -104,6 +104,7 @@ pub(crate) fn song_search_field(ui: &mut egui::Ui, text: &mut String) -> egui::R
             egui::TextEdit::singleline(text)
                 .id_salt(egui::Id::new(SONG_SEARCH_ID_SALT))
                 .hint_text("搜索标题 / UP 主")
+                .margin(egui::Margin::symmetric(10, 5))
                 .desired_width(180.0),
         );
         field_resp = Some(r);
@@ -311,7 +312,14 @@ pub fn paint_avatar(
             }
         }
     }
-    painter.circle_stroke(rect.center(), radius, Stroke::new(1.0, theme::BORDER_SOFT));
+    // 有头像时用点缀色细描边（头像与深色背景之间多一圈轮廓，更精致）；
+    // 占位态用弱描边，避免喧宾夺主。
+    let ring = if texture_id.is_some() {
+        theme::ACCENT.gamma_multiply(0.45)
+    } else {
+        theme::BORDER_SOFT
+    };
+    painter.circle_stroke(rect.center(), radius, Stroke::new(1.0, ring));
 }
 
 // ---------------------------------------------------------------------------

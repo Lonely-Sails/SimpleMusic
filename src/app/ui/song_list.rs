@@ -12,10 +12,22 @@ use crate::state::QueueItem;
 use crate::util::filter::song_matches_query;
 use crate::util::fmt::format_secs;
 use crate::{icons, theme};
-use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Vec2};
+use eframe::egui::{
+    self, Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Vec2,
+};
 
 /// 歌曲列表内容相对滚动区/窗口两边的水平留白（滚动条贴右，内容左右留白）。
 const LIST_PAD_X: f32 = 14.0;
+/// 歌曲行高。60 给封面（46）上下各留 7px，比 56 更透气。
+const ROW_H: f32 = 60.0;
+/// 行与行之间的竖向间距（行底矩形收缩，形成"卡片间缝"）。
+const ROW_GAP: f32 = 2.0;
+/// 行内封面边长。
+const COVER_SIZE: f32 = 46.0;
+/// 封面左内边距。
+const COVER_PAD: f32 = 10.0;
+/// 标题/副标题文字的左起点 = 封面右边 + 间距。
+const TEXT_X: f32 = COVER_PAD + COVER_SIZE + 12.0;
 
 impl MusicApp {
     // ---- 本地歌单歌曲列表 ----
@@ -36,19 +48,24 @@ impl MusicApp {
         // 标题行：歌曲数量 + 搜索框
         ui.horizontal(|ui| {
             ui.add_space(LIST_PAD_X);
-            if query.is_empty() {
-                ui.label(
-                    RichText::new(format!("歌曲 ({total})"))
-                        .strong()
-                        .color(theme::TEXT_PRIMARY),
-                );
+            // 计数做成一个小「药丸」徽标：点缀色淡底 + 圆角，比裸文字更成组。
+            let label = if query.is_empty() {
+                format!("歌曲 {total}")
             } else {
-                ui.label(
-                    RichText::new(format!("歌曲 ({}/{})", visible.len(), total))
-                        .strong()
-                        .color(theme::TEXT_PRIMARY),
-                );
-            }
+                format!("歌曲 {}/{}", visible.len(), total)
+            };
+            egui::Frame::new()
+                .fill(theme::ACCENT_SOFT)
+                .corner_radius(theme::CORNER_SM)
+                .inner_margin(egui::Margin::symmetric(9, 3))
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new(label)
+                            .strong()
+                            .size(12.0)
+                            .color(theme::ACCENT_HOVER),
+                    );
+                });
             // 固定 id_salt 的搜索框：输入时不再失焦/打断中文输入法，清空按钮
             // 常驻占位不挤动布局；点击「×」在组件内就地清空（见 widgets::song_search_field）。
             song_search_field(ui, &mut self.search_text);
@@ -82,7 +99,7 @@ impl MusicApp {
 
                 let mut actions: Vec<(usize, bool)> = Vec::new();
                 let mut remove: Option<usize> = None;
-                let row_h = 56.0;
+                let row_h = ROW_H;
 
                 for (i, item) in &visible {
                     let i = *i;
@@ -91,10 +108,12 @@ impl MusicApp {
                         Vec2::new(ui.available_width(), row_h),
                         Sense::click(),
                     );
-                    // 行内容在滚动区两侧留白（滚动条本身贴右边）。
-                    let row = rect.shrink2(Vec2::new(LIST_PAD_X, 0.0));
+                    // 行内容在滚动区两侧留白（滚动条本身贴右边），上下各收 ROW_GAP/2 形成行缝。
+                    let row = rect
+                        .shrink2(Vec2::new(LIST_PAD_X, 0.0))
+                        .shrink2(Vec2::new(0.0, ROW_GAP * 0.5));
                     let bg = if selected {
-                        theme::BG_CARD
+                        theme::ACCENT_SOFT
                     } else if resp.hovered() {
                         theme::BG_HOVER
                     } else {
@@ -103,28 +122,46 @@ impl MusicApp {
                     {
                         let painter = ui.painter();
                         if bg != Color32::TRANSPARENT {
-                            painter.rect_filled(row, theme::CORNER, bg);
+                            painter.rect_filled(row, theme::CORNER_LG, bg);
                         }
+                        // 选中态：左侧圆角竖条（点缀色），并给整行补一圈极淡描边。
                         if selected {
                             painter.rect_filled(
                                 Rect::from_min_size(row.min, Vec2::new(3.0, row.height())),
                                 2.0,
                                 theme::ACCENT,
                             );
+                            painter.rect_stroke(
+                                row,
+                                theme::CORNER_LG,
+                                Stroke::new(1.0, theme::ACCENT.gamma_multiply(0.35)),
+                                StrokeKind::Inside,
+                            );
                         }
                     }
-                    // 封面 44×44 圆角
+                    // 封面 46×46 圆角
                     let cover_rect = Rect::from_min_size(
-                        Pos2::new(row.left() + 10.0, row.center().y - 22.0),
-                        Vec2::splat(44.0),
+                        Pos2::new(row.left() + COVER_PAD, row.center().y - COVER_SIZE * 0.5),
+                        Vec2::splat(COVER_SIZE),
                     );
                     self.draw_cover_row(ui, cover_rect, &item.bvid, &item.cover_url);
                     let painter = ui.painter();
-                    let text_x = row.left() + 64.0;
-                    let max_w = row.width() - 100.0;
-                    let title = truncate_label(ui, &item.title, max_w);
+                    let text_x = row.left() + TEXT_X;
+                    let max_w = row.width() - TEXT_X - 44.0;
+                    // 正在播放的行在标题前画一个点缀色音符指示。
+                    if selected {
+                        let badge = Rect::from_min_size(
+                            Pos2::new(text_x, row.top() + 12.0),
+                            Vec2::splat(12.0),
+                        );
+                        icons::note(&painter, badge, theme::ACCENT);
+                    }
+                    let title_x = if selected { text_x + 18.0 } else { text_x };
+                    // 选中行标题右移让位给音符徽标，可用宽度相应减少，避免压到删除按钮。
+                    let title_w = if selected { max_w - 18.0 } else { max_w };
+                    let title = truncate_label(ui, &item.title, title_w);
                     painter.text(
-                        Pos2::new(text_x, row.top() + 10.0),
+                        Pos2::new(title_x, row.top() + 11.0),
                         Align2::LEFT_TOP,
                         title,
                         FontId::proportional(13.0),
@@ -137,7 +174,7 @@ impl MusicApp {
                     let sub = format!("{} · {}", item.uploader, format_secs(item.duration_secs));
                     let sub = truncate_label(ui, &sub, max_w);
                     painter.text(
-                        Pos2::new(text_x, row.top() + 32.0),
+                        Pos2::new(text_x, row.top() + 33.0),
                         Align2::LEFT_TOP,
                         sub,
                         FontId::proportional(11.0),
@@ -152,7 +189,7 @@ impl MusicApp {
                         ui.interact(btn_rect, ui.id().with(("song_remove", i)), Sense::click());
                     if btn_resp.hovered() {
                         ui.painter()
-                            .rect_filled(btn_rect, theme::CORNER, theme::BG_ACTIVE);
+                            .rect_filled(btn_rect, theme::CORNER_SM, theme::BG_ACTIVE);
                     }
                     icons::cross(
                         &ui.painter(),
@@ -262,19 +299,23 @@ impl MusicApp {
         };
         ui.horizontal(|ui| {
             ui.add_space(LIST_PAD_X);
-            if query.is_empty() {
-                ui.label(
-                    RichText::new(format!("歌曲 ({count}/{total})"))
-                        .strong()
-                        .color(theme::TEXT_PRIMARY),
-                );
+            let label = if query.is_empty() {
+                format!("歌曲 {count}/{total}")
             } else {
-                ui.label(
-                    RichText::new(format!("歌曲 ({}/{})", fav_items.len(), count))
-                        .strong()
-                        .color(theme::TEXT_PRIMARY),
-                );
-            }
+                format!("歌曲 {}/{}", fav_items.len(), count)
+            };
+            egui::Frame::new()
+                .fill(theme::ACCENT_SOFT)
+                .corner_radius(theme::CORNER_SM)
+                .inner_margin(egui::Margin::symmetric(9, 3))
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new(label)
+                            .strong()
+                            .size(12.0)
+                            .color(theme::ACCENT_HOVER),
+                    );
+                });
             // 固定 id_salt 的搜索框（同 show_local_songs，见 widgets::song_search_field）。
             song_search_field(ui, &mut self.search_text);
         });
@@ -290,7 +331,7 @@ impl MusicApp {
                     });
                 }
                 let mut play: Option<String> = None;
-                let row_h = 56.0;
+                let row_h = ROW_H;
                 if fav_items.is_empty() && count > 0 {
                     // 有歌曲但搜索无匹配
                     ui.vertical_centered(|ui| {
@@ -307,10 +348,12 @@ impl MusicApp {
                         Vec2::new(ui.available_width(), row_h),
                         Sense::click(),
                     );
-                    // 行内容在滚动区两侧留白（滚动条本身贴右边）。
-                    let row = rect.shrink2(Vec2::new(LIST_PAD_X, 0.0));
+                    // 行内容在滚动区两侧留白（滚动条本身贴右边），上下各收 ROW_GAP/2 形成行缝。
+                    let row = rect
+                        .shrink2(Vec2::new(LIST_PAD_X, 0.0))
+                        .shrink2(Vec2::new(0.0, ROW_GAP * 0.5));
                     let bg = if selected {
-                        theme::BG_CARD
+                        theme::ACCENT_SOFT
                     } else if resp.hovered() {
                         theme::BG_HOVER
                     } else {
@@ -319,7 +362,7 @@ impl MusicApp {
                     {
                         let painter = ui.painter();
                         if bg != Color32::TRANSPARENT {
-                            painter.rect_filled(row, theme::CORNER, bg);
+                            painter.rect_filled(row, theme::CORNER_LG, bg);
                         }
                         if selected {
                             painter.rect_filled(
@@ -327,21 +370,36 @@ impl MusicApp {
                                 2.0,
                                 theme::ACCENT,
                             );
+                            painter.rect_stroke(
+                                row,
+                                theme::CORNER_LG,
+                                Stroke::new(1.0, theme::ACCENT.gamma_multiply(0.35)),
+                                StrokeKind::Inside,
+                            );
                         }
                     }
-                    // 封面 44×44 圆角
+                    // 封面 46×46 圆角
                     let cover_rect = Rect::from_min_size(
-                        Pos2::new(row.left() + 10.0, row.center().y - 22.0),
-                        Vec2::splat(44.0),
+                        Pos2::new(row.left() + COVER_PAD, row.center().y - COVER_SIZE * 0.5),
+                        Vec2::splat(COVER_SIZE),
                     );
                     let cover_url = item.cover_url.as_deref().unwrap_or("");
                     self.draw_cover_row(ui, cover_rect, &item.bvid, cover_url);
                     let painter = ui.painter();
-                    let text_x = row.left() + 64.0;
-                    let max_w = row.width() - 100.0;
-                    let title = truncate_label(ui, &item.title, max_w);
+                    let text_x = row.left() + TEXT_X;
+                    let max_w = row.width() - TEXT_X - 44.0;
+                    if selected {
+                        let badge = Rect::from_min_size(
+                            Pos2::new(text_x, row.top() + 12.0),
+                            Vec2::splat(12.0),
+                        );
+                        icons::note(&painter, badge, theme::ACCENT);
+                    }
+                    let title_x = if selected { text_x + 18.0 } else { text_x };
+                    let title_w = if selected { max_w - 18.0 } else { max_w };
+                    let title = truncate_label(ui, &item.title, title_w);
                     painter.text(
-                        Pos2::new(text_x, row.top() + 10.0),
+                        Pos2::new(title_x, row.top() + 11.0),
                         Align2::LEFT_TOP,
                         title,
                         FontId::proportional(13.0),
@@ -354,7 +412,7 @@ impl MusicApp {
                     let sub = format!("{} · {}", item.owner, format_secs(item.duration_secs));
                     let sub = truncate_label(ui, &sub, max_w);
                     painter.text(
-                        Pos2::new(text_x, row.top() + 32.0),
+                        Pos2::new(text_x, row.top() + 33.0),
                         Align2::LEFT_TOP,
                         sub,
                         FontId::proportional(11.0),

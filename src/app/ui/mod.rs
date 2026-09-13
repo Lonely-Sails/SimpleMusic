@@ -42,10 +42,11 @@ impl MusicApp {
         let card = ui.max_rect();
         ui.painter()
             .rect_filled(card, theme::CORNER_XL, theme::BG_WINDOW);
+        // 外框用稍强的描边，让卡片与桌面背景之间有清晰边界（透明窗口下尤其重要）。
         ui.painter().rect_stroke(
             card,
             theme::CORNER_XL,
-            Stroke::new(1.0, theme::BORDER_SOFT),
+            Stroke::new(1.0, theme::BORDER_STRONG),
             StrokeKind::Inside,
         );
 

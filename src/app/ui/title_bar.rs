@@ -32,6 +32,14 @@ impl MusicApp {
                     se: 0,
                 };
                 ui.painter().rect_filled(bar, corner, theme::TITLEBAR_BG);
+                // 顶部内侧高光：一条极淡的亮线，让「檐」看起来有厚度（自发光边缘）。
+                ui.painter().line_segment(
+                    [
+                        bar.left_top() + Vec2::new(theme::CORNER_XL as f32, 0.5),
+                        bar.right_top() + Vec2::new(-(theme::CORNER_XL as f32), 0.5),
+                    ],
+                    Stroke::new(1.0, Color32::from_white_alpha(8)),
+                );
                 // 底部分隔线
                 ui.painter().line_segment(
                     [
@@ -73,14 +81,17 @@ impl MusicApp {
                     // 右侧：窗口控制按钮（右边距与左边距对称，均为 TITLEBAR_SIDE_PAD）
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(TITLEBAR_SIDE_PAD);
-                        // 关闭（最小化到托盘 / 退出）
-                        if self.window_ctrl_button(ui, icons::cross, "关闭").clicked() {
+                        // 关闭（最小化到托盘 / 退出）——hover 时按 macOS 交通灯惯例转暖红。
+                        if self
+                            .window_ctrl_button(ui, icons::cross, "关闭", Some(theme::CLOSE_HOVER))
+                            .clicked()
+                        {
                             self.request_close(ui.ctx());
                         }
                         ui.add_space(4.0);
                         // 最小化
                         if self
-                            .window_ctrl_button(ui, icons::window_minimize, "最小化")
+                            .window_ctrl_button(ui, icons::window_minimize, "最小化", None)
                             .clicked()
                         {
                             ui.ctx()
@@ -92,18 +103,23 @@ impl MusicApp {
     }
 
     /// 窗口控制按钮（圆角小方块）。
+    ///
+    /// `hover_fill` 为 `Some` 时悬停用该色填充（关闭键用暖红，符合 macOS 交通灯直觉）；
+    /// 为 `None` 时悬停只亮一档中性底。
     fn window_ctrl_button(
         &self,
         ui: &mut egui::Ui,
         icon: fn(&egui::Painter, Rect, Color32),
         tooltip: &str,
+        hover_fill: Option<Color32>,
     ) -> egui::Response {
         let size = Vec2::splat(TITLEBAR_CONTENT_HEIGHT);
         let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+        let hovered = resp.hovered() || resp.is_pointer_button_down_on();
         let bg = if resp.is_pointer_button_down_on() {
             theme::BG_ACTIVE
-        } else if resp.hovered() {
-            theme::BG_HOVER
+        } else if hovered {
+            hover_fill.unwrap_or(theme::BG_HOVER)
         } else {
             Color32::TRANSPARENT
         };
@@ -111,7 +127,12 @@ impl MusicApp {
             ui.painter()
                 .rect_filled(rect, CornerRadius::same(theme::CORNER), bg);
         }
-        icon(ui.painter(), rect.shrink(4.0), theme::TEXT_SECONDARY);
+        // 危险色底上用亮色图标，保证对比度。
+        let fg = match (hovered, hover_fill) {
+            (true, Some(_)) => theme::TEXT_PRIMARY,
+            _ => theme::TEXT_SECONDARY,
+        };
+        icon(ui.painter(), rect.shrink(4.0), fg);
         resp.on_hover_text(tooltip)
     }
 

@@ -12,7 +12,7 @@ use super::MusicApp;
 use super::widgets::{spinner_arc, transport_button, truncate_label, volume_hover_popup};
 
 /// 播放条：播放/暂停圆形按钮直径。
-const PLAY_BTN_SIZE: f32 = 36.0;
+const PLAY_BTN_SIZE: f32 = 40.0;
 /// 播放条：图标按钮直径。
 const ICON_BTN_SIZE: f32 = 30.0;
 /// 图标区相邻按钮之间的间距。
@@ -146,7 +146,11 @@ impl MusicApp {
                     ui.spacing_mut().slider_width = slider_w;
                     ui.label(
                         RichText::new(left)
-                            .color(theme::TEXT_SECONDARY)
+                            .color(if st.normalizing {
+                                theme::GOLD
+                            } else {
+                                theme::TEXT_SECONDARY
+                            })
                             .monospace()
                             .size(12.0),
                     );
@@ -199,7 +203,7 @@ impl MusicApp {
                     let left_pad = ((ui.available_width() - icon_row_width()) / 2.0).max(0.0);
                     ui.add_space(left_pad);
 
-                    // 1. 桌面歌词开关
+                    // 1. 桌面歌词开关（开启时图标点亮 + 低饱和点缀底）
                     let on = self.settings.desktop_lyrics_enabled;
                     let color = if on {
                         theme::ACCENT
@@ -216,6 +220,7 @@ impl MusicApp {
                         } else {
                             "开启桌面歌词"
                         },
+                        on,
                     );
                     if resp.clicked() {
                         self.settings.desktop_lyrics_enabled =
@@ -230,6 +235,7 @@ impl MusicApp {
                         icons::text_t,
                         theme::TEXT_SECONDARY,
                         "选择歌词（点击弹出）",
+                        false,
                     );
                     let candidates = self.lyrics_candidates.clone();
                     let offset = self.settings.lyrics_offset_secs;
@@ -311,30 +317,43 @@ impl MusicApp {
                     }
                     ui.add_space(ICON_ROW_GAP);
 
-                    // 4. 播放 / 暂停（loading 时显示转圈）
+                    // 4. 播放 / 暂停（loading 时显示转圈）——主行动点用强调色实心圆。
                     let (rect, resp) =
                         ui.allocate_exact_size(Vec2::splat(PLAY_BTN_SIZE), Sense::click());
                     let painter = ui.painter();
                     let bg = if resp.is_pointer_button_down_on() {
-                        theme::BG_ACTIVE
+                        theme::ACCENT_ACTIVE
                     } else if resp.hovered() {
-                        theme::BG_HOVER
+                        theme::ACCENT_HOVER
                     } else {
-                        theme::BG_CARD
+                        theme::ACCENT
                     };
+                    // 外圈柔光：悬停时扩散一圈低透明点缀色，强调可点。
+                    if resp.hovered() {
+                        painter.circle_filled(
+                            rect.center(),
+                            PLAY_BTN_SIZE * 0.5 + 4.0,
+                            theme::ACCENT.gamma_multiply(0.18),
+                        );
+                    }
                     painter.circle_filled(rect.center(), PLAY_BTN_SIZE * 0.5, bg);
-                    let icon_rect = rect.shrink(PLAY_BTN_SIZE * 0.30);
+                    let icon_rect = rect.shrink(PLAY_BTN_SIZE * 0.32);
                     if st.loading {
                         spinner_arc(
                             &painter,
                             rect.center(),
                             PLAY_BTN_SIZE * 0.22,
-                            theme::TEXT_SECONDARY,
+                            theme::TEXT_ON_ACCENT,
                         );
                     } else if st.playing {
-                        icons::pause(&painter, icon_rect, theme::TEXT_PRIMARY);
+                        icons::pause(&painter, icon_rect, theme::TEXT_ON_ACCENT);
                     } else {
-                        icons::play(&painter, icon_rect, theme::TEXT_PRIMARY);
+                        // 播放三角在视觉上偏左，右移 1px 让它看起来居中。
+                        icons::play(
+                            &painter,
+                            icon_rect.translate(Vec2::new(1.0, 0.0)),
+                            theme::TEXT_ON_ACCENT,
+                        );
                     }
                     if resp.clicked() && !st.loading {
                         if st.playing {
@@ -360,6 +379,7 @@ impl MusicApp {
                         mode_icon,
                         theme::TEXT_PRIMARY,
                         mode.label(),
+                        false,
                     );
                     if resp.clicked() {
                         self.settings.play_mode = next_play_mode(mode);
@@ -377,7 +397,8 @@ impl MusicApp {
                     } else {
                         icons::volume
                     };
-                    let resp = self.icon_btn(ui, ICON_BTN_SIZE, vol_icon, theme::TEXT_PRIMARY, "");
+                    let resp =
+                        self.icon_btn(ui, ICON_BTN_SIZE, vol_icon, theme::TEXT_PRIMARY, "", false);
                     if let Some(v) = volume_hover_popup(ui, resp.rect, resp.hovered(), vol) {
                         self.change_volume(v);
                     }
@@ -387,6 +408,9 @@ impl MusicApp {
     }
 
     /// 图标按钮：圆角底 + 图标 + 悬停提示，返回 Response 供点击/弹窗使用。
+    ///
+    /// 默认**无底**（只有图标，画面更干净），悬停/按下才浮出一层底；
+    /// `active` 为 true 时用低饱和点缀底标记「已开启」状态（如桌面歌词）。
     fn icon_btn(
         &mut self,
         ui: &mut egui::Ui,
@@ -394,17 +418,22 @@ impl MusicApp {
         icon: fn(&egui::Painter, egui::Rect, Color32),
         color: Color32,
         tooltip: &str,
+        active: bool,
     ) -> egui::Response {
         let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
         let bg = if resp.is_pointer_button_down_on() {
             theme::BG_ACTIVE
         } else if resp.hovered() {
             theme::BG_HOVER
+        } else if active {
+            theme::ACCENT_SOFT
         } else {
-            theme::BG_CARD
+            Color32::TRANSPARENT
         };
         let painter = ui.painter();
-        painter.rect_filled(rect, theme::CORNER, bg);
+        if bg != Color32::TRANSPARENT {
+            painter.rect_filled(rect, theme::CORNER, bg);
+        }
         icon(&painter, rect.shrink(size * 0.24), color);
         if tooltip.is_empty() {
             resp

@@ -45,8 +45,12 @@ impl MusicApp {
                                 self.do_logout();
                             }
                         } else {
+                            // 登录是未登录态的主行动点：强调色描边 + 淡点缀底，比灰底更醒目。
                             if ui
-                                .add(theme::small_button("登录").min_size(Vec2::new(0.0, ctrl_h)))
+                                .add(
+                                    theme::accent_outline_button("登录")
+                                        .min_size(Vec2::new(0.0, ctrl_h)),
+                                )
                                 .clicked()
                             {
                                 self.spawn_login();

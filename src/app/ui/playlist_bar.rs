@@ -96,7 +96,7 @@ impl MusicApp {
                                     RichText::new("管理").color(theme::TEXT_SECONDARY),
                                 )
                                 .fill(theme::BG_CARD)
-                                .stroke(eframe::egui::Stroke::NONE)
+                                .stroke(eframe::egui::Stroke::new(1.0, theme::BORDER_SOFT))
                                 .corner_radius(theme::CORNER),
                             )
                             .clicked()
@@ -104,11 +104,14 @@ impl MusicApp {
                             self.playlist_mgmt_open = true;
                         }
                         ui.add_space(6.0);
-                        // + 按钮：创建歌单（用 Popup 菜单）
+                        // + 按钮：创建歌单（用 Popup 菜单）——强调色，主行动点。
                         let add_button = ui.add(
-                            egui::Button::new(RichText::new("+").color(theme::TEXT_PRIMARY))
-                                .fill(theme::BG_CARD)
-                                .corner_radius(theme::CORNER),
+                            egui::Button::new(
+                                RichText::new("+").color(theme::TEXT_ON_ACCENT).strong(),
+                            )
+                            .fill(theme::ACCENT)
+                            .stroke(eframe::egui::Stroke::NONE)
+                            .corner_radius(theme::CORNER),
                         );
 
                         egui::Popup::menu(&add_button).show(|ui| {
