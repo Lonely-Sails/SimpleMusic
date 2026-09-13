@@ -85,6 +85,7 @@ src/
 │   │   ├── login.rs  扫码登录方法组（generate_qrcode/qrcode_matrix/poll_login）
 │   │   ├── fav.rs    收藏夹方法组（list_favorite_folders/list_favorite_resources）
 │   │   ├── resolve.rs BV 解析/video_info/resolve_stream(DASH 优先)/detect_music 识别音乐
+│   │   ├── stream_cache.rs 已解析直链缓存（键 (bvid,音质)，TTL 10min）+ 直链过期判定
 │   │   └── util.rs   纯函数（pick_dash_audio/scan_bv_token/parse_set_cookie/dedup_folders）
 │   ├── audio/        音频引擎（原单文件拆 7 个子模块）
 │   │   ├── mod.rs    架构文档 + re-export（default_cache_dir/cache_path_in/PlaybackStatus/PlayRequest/AudioEngine）
@@ -160,10 +161,19 @@ src/
 - 启动时会自动清空在线歌单 `songs` 的历史残留（旧版隐式入列的脏数据，别删这段清理）。
 
 ### 播放链路
-`resolve_stream`（DASH 音频流，未签名被风控自动补 WBI 重试）→ 带 `required_headers`
+点播 → **直链缓存查命中**（`modules/bilibili/stream_cache.rs`，键 `(bvid, 音质)`，
+TTL `STREAM_CACHE_TTL` = 10 分钟）→ 命中则跳过 `video_info + playurl` 直接播放，
+未命中走 `resolve_stream`（DASH 音频流，未签名被风控自动补 WBI 重试）→ 带 `required_headers`
 (UA/Referer/Cookie) 流式下载到缓存 `~/.cache/simple-music/audio/<md5(bvid)>.m4s`
 （二次秒开；损坏缓存解码失败自动删除重下）→ symphonia(AAC/MP4) 解码 → rodio 输出；
 CDN 403/410 自动换备用地址；写盘失败降级内存缓冲；无输出设备绝不 panic，进错误状态。
+
+**直链缓存为什么要 TTL**：B 站 playurl 直链带签名，CDN 侧会过期，缓存过期直链必然 403。
+所以：① TTL 内（10 分钟）才复用，超时重新解析；② 下载报 403/410/404 时
+（`is_stream_expired_error`）丢弃该曲直链并**强制重新解析重试一次**
+（`stream_retried` 集合保证每首歌只自动重试一次，防死循环；用户重新点播会重置该标记）；
+③ 登出清空（直链带 Cookie 签名，换账号不能复用）。
+条目里连 `QueueItem` 一起存，命中时标题/时长/封面/cid 都不缺，也免一次 `video_info`。
 
 ### 歌词链路
 切歌 → 后台 `spawn_lyrics_fetch`（歌词线程，绝不阻塞播放解析）→ **先查本地歌词缓存**
@@ -207,7 +217,7 @@ CDN 403/410 自动换备用地址；写盘失败降级内存缓冲；无输出�
 6. **图标**：所有界面图标用 `icons::*`（内嵌 Phosphor，PUA 码点渲染到 rect 中心），不要依赖 emoji 或媒体控制码点（跨平台字形缺失会显示 "?"）。
 7. **错误处理**：音频错误不 panic，写 `PlaybackStatus.error` 由 UI 展示；网络错误经 `AsyncMsg` 回 `ui_error`（红色）或 `notice`（金色轻提示，4 秒）。
 8. **文本宽度**：动态文案先 `truncate_label`/`fit_text` 再 `painter.text`。
-9. **单测**：纯函数（解析/打分/格式化/过滤）放同文件 `#[cfg(test)] mod tests`，离线跑；真实网络用 `#[ignore]` 标注（如 `detect_music_live`）。新增纯逻辑尽量带测试。测试数 178 + 2 ignored。
+9. **单测**：纯函数（解析/打分/格式化/过滤）放同文件 `#[cfg(test)] mod tests`，离线跑；真实网络用 `#[ignore]` 标注（如 `detect_music_live`）。新增纯逻辑尽量带测试。测试数 207 + 2 ignored。
 10. **UI 状态与数据解耦（稳定标识模式）**：凡是「UI 里选中的东西」跨帧/跨列表操作要记住时，**存稳定标识（如 bvid），不要存列表下标**——下标在过滤/删歌/刷新后静默漂移出 bug，标识找不到时按 `None` 处理即可自然降级。
 11. **不要让「执行动作」顺手改数据**：副作用（入单/落盘/置 dirty）必须由用户的显式操作触发；新功能如果发现自己「顺手」改了用户数据，几乎一定是设计错了。
 12. **行为不变量改动要写迁移/清理**：改持久化语义时在启动路径加一次性数据清理，并考虑旧文件兼容（`#[serde(default)]`）。
@@ -280,6 +290,7 @@ CDN 403/410 自动换备用地址；写盘失败降级内存缓冲；无输出�
 | 异步消息类型与分发 | `app/messages.rs::AsyncMsg` + `handle_msg` |
 | B 站登录/收藏夹 | `modules/bilibili/{login,fav}.rs` |
 | B 站取流/识别音乐 | `modules/bilibili/resolve.rs` |
+| 直链缓存（TTL 10min）/ 过期判定 | `modules/bilibili/stream_cache.rs` |
 | WBI 签名 | `modules/bilibili/wbi.rs` |
 | 音频引擎对外接口 | `modules/audio/engine.rs`（`AudioEngine`） |
 | 音频下载/缓存 | `modules/audio/{download,cache}.rs` |

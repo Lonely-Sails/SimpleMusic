@@ -27,7 +27,7 @@ pub mod window;
 
 use crate::cover::CoverCache;
 use crate::modules::audio::{AudioEngine, PlaybackStatus};
-use crate::modules::bilibili::{BiliClient, FavFolder, FavItem};
+use crate::modules::bilibili::{BiliClient, FavFolder, FavItem, StreamCache};
 use crate::modules::lyrics::{LrcLine, Lyrics, LyricsCacheEntry};
 use crate::modules::storage;
 use crate::state::{PlaybackState, Playlist, QueueItem, Settings, LyricsFont};
@@ -52,6 +52,10 @@ pub struct MusicApp {
     // 引擎与客户端
     audio: AudioEngine,
     bili: Arc<Mutex<BiliClient>>,
+    /// 已解析音频直链缓存（键 `(bvid, 音质)` → `(QueueItem, StreamUrl)`，TTL 10 分钟）。
+    /// B 站 playurl 直链带签名会过期，缓存只为「短时间内重复播放」省一次解析；
+    /// 超时或下载 403/410 都会强制重新解析（见 `spawn_play_resolve_forced`）。
+    streams: Arc<Mutex<StreamCache>>,
     // 封面缓存
     covers: CoverCache,
     // 播放状态
@@ -149,6 +153,11 @@ pub struct MusicApp {
     toasts: Vec<Toast>,
     /// 上次已提示过的音频错误（去重，避免同一错误每帧重复弹 toast）。
     last_err_shown: Option<String>,
+    /// 因「直链过期（403/410）」而自动重试过的曲目（bvid）。每首歌只自动重试一次，
+    /// 防止直链持续失效时陷入「失败 → 重试 → 再失败」的死循环。
+    stream_retried: std::collections::HashSet<String>,
+    /// 待执行的直链过期重试（bvid）：`ui` 里判定，`logic` 里发起强制重新解析。
+    stream_retry_pending: Option<String>,
     // 系统托盘（独立 GTK 线程）
     tray: tray::Tray,
     /// 窗口是否因「最小化到托盘」而隐藏（用于托盘菜单切换）。
@@ -214,6 +223,7 @@ impl MusicApp {
         let mut app = Self {
             audio,
             bili,
+            streams: Arc::new(Mutex::new(StreamCache::new())),
             covers,
             state,
             settings,
@@ -275,6 +285,8 @@ impl MusicApp {
             rename_text: String::new(),
             toasts: Vec::new(),
             last_err_shown: None,
+            stream_retried: std::collections::HashSet::new(),
+            stream_retry_pending: None,
             tray,
             window_hidden: false,
             force_quit: false,
@@ -358,6 +370,14 @@ impl MusicApp {
         format!("avatar-{}", self.mid.unwrap_or(0))
     }
 
+    /// 丢弃某首歌的直链缓存。音频下载报 403/410（疑似直链过期）时调用：
+    /// 下次点播强制走网络解析，而不是继续复用坏直链。
+    pub(crate) fn invalidate_stream_cache(&self, bvid: &str) {
+        if let Ok(mut c) = self.streams.lock() {
+            c.remove(bvid, self.settings.audio_quality);
+        }
+    }
+
     pub(crate) fn active_songs_mut(&mut self) -> &mut Vec<QueueItem> {
         &mut self.playlists[self.active_playlist].songs
     }
@@ -432,11 +452,33 @@ impl eframe::App for MusicApp {
         }
 
         // 顶部 toast：音频错误按内容去重，避免同一错误每帧重复弹。
+        //
+        // 直链过期特判：B 站 CDN 对失效签名直链回 403/410。此时丢弃该曲的直链缓存
+        // 并**强制重新解析重试一次**（`stream_retried` 保证每首歌只自动重试一次，
+        // 防死循环）。重试在 `logic`（本帧稍后执行）里发起，`spawn_play_resolve_forced`
+        // 会立刻清掉 `status.error`，所以这一帧不会闪出错误 toast。
         let cur_err = self.audio.status().error.clone();
         if cur_err != self.last_err_shown {
             self.last_err_shown = cur_err.clone();
             if let Some(e) = cur_err {
-                self.error(e);
+                let bvid = self.current_bvid.clone();
+                let already_retried = bvid
+                    .as_deref()
+                    .map(|b| self.stream_retried.contains(b))
+                    .unwrap_or(true);
+                let expired = crate::modules::bilibili::is_stream_expired_error(&e);
+                match (bvid, expired, already_retried) {
+                    (Some(b), true, false) => {
+                        crate::util::log::warn(
+                            "app",
+                            &format!("直链已过期（{e}），重新解析后重试: {b}"),
+                        );
+                        self.invalidate_stream_cache(&b);
+                        self.stream_retried.insert(b.clone());
+                        self.stream_retry_pending = Some(b);
+                    }
+                    _ => self.error(e),
+                }
             }
         }
         show_toasts(ui.ctx(), &mut self.toasts);
@@ -462,6 +504,16 @@ impl eframe::App for MusicApp {
         // 播放节流块决定（`sync_playback` 的播放态本身由节流块处理）。
         let st = self.audio.status();
         self.sync_playback(&st);
+
+        // 直链过期重试：上一帧 `ui` 判定下载失败属于直链过期（403/410），这里强制
+        // 重新解析（跳过直链缓存）。**必须在 `handle_finished` 之前**执行：
+        // `spawn_play_resolve_forced` 会重置播放状态，避免「下载失败」被误判成曲终。
+        // 若用户此刻点了别的歌，那次点击在随后的 `ui` 里发起、`play_seq` 更大，
+        // 本次重试结果会被自然丢弃。
+        if let Some(bvid) = self.stream_retry_pending.take() {
+            self.spawn_play_resolve_forced(bvid, true);
+        }
+
         let track_switched = self.handle_finished(&st);
 
         let mut repaint_msg = false;

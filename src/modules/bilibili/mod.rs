@@ -13,6 +13,7 @@
 //! - [`login`]：扫码登录（generate / matrix / poll）；
 //! - [`fav`]：收藏夹列表与资源分页；
 //! - [`resolve`]：BV 解析、video_info、playurl 音流提取、「识别音乐」；
+//! - [`stream_cache`]：已解析直链缓存（TTL 10 分钟，防直链过期）；
 //! - [`util`]：纯函数工具（音质选择 / token 扫描 / Set-Cookie 解析…）。
 //!
 //! 公共 API 速览：
@@ -31,6 +32,7 @@ mod fav;
 mod login;
 mod models;
 mod resolve;
+mod stream_cache;
 mod util;
 mod wbi;
 
@@ -40,6 +42,7 @@ pub use models::{
     Dash, DashStream, DurlEntry, FavFolder, FavItem, MusicHint, NavUser, PlayUrlData, PlayUrlResp,
     QrLoginStart, QrPoll, StreamUrl, VideoDetail, VideoInfo,
 };
+pub use stream_cache::{is_stream_expired_error, StreamCache, STREAM_CACHE_TTL};
 pub use util::pick_dash_audio;
 pub use wbi::{
     encode_uri_component, md5_hex, mixin_key, wbi_key_from_url, wbi_sign_params,

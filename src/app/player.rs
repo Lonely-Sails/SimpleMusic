@@ -62,6 +62,8 @@ impl MusicApp {
 
     /// 点播一首歌（按 bvid）：先标记当前曲目（列表立即高亮），再后台解析播放流。
     pub(crate) fn play_bvid(&mut self, bvid: String) {
+        // 用户显式点播：清掉该曲的「直链已重试过」标记，让直链过期时能再自动重试一次。
+        self.stream_retried.remove(&bvid);
         self.current_bvid = Some(bvid.clone());
         self.spawn_play_resolve(bvid);
     }

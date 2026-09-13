@@ -234,6 +234,12 @@ impl MusicApp {
     // ---- 播放解析派发 ----
 
     pub(crate) fn spawn_play_resolve(&mut self, bvid: String) {
+        self.spawn_play_resolve_forced(bvid, false);
+    }
+
+    /// 后台解析一首歌并播放。`force` = true 时**跳过直链缓存**强制重新解析
+    /// （直链过期重试用）。
+    pub(crate) fn spawn_play_resolve_forced(&mut self, bvid: String, force: bool) {
         self.play_seq += 1;
         let seq = self.play_seq;
         if self.pending_import {
@@ -242,21 +248,46 @@ impl MusicApp {
         }
         crate::util::log::debug("app", &format!("后台解析播放: {bvid}（seq={seq}）"));
         let bili = self.bili.clone();
+        let streams = self.streams.clone();
         let tx = self.tx.clone();
         let quality = self.settings.audio_quality;
         std::thread::spawn(move || {
             let started = std::time::Instant::now();
+
+            // 直链缓存命中（10 分钟内、同音质）→ 跳过 video_info + playurl 直接播放。
+            // 条目里连 QueueItem 一起存，命中时元数据（标题/时长/封面/cid）也不缺。
+            // 只借用极短临界区，取到就释放锁。
+            let cached = if force {
+                None
+            } else {
+                streams.lock().ok().and_then(|mut c| c.get(&bvid, quality))
+            };
+            if let Some((item, stream)) = cached {
+                crate::util::log::debug("app", &format!("直链缓存命中: {bvid}《{}》", item.title));
+                let _ = tx.send(AsyncMsg::PlayReady {
+                    seq,
+                    result: Ok((item, stream)),
+                });
+                return;
+            }
+
             let result = resolve_playable(&bili, &bvid, quality);
             match &result {
-                Ok((item, _)) => crate::util::log::info(
-                    "app",
-                    &format!(
-                        "解析完成: {}《{}》用时 {:.2}s",
-                        bvid,
-                        item.title,
-                        started.elapsed().as_secs_f32()
-                    ),
-                ),
+                Ok((item, stream)) => {
+                    // 写入直链缓存：10 分钟内再播同一首可跳过解析直接出声。
+                    if let Ok(mut c) = streams.lock() {
+                        c.put(&bvid, quality, item.clone(), stream.clone());
+                    }
+                    crate::util::log::info(
+                        "app",
+                        &format!(
+                            "解析完成: {}《{}》用时 {:.2}s",
+                            bvid,
+                            item.title,
+                            started.elapsed().as_secs_f32()
+                        ),
+                    );
+                }
                 Err(e) => crate::util::log::error(
                     "app",
                     &format!("解析失败: {bvid}（{e}）"),

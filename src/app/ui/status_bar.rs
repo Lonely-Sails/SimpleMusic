@@ -82,6 +82,12 @@ impl MusicApp {
         if let Ok(mut b) = self.bili.lock() {
             let _ = b.logout();
         }
+        // 直链带 Cookie 签名：换账号后必须重新解析，不能复用旧账号的直链。
+        if let Ok(mut c) = self.streams.lock() {
+            c.clear();
+        }
+        self.stream_retried.clear();
+        self.stream_retry_pending = None;
         self.login_state = false;
         self.mid = None;
         self.uname = None;

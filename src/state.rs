@@ -159,7 +159,8 @@ impl Default for PlayMode {
 // ---------------------------------------------------------------------------
 
 /// 音频质量偏好。
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+/// `Eq + Hash`：直链缓存以 `(bvid, 音质)` 为键（见 `modules::bilibili::stream_cache`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AudioQuality {
     /// 流畅 64kbps (id 30216)
     Low,
