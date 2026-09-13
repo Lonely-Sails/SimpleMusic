@@ -306,6 +306,14 @@ pub struct Settings {
     /// 桌面歌词浮窗字体（跟随界面/内嵌/指定；详见 [`LyricsFont`]）。
     #[serde(default)]
     pub lyrics_font: LyricsFont,
+    /// 歌词时间整体偏移（秒）：正 = 歌词延后出现（播放条「T」弹窗里的 ±1 秒调节）。
+    ///
+    /// 有些源的 LRC 时间轴整体偏早/偏晚（常见于视频版与原曲版的时间差），
+    /// 这里给一个全局手动补偿：解析后的时间轴统一加上该值再参与同步。
+    /// 只影响「歌词跟随播放进度」的判定，不改动歌词原文（缓存里仍是原始 LRC），
+    /// 因此随时可调、可归零。
+    #[serde(default)]
+    pub lyrics_offset_secs: f64,
     /// 桌面歌词浮窗位置（屏幕坐标 `[x, y]`，`None` = 首次由系统默认决定）。
     /// 浮窗每次上报当前位置时更新并随设置落盘，重启后恢复到关闭前的位置。
     /// 存 `[f32; 2]` 而非 egui 的 `Pos2`：项目未启用 eframe 的 serde feature，
@@ -332,6 +340,7 @@ impl Default for Settings {
             active_playlist: 0,
             ui_font: UiFont::Auto,
             lyrics_font: LyricsFont::FollowUi,
+            lyrics_offset_secs: 0.0,
             lyrics_pos: None,
         }
     }

@@ -232,36 +232,77 @@ impl MusicApp {
                         "选择歌词（点击弹出）",
                     );
                     let candidates = self.lyrics_candidates.clone();
-                    egui::Popup::menu(&resp).show(|ui| {
-                        ui.set_min_width(240.0);
-                        if candidates.is_empty() {
-                            ui.label(RichText::new("暂无其他歌词").color(theme::TEXT_WEAK));
-                        } else {
-                            for (i, li) in candidates.iter().enumerate() {
-                                let selected = self.current_lyrics.as_ref() == Some(li);
-                                let label = lyrics_candidate_label(li);
-                                let label = truncate_label(ui, &label, 230.0);
-                                let text = if selected {
-                                    RichText::new(format!("{}. {label} ✓", i + 1))
-                                        .color(theme::ACCENT)
-                                } else {
-                                    RichText::new(format!("{}. {label}", i + 1))
-                                        .color(theme::TEXT_PRIMARY)
-                                };
-                                if ui
-                                    .add(
-                                        egui::Button::new(text)
-                                            .fill(theme::BG_CARD)
-                                            .corner_radius(theme::CORNER),
-                                    )
-                                    .clicked()
-                                {
-                                    self.apply_lyrics(li);
-                                    ui.close();
+                    let offset = self.settings.lyrics_offset_secs;
+                    // `IgnoreClicks`：弹窗里的「提前/延后」是连点调节，默认的
+                    // `CloseOnClick` 会在第一次点击后就关掉菜单，无法连续调整。
+                    // 选歌词项时显式 `ui.close()` 关闭（保持原有交互）。
+                    egui::Popup::menu(&resp)
+                        .close_behavior(egui::containers::PopupCloseBehavior::IgnoreClicks)
+                        .show(|ui| {
+                            ui.set_min_width(240.0);
+                            if candidates.is_empty() {
+                                ui.label(RichText::new("暂无其他歌词").color(theme::TEXT_WEAK));
+                            } else {
+                                for (i, li) in candidates.iter().enumerate() {
+                                    let selected = self.current_lyrics.as_ref() == Some(li);
+                                    let label = lyrics_candidate_label(li);
+                                    let label = truncate_label(ui, &label, 230.0);
+                                    let text = if selected {
+                                        RichText::new(format!("{}. {label} ✓", i + 1))
+                                            .color(theme::ACCENT)
+                                    } else {
+                                        RichText::new(format!("{}. {label}", i + 1))
+                                            .color(theme::TEXT_PRIMARY)
+                                    };
+                                    if ui
+                                        .add(
+                                            egui::Button::new(text)
+                                                .fill(theme::BG_CARD)
+                                                .corner_radius(theme::CORNER),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.apply_lyrics(li);
+                                        ui.close();
+                                    }
                                 }
                             }
-                        }
-                    });
+
+                            // ── 歌词时间校准：整体 ±1 秒 ──
+                            ui.separator();
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("时间校准").color(theme::TEXT_SECONDARY));
+                                let btn = |ui: &mut egui::Ui, label: &str, tip: &str| {
+                                    ui.add(
+                                        egui::Button::new(
+                                            RichText::new(label).color(theme::TEXT_PRIMARY),
+                                        )
+                                        .fill(theme::BG_CARD)
+                                        .corner_radius(theme::CORNER),
+                                    )
+                                    .on_hover_text(tip)
+                                    .clicked()
+                                };
+                                if btn(ui, "-1s", "歌词提前 1 秒出现") {
+                                    let v = self.adjust_lyrics_offset(-1.0);
+                                    self.notice(format!("歌词提前 1 秒（当前 {:+.0}s）", v));
+                                }
+                                if btn(ui, "+1s", "歌词延后 1 秒出现") {
+                                    let v = self.adjust_lyrics_offset(1.0);
+                                    self.notice(format!("歌词延后 1 秒（当前 {:+.0}s）", v));
+                                }
+                                if btn(ui, "重置", "恢复为 0，歌词按原始时间轴显示")
+                                {
+                                    self.adjust_lyrics_offset(-offset);
+                                    self.notice("歌词时间校准已重置");
+                                }
+                            });
+                            ui.label(
+                                RichText::new(format!("当前偏移：{:+.0} 秒", offset))
+                                    .color(theme::TEXT_WEAK)
+                                    .small(),
+                            );
+                        });
                     ui.add_space(ICON_ROW_GAP);
 
                     // 3. 上一首

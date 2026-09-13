@@ -188,12 +188,19 @@ CDN 403/410 自动换备用地址；写盘失败降级内存缓冲；无输出�
 `LyricsFetched{key, candidates, selected}` 按 bvid 回主线程；**用户手选**走 `apply_lyrics`
 （应用 + 写缓存 + 落盘）；同步歌词用二分定位当前句，无同步时按进度近似取纯文本行。
 
+**歌词时间校准（全局偏移）**：设置项 `Settings::lyrics_offset_secs`（正 = 歌词延后出现，
+默认 0，钳在 ±60s），入口在播放条「T」歌词弹窗底部的「-1s / +1s / 重置」。
+`app/lyrics.rs::shift_lines` 在 `apply_lyrics_inner` 里把解析出的时间轴整体平移后再参与同步；
+`adjust_lyrics_offset` 只平移已有时间轴并立即重算当前句，**不重新抓取、不改歌词原文**
+（缓存里仍是原始 LRC），因此可随时调节、可归零，且是全局设置对所有曲目生效。
+弹窗用 `PopupCloseBehavior::IgnoreClicks` 以便连续点按（选歌词项仍显式 `ui.close()`）。
+
 ---
 
 ## 3. 数据与持久化（macOS 路径）
 
 ```
-~/.config/simple-music/config.json      设置（桌面歌词开关/锁定/字号/位置/歌词字体/音量/音量均衡/音质/播放模式）
+~/.config/simple-music/config.json      设置（桌面歌词开关/锁定/字号/位置/歌词字体/歌词时间偏移/音量/音量均衡/音质/播放模式）
 ~/.config/simple-music/session.json     B 站登录态 Cookie（权限 0600，Debug 已脱敏）
 ~/.config/simple-music/playlists.json   所有歌单（本地 + 在线引用）
 ~/.config/simple-music/playlist.json    旧版单队列文件（读取时自动迁移，随后删除）
@@ -241,12 +248,12 @@ CDN 403/410 自动换备用地址；写盘失败降级内存缓冲；无输出�
   切换后需 `clear_shadow_cache` 失效柔影缓存并唤醒浮窗重绘（柔影缓存键不含字体维度）。
   浮窗**所有**文本（含「等待播放…」占位）都必须走 `fonts::lyrics_font_id`——
   占位曾是唯一常显文本却用了主界面字体，导致换字体看似无效（已修复，勿回退）。
-- **歌词**：B 站「识别音乐」生成优先查询词 + 视频时长校准打分；vkeys.cn 聚合源自动搜索 + LRC 时间轴同步，翻译并入；LRCLIB 兜底；本地缓存 + 手选持久化。
+- **歌词**：B 站「识别音乐」生成优先查询词 + 视频时长校准打分；vkeys.cn 聚合源自动搜索 + LRC 时间轴同步，翻译并入；LRCLIB 兜底；本地缓存 + 手选持久化；**时间校准**（全局 ±1 秒微调，见播放条「T」弹窗）。
 - **歌单**：本地歌单增删改（管理窗口）；在线歌单（B 站收藏夹引用，可删）。
 - **歌单内搜索**：标题/UP 主实时过滤（本地与在线列表都有）。
 - **键盘快捷键**：`空格` 播放/暂停，`←/→` 快退/快进 5s，`↑/↓` 音量 ±5%，`N/P` 上下曲。
 - **右键菜单**：歌曲项复制 BV 号、添加到/收藏到其他本地歌单。
-- **歌词选择**：播放条「T」按钮弹出多源候选（vkeys/LRCLIB），点选切换。
+- **歌词选择**：播放条「T」按钮弹出多源候选（vkeys/LRCLIB），点选切换；弹窗底部带歌词时间校准（-1s / +1s / 重置）。
 - **系统托盘**：显示/隐藏/退出菜单；关闭按钮隐藏到托盘（托盘可用时）。
 
 ---
@@ -287,6 +294,7 @@ CDN 403/410 自动换备用地址；写盘失败降级内存缓冲；无输出�
 | 播放列表快照/当前曲目定位 | `app/player.rs::playback_songs` / `current_bvid`（`app/mod.rs`） |
 | 歌单增删改/切换 | `app/playlists.rs` |
 | 歌词同步（当前句/下一句） | `app/lyrics.rs` |
+| 歌词时间校准（全局偏移） | `app/lyrics.rs::shift_lines` / `adjust_lyrics_offset`；入口 `app/ui/player_bar.rs` 的「T」弹窗 |
 | 异步消息类型与分发 | `app/messages.rs::AsyncMsg` + `handle_msg` |
 | B 站登录/收藏夹 | `modules/bilibili/{login,fav}.rs` |
 | B 站取流/识别音乐 | `modules/bilibili/resolve.rs` |

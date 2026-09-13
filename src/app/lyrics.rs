@@ -4,6 +4,36 @@ use crate::modules::lyrics::{self, LrcLine, Lyrics};
 
 use super::MusicApp;
 
+/// 歌词时间偏移的钳制范围（秒）：±60 秒足够覆盖常见的整曲时间差，
+/// 同时避免误操作（或旧配置里的脏值）把时间轴推到离谱的位置。
+pub const LYRICS_OFFSET_LIMIT_SECS: f64 = 60.0;
+
+/// 把设置里的歌词偏移应用到 LRC 时间轴（纯函数）。
+///
+/// 语义：`offset` 是「歌词整体延迟量」，正 = 歌词更晚出现。
+/// 因此把每行时间戳加上 `offset` 即可——同步时 `pos_secs >= time_secs + offset`
+/// 才切到该行，正偏移自然表现为延后。
+///
+/// `offset == 0.0` 时原样返回（不克隆、不排序），避免无谓开销。
+/// 负数把时间戳推到 0 以下时钳制为 0（与 `lrc::parse` 对 `[offset:]` 的处理一致）。
+pub fn shift_lines(lines: &[LrcLine], offset: f64) -> Vec<LrcLine> {
+    if offset == 0.0 || lines.is_empty() {
+        return lines.to_vec();
+    }
+    let mut out = lines.to_vec();
+    for line in &mut out {
+        line.time_secs = (line.time_secs + offset).max(0.0);
+    }
+    // 平移是单调变换，顺序不会变，但负偏移钳制到 0 后可能产生并列时间戳，
+    // 稳定排序保证同时间保持原相对顺序（与 parse 的约定一致）。
+    out.sort_by(|a, b| {
+        a.time_secs
+            .partial_cmp(&b.time_secs)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    out
+}
+
 /// 无同步歌词时按播放进度近似取行：返回 `plain` 的下标（非空时必在界内）。
 pub fn pick_plain_line_index(plain: &[String], progress: f64) -> usize {
     if plain.is_empty() {
@@ -102,7 +132,8 @@ impl MusicApp {
     /// 应用歌词的公共部分：更新当前歌词与时间轴/纯文本行。
     fn apply_lyrics_inner(&mut self, li: &Lyrics) {
         self.current_lyrics = Some(li.clone());
-        self.lyrics_lines = li.lrc_lines();
+        // 时间轴按设置里的全局偏移平移后再参与同步（歌词原文不动）。
+        self.lyrics_lines = shift_lines(&li.lrc_lines(), self.settings.lyrics_offset_secs);
         self.lyrics_plain = li
             .plain
             .lines()
@@ -110,6 +141,24 @@ impl MusicApp {
             .filter(|s| !s.is_empty())
             .collect();
         self.update_lyrics_line();
+    }
+
+    /// 调节歌词时间偏移：`delta` 秒（正 = 歌词延后出现，负 = 提前）。
+    ///
+    /// 按 [`LYRICS_OFFSET_LIMIT_SECS`] 钳制后写进设置（随设置的每 5 秒兜底 +
+    /// 退出保存落盘），并立即用新偏移重算时间轴与当前句——**不重新抓取歌词**，
+    /// 只平移已有的时间轴，所以点击后当帧就能看到效果。
+    ///
+    /// 返回调整后的偏移量，供调用方拼提示文案。
+    pub(crate) fn adjust_lyrics_offset(&mut self, delta: f64) -> f64 {
+        let next = (self.settings.lyrics_offset_secs + delta)
+            .clamp(-LYRICS_OFFSET_LIMIT_SECS, LYRICS_OFFSET_LIMIT_SECS);
+        self.settings.lyrics_offset_secs = next;
+        if let Some(li) = self.current_lyrics.clone() {
+            self.lyrics_lines = shift_lines(&li.lrc_lines(), next);
+        }
+        self.update_lyrics_line();
+        next
     }
 }
 
@@ -137,6 +186,49 @@ mod tests {
                 text: format!("line{i}"),
             })
             .collect()
+    }
+
+    /// 偏移平移：正偏移把每行推后（切行更晚），负偏移提前，0 原样。
+    #[test]
+    fn shift_lines_moves_timeline() {
+        let lines = lrc(&[10.0, 20.0]);
+        assert_eq!(shift_lines(&lines, 0.0), lines);
+        let later = shift_lines(&lines, 1.5);
+        assert_eq!(later[0].time_secs, 11.5);
+        assert_eq!(later[1].time_secs, 21.5);
+        let earlier = shift_lines(&lines, -1.0);
+        assert_eq!(earlier[0].time_secs, 9.0);
+        assert_eq!(earlier[1].time_secs, 19.0);
+        // 文本保持不变（只平移时间轴，不改歌词原文）。
+        assert_eq!(earlier[0].text, "line0");
+    }
+
+    /// 负偏移把时间戳推到 0 以下时钳制为 0，并保持升序（同时间戳相对顺序不变）。
+    #[test]
+    fn shift_lines_clamps_to_zero_and_keeps_order() {
+        let lines = lrc(&[0.5, 2.0, 3.0]);
+        let out = shift_lines(&lines, -1.0);
+        assert_eq!(
+            out.iter().map(|l| l.time_secs).collect::<Vec<_>>(),
+            vec![0.0, 1.0, 2.0]
+        );
+        let clamped = shift_lines(&lines, -10.0);
+        assert_eq!(
+            clamped.iter().map(|l| l.time_secs).collect::<Vec<_>>(),
+            vec![0.0, 0.0, 0.0]
+        );
+        // 钳制后文本顺序仍是原顺序（稳定排序）。
+        assert_eq!(
+            clamped.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(),
+            vec!["line0", "line1", "line2"]
+        );
+    }
+
+    /// 空时间轴不 panic，任意偏移都返回空。
+    #[test]
+    fn shift_lines_empty() {
+        assert!(shift_lines(&[], 1.0).is_empty());
+        assert!(shift_lines(&[], 0.0).is_empty());
     }
 
     /// LRC：切换点 = 下一个时间戳；前奏（pos < 首行时间）覆盖首行切换；

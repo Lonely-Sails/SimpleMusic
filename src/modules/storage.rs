@@ -360,6 +360,7 @@ mod tests {
             active_playlist: 2,
             ui_font: crate::state::UiFont::Embedded,
             lyrics_font: crate::state::LyricsFont::Specific("/f.ttf".into()),
+            lyrics_offset_secs: -1.5,
             lyrics_pos: Some([1920.0, 1040.0]),
         };
         let text = serde_json::to_string_pretty(&s).expect("序列化失败");
@@ -371,6 +372,7 @@ mod tests {
         assert!(text.contains("\"ui_font\""));
         assert!(text.contains("\"lyrics_font\""));
         assert!(text.contains("\"volume_normalize\""));
+        assert!(text.contains("\"lyrics_offset_secs\""));
     }
 
     #[test]
