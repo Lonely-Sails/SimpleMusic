@@ -5,13 +5,16 @@
 //! - 主线程每帧 [`CoverCache::poll`] 排空 channel，存入缓存并注册（lazy）egui 纹理；
 //! - **并发有界**：同时最多 [`MAX_IN_FLIGHT`] 张在飞（大歌单启动预取上百张时
 //!   不会一次性发出上百个请求）；
+//! - **优先级调度**：可视区域内的封面、头像、当前播放曲目走 [`Prio::High`]
+//!   队列，先于后台预取（[`Prio::Low`]）派发；已在低优先级队列里的任务被
+//!   可视请求命中时就地提升，因此「滚到哪、先出哪」；
 //! - **共享 HTTP 客户端**：复用 [`crate::net::http_client`]（不再自建客户端与线程）；
 //! - 失败缓存 30 分钟不重试；内存条目上限 400，超出按最久未访问清理 100 条。
 //!
 //! 本模块不依赖项目的主题色板（不 import crate::theme），保持可独立测试。
 
 use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
@@ -38,6 +41,19 @@ const COVER_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTM
 /// 单个条目的缓存态。
 type CoverImage = Arc<ColorImage>;
 
+/// 下载优先级。
+///
+/// 大歌单/收藏夹会在启动或翻页时一次性预取上百张封面，若不分优先级，
+/// 用户当前看到的几张可能要排在这些后台任务后面。可视区域内的封面、
+/// 用户头像、当前播放曲目一律走 [`Prio::High`]，其余预取走 [`Prio::Low`]。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Prio {
+    /// 可视区域内的封面、头像、当前播放曲目。
+    High,
+    /// 后台预取（当前看不到的条目）。
+    Low,
+}
+
 /// 一个待下载任务（`request` 投递，调度器消费）。
 struct CoverJob {
     key: String,
@@ -50,14 +66,22 @@ pub struct CoverCache {
     rx: Receiver<(String, Result<CoverImage, String>)>,
     /// 结果回传端（派发的异步任务各持一份）。
     tx: Sender<(String, Result<CoverImage, String>)>,
-    /// 待下载队列（UI 线程推入，`poll` 限流取出派发）。
-    pending: VecDeque<CoverJob>,
+    /// 高优先级待下载队列（可视封面/头像/当前曲目），先于 `pending_low` 派发。
+    pending_high: VecDeque<CoverJob>,
+    /// 低优先级待下载队列（后台预取）。
+    pending_low: VecDeque<CoverJob>,
     /// key(bvid) -> (解码图(注册纹理后释放), 延迟注册的纹理, 最近访问时间)。
     images: HashMap<String, (Option<CoverImage>, Option<TextureHandle>, Instant)>,
     /// key -> 最近失败时间。
     failed: HashMap<String, Instant>,
-    /// 正在下载中的 key。
-    in_flight: HashSet<String>,
+    /// 已入队或已派发、尚未出结果的 key -> 其优先级（去重 + 提升用，
+    /// **不是**在飞计数）。
+    in_flight: HashMap<String, Prio>,
+    /// 已派发到 runtime、尚未回结果的**实际**在飞任务数（限流用）。
+    ///
+    /// 必须与 `in_flight.len()` 区分开：`request` 会把整批 key 一次性塞进队列，
+    /// 若用集合长度限流，队列一长就永远达不到派发条件（封面全都不加载）。
+    active: usize,
 }
 
 impl CoverCache {
@@ -71,19 +95,28 @@ impl CoverCache {
             ctx,
             rx,
             tx,
-            pending: VecDeque::new(),
+            pending_high: VecDeque::new(),
+            pending_low: VecDeque::new(),
             images: HashMap::new(),
             failed: HashMap::new(),
-            in_flight: HashSet::new(),
+            in_flight: HashMap::new(),
+            active: 0,
         }
     }
 
-    /// 把 `pending` 里的任务限流派发到全局 runtime（在飞数不超过 [`MAX_IN_FLIGHT`]）。
+    /// 把待下载队列限流派发到全局 runtime（在飞数不超过 [`MAX_IN_FLIGHT`]）。
+    ///
+    /// 先取空高优先级队列再取低优先级，保证可视封面/头像优先于后台预取。
     fn dispatch_pending(&mut self) {
-        while self.in_flight.len() < MAX_IN_FLIGHT {
-            let Some(job) = self.pending.pop_front() else {
+        while self.active < MAX_IN_FLIGHT {
+            let job = self
+                .pending_high
+                .pop_front()
+                .or_else(|| self.pending_low.pop_front());
+            let Some(job) = job else {
                 break;
             };
+            self.active += 1;
             let tx = self.tx.clone();
             crate::net::spawn(async move {
                 let result = match fetch_cover_bytes(&job.url).await {
@@ -101,12 +134,36 @@ impl CoverCache {
         }
     }
 
-    /// 请求加载封面。key 一般用 bvid；url 为空/已缓存/已在下载/失败未过期则跳过。
+    /// 请求加载封面（**低优先级**，后台预取用）。key 一般用 bvid。
     pub fn request(&mut self, key: &str, url: &str) {
+        self.request_with_priority(key, url, Prio::Low);
+    }
+
+    /// 请求加载封面（**高优先级**：可视区域内的封面、头像、当前播放曲目）。
+    pub fn request_visible(&mut self, key: &str, url: &str) {
+        self.request_with_priority(key, url, Prio::High);
+    }
+
+    /// 请求加载封面。url 为空/已缓存/失败未过期则跳过。
+    ///
+    /// 已在队列中的任务被更高优先级请求命中时**就地提升**（低 → 高），
+    /// 这样「用户滚到哪，哪张封面先下」，而不必等后台预取排完。
+    pub fn request_with_priority(&mut self, key: &str, url: &str, prio: Prio) {
         if url.trim().is_empty() || key.is_empty() {
             return;
         }
-        if self.images.contains_key(key) || self.in_flight.contains(key) {
+        if self.images.contains_key(key) {
+            return;
+        }
+        if let Some(&existing) = self.in_flight.get(key) {
+            if prio == Prio::High && existing == Prio::Low {
+                self.in_flight.insert(key.to_string(), Prio::High);
+                if let Some(pos) = self.pending_low.iter().position(|j| j.key == key) {
+                    if let Some(job) = self.pending_low.remove(pos) {
+                        self.pending_high.push_back(job);
+                    }
+                }
+            }
             return;
         }
         let now = Instant::now();
@@ -116,18 +173,23 @@ impl CoverCache {
             }
             self.failed.remove(key); // 过期失败：允许重试
         }
-        self.in_flight.insert(key.to_string());
+        self.in_flight.insert(key.to_string(), prio);
         // 入待下载队列；实际派发在 `poll`（限流，不一次性发上百个请求）。
-        self.pending.push_back(CoverJob {
+        let job = CoverJob {
             key: key.to_string(),
             url: url.to_string(),
-        });
+        };
+        match prio {
+            Prio::High => self.pending_high.push_back(job),
+            Prio::Low => self.pending_low.push_back(job),
+        }
     }
 
     /// 每帧调用：限流派发待下载任务 + 排空下载结果，成功入缓存，失败记入失败表。
     pub fn poll(&mut self) {
         self.dispatch_pending();
         while let Ok((key, result)) = self.rx.try_recv() {
+            self.active = self.active.saturating_sub(1);
             self.in_flight.remove(&key);
             match result {
                 Ok(img) => {
@@ -297,11 +359,79 @@ mod tests {
         let ctx = egui::Context::default();
         let mut cc = CoverCache::new(ctx);
         cc.request("BV1", "https://example.com/a.jpg");
-        assert!(cc.in_flight.contains("BV1"), "首次请求应入队");
+        assert!(cc.in_flight.contains_key("BV1"), "首次请求应入队");
         // 已在下载中：不重复入队。
         cc.request("BV1", "https://example.com/a.jpg");
         // 已缓存/失败分支在 poll 侧，这里只验证 in_flight 去重不 panic。
         assert_eq!(cc.in_flight.len(), 1);
+        assert_eq!(cc.pending_low.len(), 1, "只应入队一次");
+    }
+
+    /// 回归：一次性入队超过 [`MAX_IN_FLIGHT`] 的任务时，`poll` 仍必须派发
+    /// （曾用 `in_flight.len()` 限流，队列一长就永远派发不出去 → 封面全不显示）。
+    #[test]
+    fn dispatch_starts_even_when_queue_exceeds_limit() {
+        let ctx = egui::Context::default();
+        let mut cc = CoverCache::new(ctx);
+        for i in 0..(MAX_IN_FLIGHT * 5) {
+            cc.request(&format!("BV{i}"), &format!("https://example.com/{i}.jpg"));
+        }
+        assert_eq!(cc.in_flight.len(), MAX_IN_FLIGHT * 5, "全部应已入队去重表");
+        cc.poll();
+        assert_eq!(cc.active, MAX_IN_FLIGHT, "应立刻派发满在飞上限");
+        assert_eq!(
+            cc.pending_low.len(),
+            MAX_IN_FLIGHT * 4,
+            "其余任务留在队列等待"
+        );
+    }
+
+    /// 高优先级（可视封面/头像）先于低优先级（后台预取）派发。
+    #[test]
+    fn high_priority_dispatches_before_low() {
+        let ctx = egui::Context::default();
+        let mut cc = CoverCache::new(ctx);
+        // 先用后台预取塞满队列。
+        for i in 0..(MAX_IN_FLIGHT * 2) {
+            cc.request(&format!("low{i}"), &format!("https://example.com/l{i}.jpg"));
+        }
+        // 再来一张可视封面。
+        cc.request_visible("vis", "https://example.com/v.jpg");
+        cc.poll();
+        assert_eq!(cc.active, MAX_IN_FLIGHT);
+        // 可视任务必须已被派发（不在任何待队列里）。
+        assert!(cc.pending_high.is_empty(), "高优先级队列应已取空");
+        assert_eq!(cc.pending_low.len(), MAX_IN_FLIGHT * 2 - MAX_IN_FLIGHT + 1);
+    }
+
+    /// 已在低优先级队列里的任务被可视请求命中时就地提升到高优先级。
+    #[test]
+    fn visible_request_promotes_queued_job() {
+        let ctx = egui::Context::default();
+        let mut cc = CoverCache::new(ctx);
+        cc.request("BV1", "https://example.com/a.jpg");
+        assert_eq!(cc.pending_low.len(), 1);
+        assert_eq!(cc.pending_high.len(), 0);
+        cc.request_visible("BV1", "https://example.com/a.jpg");
+        assert_eq!(cc.pending_low.len(), 0, "应从低优先级队列移出");
+        assert_eq!(cc.pending_high.len(), 1, "应提升到高优先级队列");
+        assert_eq!(cc.in_flight.get("BV1"), Some(&Prio::High));
+        assert_eq!(cc.in_flight.len(), 1, "提升不应产生重复条目");
+    }
+
+    /// 已派发（在飞）的任务无法提升：不 panic、不重复入队。
+    #[test]
+    fn visible_request_on_inflight_job_is_noop() {
+        let ctx = egui::Context::default();
+        let mut cc = CoverCache::new(ctx);
+        cc.request("BV1", "https://example.com/a.jpg");
+        cc.poll();
+        assert_eq!(cc.active, 1, "应已派发");
+        cc.request_visible("BV1", "https://example.com/a.jpg");
+        assert_eq!(cc.active, 1);
+        assert_eq!(cc.in_flight.len(), 1);
+        assert!(cc.pending_high.is_empty());
+        assert!(cc.pending_low.is_empty());
     }
 
     /// 真实网络验证：B 站公开视频 → view 接口封面 URL → 下载 → 解码。

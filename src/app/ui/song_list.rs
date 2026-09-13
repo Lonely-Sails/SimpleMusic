@@ -428,6 +428,10 @@ impl MusicApp {
     }
 
     /// 绘制封面缩略图行（有纹理画图，否则画占位符）。
+    ///
+    /// 若该行**落在当前可视区域内**且封面尚未加载，则以高优先级请求下载：
+    /// 大歌单/收藏夹的后台预取可能有上百张在排队，可视区域内的必须插队，
+    /// 否则用户滚动后要等预取排完才看得到封面。
     pub(crate) fn draw_cover_row(
         &mut self,
         ui: &mut egui::Ui,
@@ -440,6 +444,10 @@ impl MusicApp {
                 // 纯绘制圆角图片：不创建 widget，避免改变行间距导致封面加载后整列跳位。
                 paint_cover_image(ui.painter(), cover_rect, tex);
                 return;
+            }
+            // 可视区域内（含少量预读余量）→ 提升到高优先级队列。
+            if ui.is_rect_visible(cover_rect) {
+                self.covers.request_visible(key, url);
             }
         }
         paint_placeholder_cover(ui.painter(), cover_rect);

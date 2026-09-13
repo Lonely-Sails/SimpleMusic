@@ -452,10 +452,11 @@ impl MusicApp {
                     self.uname = uname;
                     self.face = face.clone();
                     // 头像：按 mid 作缓存 key，后台下载 → 状态栏圆形头像。
+                    // 高优先级：头像只此一张且始终可见，不该排在歌单预取后面。
                     if let Some(face) = face {
                         if !face.is_empty() {
                             let key = self.avatar_key();
-                            self.covers.request(&key, &face);
+                            self.covers.request_visible(&key, &face);
                         }
                     }
                 } else {

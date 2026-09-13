@@ -63,6 +63,13 @@ impl MusicApp {
     fn show_user_area(&mut self, ui: &mut egui::Ui) {
         let key = self.avatar_key();
         let texture = self.covers.texture(&key);
+        // 头像永远在可视区域：纹理还没就绪且 URL 已知时，以**高优先级**请求，
+        // 避免它排在歌单/收藏夹的后台预取后面（头像只此一张，不该等）。
+        if texture.is_none() {
+            if let Some(face) = self.face.clone() {
+                self.covers.request_visible(&key, &face);
+            }
+        }
         let initial = self
             .uname
             .as_deref()

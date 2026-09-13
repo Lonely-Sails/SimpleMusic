@@ -90,7 +90,8 @@ impl MusicApp {
             self.state.duration_secs = item.duration_secs;
         }
         if !item.cover_url.is_empty() {
-            self.covers.request(&item.bvid, &item.cover_url);
+            // 当前播放曲目：玩家条/列表选中行都在可视区域，走高优先级。
+            self.covers.request_visible(&item.bvid, &item.cover_url);
         }
         self.current_lyrics = None;
         self.lyrics_candidates.clear();
