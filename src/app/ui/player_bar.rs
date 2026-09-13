@@ -111,7 +111,13 @@ impl MusicApp {
                     self.state.position_secs
                 };
                 let mut val = pos.clamp(0.0, max);
-                let left = format_secs(pos);
+                // 响度均衡开启时，开始出声前要先整曲预扫描：此时位置恒为 0，
+                // 用左侧时间位显示「分析中…」，让用户明白这段额外等待来自均衡。
+                let left = if st.normalizing {
+                    "分析中…".to_string()
+                } else {
+                    format_secs(pos)
+                };
                 let right = format_secs(dur);
 
                 ui.horizontal(|ui| {

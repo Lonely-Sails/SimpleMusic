@@ -36,8 +36,13 @@ impl AudioEngine {
         Self::with_cache_dir(default_cache_dir())
     }
 
-    /// 创建引擎并指定缓存目录（测试用）。
+    /// 创建引擎并指定缓存目录（测试用）。响度均衡默认关闭。
     pub fn with_cache_dir(cache_dir: PathBuf) -> Self {
+        Self::with_cache_dir_and_normalize(cache_dir, false)
+    }
+
+    /// 创建引擎并指定缓存目录与响度均衡初始开关（测试用）。
+    pub fn with_cache_dir_and_normalize(cache_dir: PathBuf, normalize: bool) -> Self {
         let (tx, rx) = mpsc::channel();
         let status = Arc::new(Mutex::new(PlaybackStatus::default()));
         let worker = {
@@ -46,7 +51,7 @@ impl AudioEngine {
             let dir = cache_dir.clone();
             std::thread::Builder::new()
                 .name("simple-music-audio".into())
-                .spawn(move || worker_loop(rx, status, dir, 0.8))
+                .spawn(move || worker_loop(rx, status, dir, 0.8, normalize))
                 .ok()
         };
         Self {
@@ -110,6 +115,12 @@ impl AudioEngine {
     /// 设置音量 0.0 ~ 1.0（越界自动钳制）。
     pub fn set_volume(&mut self, volume: f32) {
         self.submit(Command::Volume(volume));
+    }
+
+    /// 开关响度均衡（音量均衡）。仅影响后续播放：正在播放的曲目增益不变，
+    /// 避免播到一半响度跳变。
+    pub fn set_normalize(&mut self, on: bool) {
+        self.submit(Command::SetNormalize(on));
     }
 
     // ---- 状态查询 ----

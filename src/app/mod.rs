@@ -189,8 +189,9 @@ impl MusicApp {
         }
         let (tx, rx) = mpsc::channel();
         let mut audio = AudioEngine::new();
-        // 启动时应用已保存的音量。
+        // 启动时应用已保存的音量与音量均衡开关。
         audio.set_volume(settings.volume);
+        audio.set_normalize(settings.volume_normalize);
         let playlists = storage::load_playlists();
         // 清掉历史版本「点播即隐式加入在线歌单」行为残留的脏数据：
         // 在线歌单只是收藏夹引用，歌曲列表永远由 B 站接口拉取，不应有本地积累。

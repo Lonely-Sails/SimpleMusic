@@ -19,6 +19,10 @@ pub struct PlaybackStatus {
     pub duration_secs: f64,
     /// 音量 0.0 ~ 1.0。
     pub volume: f32,
+    /// 正在做响度分析（音量均衡开启时的整曲预扫描）；UI 可显示「分析中」。
+    pub normalizing: bool,
+    /// 本次播放应用的响度均衡增益（dB，0 = 未启用/未改变），诊断用。
+    pub normalize_gain_db: f32,
     /// 下载进度：已下载字节。
     pub downloaded_bytes: u64,
     /// 下载进度：总字节（Content-Length 或 StreamUrl.size_bytes；未知为 None）。
@@ -91,6 +95,8 @@ pub(super) enum Command {
     Stop,
     Seek(f64),
     Volume(f32),
+    /// 开关响度均衡（音量均衡）；下次播放生效。
+    SetNormalize(bool),
     Shutdown,
 }
 

@@ -293,6 +293,10 @@ pub struct Settings {
     /// 音量 0.0 ~ 1.0。
     #[serde(default = "default_volume")]
     pub volume: f32,
+    /// 音量均衡（响度归一化）：整曲预分析后按固定增益把各曲响度拉齐。
+    /// 默认关闭（开启后每次播放前要多扫一遍整曲，且会改变原始动态）。
+    #[serde(default)]
+    pub volume_normalize: bool,
     /// 上次打开的歌单下标（重启后恢复；歌单数量变化时会被钳制）。
     #[serde(default)]
     pub active_playlist: usize,
@@ -324,6 +328,7 @@ impl Default for Settings {
             play_mode: PlayMode::default(),
             audio_quality: AudioQuality::default(),
             volume: 0.8,
+            volume_normalize: false,
             active_playlist: 0,
             ui_font: UiFont::Auto,
             lyrics_font: LyricsFont::FollowUi,

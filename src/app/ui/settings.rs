@@ -200,6 +200,27 @@ impl MusicApp {
         // 音量同步到 state
         self.state.volume = self.settings.volume;
         self.audio.set_volume(self.settings.volume);
+
+        ui.add_space(6.0);
+        // 音量均衡：整曲预分析后应用固定增益，把不同曲目的响度拉齐。
+        let prev = self.settings.volume_normalize;
+        ui.checkbox(
+            &mut self.settings.volume_normalize,
+            "音量均衡（响度归一化）",
+        )
+        .on_hover_text(
+            "播放前扫描整曲平均响度，按固定增益把各曲音量拉齐，避免切歌忽大忽小；\n\
+                 开启后每次播放前会多一次整曲扫描（略增加载时间），且会改变原始动态",
+        );
+        if self.settings.volume_normalize != prev {
+            // 仅对后续播放生效：正在播放的曲目增益不变，避免播到一半响度跳变。
+            self.audio.set_normalize(self.settings.volume_normalize);
+            if self.settings.volume_normalize {
+                self.notice("音量均衡已开启，将在下一首生效");
+            } else {
+                self.notice("音量均衡已关闭，将在下一首生效");
+            }
+        }
     }
 
     /// 「界面字体」展示项：主界面恒用内嵌字体（不再提供选择）。

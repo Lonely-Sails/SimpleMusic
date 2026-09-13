@@ -25,7 +25,11 @@ pub(super) enum FetchErr {
     Failed(String),
 }
 
-fn poll_abort(rx: &Receiver<Command>) -> bool {
+/// 非阻塞检查是否有抢占性命令（Stop / 新 Play / 退出）。
+///
+/// 下载与响度分析共用：期间到达的 Pause/Resume/Seek/Volume 会被丢弃
+/// （这些命令对「尚未开始出声」的加载阶段没有意义），抢占性命令则立即返回 true。
+pub(super) fn poll_abort(rx: &Receiver<Command>) -> bool {
     loop {
         match rx.try_recv() {
             Ok(Command::Stop) | Ok(Command::Play(_)) | Ok(Command::Shutdown) => return true,

@@ -87,14 +87,15 @@ src/
 │   │   ├── resolve.rs BV 解析/video_info/resolve_stream(DASH 优先)/detect_music 识别音乐
 │   │   ├── stream_cache.rs 已解析直链缓存（键 (bvid,音质)，TTL 10min）+ 直链过期判定
 │   │   └── util.rs   纯函数（pick_dash_audio/scan_bv_token/parse_set_cookie/dedup_folders）
-│   ├── audio/        音频引擎（原单文件拆 7 个子模块）
+│   ├── audio/        音频引擎（原单文件拆 8 个子模块）
 │   │   ├── mod.rs    架构文档 + re-export（default_cache_dir/cache_path_in/PlaybackStatus/PlayRequest/AudioEngine）
 │   │   ├── control.rs 协议层：PlaybackStatus(UI 只读)/Command(mpsc)/PlayRequest
 │   │   ├── cache.rs  缓存路径规则(<dir>/<md5(key)>.m4s)与命中判定
 │   │   ├── decode.rs symphonia 解码源 SymphoniaSource（文件/内存输入、seek、position 推算）
+│   │   ├── normalize.rs 响度均衡：整曲预分析(RMS dBFS) → 固定增益 + 硬限幅
 │   │   ├── download.rs fetch_to_cache 流式下载(.part 原子重命名)/CDN 备援/降级内存
 │   │   ├── player.rs worker_loop 播放线程主循环 + load_and_play + LoadErr
-│   │   └── engine.rs AudioEngine UI 句柄（play/pause/resume/seek/stop/volume/status）
+│   │   └── engine.rs AudioEngine UI 句柄（play/pause/resume/seek/stop/volume/normalize/status）
 │   ├── lyrics/       歌词（原单文件拆 8 个子模块）
 │   │   ├── mod.rs    模块地图 + 端点常量 + re-export（对外路径 modules::lyrics::* 不变）
 │   │   ├── model.rs  SongHint/LrcLine/LrcSearchResult/Lyrics 数据模型
@@ -168,6 +169,13 @@ TTL `STREAM_CACHE_TTL` = 10 分钟）→ 命中则跳过 `video_info + playurl` 
 （二次秒开；损坏缓存解码失败自动删除重下）→ symphonia(AAC/MP4) 解码 → rodio 输出；
 CDN 403/410 自动换备用地址；写盘失败降级内存缓冲；无输出设备绝不 panic，进错误状态。
 
+**音量均衡（响度归一化，默认关闭）**：开启后（设置页「播放」）在**开始出声前**由播放线程
+同步扫一遍整曲解码流（`modules/audio/normalize.rs::analyze`，累计样本平方和得 RMS dBFS），
+推导固定增益（目标 -18 dBFS，钳在 ±12 dB）后包一层 `NormalizeSource` 乘增益并硬限幅；
+播放期间增益恒定（无抽气效应）。分析可被新命令打断（复用 `download::poll_abort`），
+期间 `PlaybackStatus.normalizing=true`；分析失败降级为原音量播放，不阻断出声。
+开关**只对后续播放生效**（`Command::SetNormalize`），避免播到一半响度跳变。
+
 **直链缓存为什么要 TTL**：B 站 playurl 直链带签名，CDN 侧会过期，缓存过期直链必然 403。
 所以：① TTL 内（10 分钟）才复用，超时重新解析；② 下载报 403/410/404 时
 （`is_stream_expired_error`）丢弃该曲直链并**强制重新解析重试一次**
@@ -193,7 +201,7 @@ CDN 403/410 自动换备用地址；写盘失败降级内存缓冲；无输出�
 ## 3. 数据与持久化（Linux 路径）
 
 ```
-~/.config/simple-music/config.json      设置（桌面歌词开关/锁定/字号/位置/歌词字体/音量/音质/播放模式）
+~/.config/simple-music/config.json      设置（桌面歌词开关/锁定/字号/位置/歌词字体/音量/音量均衡/音质/播放模式）
 ~/.config/simple-music/session.json     B 站登录态 Cookie（权限 0600，Debug 已脱敏）
 ~/.config/simple-music/playlists.json   所有歌单（本地 + 在线引用）
 ~/.config/simple-music/playlist.json    旧版单队列文件（读取时自动迁移，随后删除）
@@ -230,7 +238,7 @@ CDN 403/410 自动换备用地址；写盘失败降级内存缓冲；无输出�
 
 - **B 站扫码登录**：二维码 + 轮询（86101/86090/86038），Cookie 持久化、日志脱敏。
 - **音源（仅两种入口，刻意无搜索）**：① 收藏夹 → 在线歌单（分页加载，只读）；② 链接导入（BV 号 / `/video/BV..` / `b23.tv` 短链）。
-- **播放**：播放/暂停、上下曲、进度条 seek、音量、曲终自动下一首、加载进度、三种切歌模式（顺序循环/单曲循环/随机）、音质偏好（64/128/320k/无损）。
+- **播放**：播放/暂停、上下曲、进度条 seek、音量、曲终自动下一首、加载进度、三种切歌模式（顺序循环/单曲循环/随机）、音质偏好（64/128/320k/无损）、音量均衡（响度归一化，默认关闭，整曲预分析 + 固定增益）。
 - **播放列表语义**：**当前选中的歌单就是播放列表**，没有独立队列；播放时不隐式写歌进歌单。
 - **封面**：列表/播放条圆角缩略图，异步 + 内存缓存 + 占位图。
 - **桌面歌词**：透明置顶无边框悬浮窗，当前句+下一句预览（带 skrifa+vello_cpu 离屏光栅化的
@@ -295,6 +303,7 @@ CDN 403/410 自动换备用地址；写盘失败降级内存缓冲；无输出�
 | 音频引擎对外接口 | `modules/audio/engine.rs`（`AudioEngine`） |
 | 音频下载/缓存 | `modules/audio/{download,cache}.rs` |
 | 音频解码/播放线程 | `modules/audio/{decode,player}.rs` |
+| 音量均衡（响度归一化） | `modules/audio/normalize.rs`（设置项 `Settings::volume_normalize`，默认关闭） |
 | 歌词搜索/打分 | `modules/lyrics/{lrclib,vkeys,matching}.rs` |
 | LRC 解析/同步 | `modules/lyrics/lrc.rs` |
 | 歌词缓存 | `modules/lyrics/cache.rs` + `modules/storage.rs` |

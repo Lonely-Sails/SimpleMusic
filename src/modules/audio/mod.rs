@@ -17,6 +17,7 @@
 //! - [`control`]：`PlaybackStatus` / `Command` / `PlayRequest`（协议层）；
 //! - [`cache`]：缓存路径规则与命中判定；
 //! - [`decode`]：symphonia 解码源（seek/position/内存输入）；
+//! - [`normalize`]：响度均衡（整曲预分析 → 固定增益）；
 //! - [`download`]：流式下载 + 缓存复用 + CDN 备援 + 降级内存；
 //! - [`player`]：播放线程主循环 + load_and_play + 输出设备；
 //! - [`engine`]：`AudioEngine` 句柄（UI 唯一入口）。
@@ -26,6 +27,7 @@ pub mod control;
 pub mod decode;
 pub mod download;
 pub mod engine;
+pub mod normalize;
 pub mod player;
 
 pub use cache::{cache_path_in, default_cache_dir};

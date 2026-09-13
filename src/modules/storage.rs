@@ -356,6 +356,7 @@ mod tests {
             play_mode: crate::state::PlayMode::Sequence,
             audio_quality: crate::state::AudioQuality::High,
             volume: 0.8,
+            volume_normalize: true,
             active_playlist: 2,
             ui_font: crate::state::UiFont::Embedded,
             lyrics_font: crate::state::LyricsFont::Specific("/f.ttf".into()),
@@ -369,6 +370,7 @@ mod tests {
         assert!(text.contains("\"lyrics_pos\""));
         assert!(text.contains("\"ui_font\""));
         assert!(text.contains("\"lyrics_font\""));
+        assert!(text.contains("\"volume_normalize\""));
     }
 
     #[test]
@@ -384,6 +386,7 @@ mod tests {
         }"#;
         let s: Settings = serde_json::from_str(old).unwrap();
         assert_eq!(s.active_playlist, 0);
+        assert!(!s.volume_normalize, "旧配置无该字段时应默认关闭");
     }
 
     #[test]

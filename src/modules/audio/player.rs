@@ -12,7 +12,8 @@ use rodio::Sink;
 use super::cache::cache_path_in;
 use super::control::{Command, PlayRequest, PlaybackStatus};
 use super::decode::{MediaInput, SourceShared, SymphoniaSource};
-use super::download::{FetchErr, fetch_to_cache};
+use super::download::{FetchErr, fetch_to_cache, poll_abort};
+use super::normalize::{AnalyzeErr, NormalizeSource, analyze};
 
 /// load_and_play 的失败类型。
 pub(super) enum LoadErr {
@@ -48,9 +49,11 @@ pub(super) fn worker_loop(
     status: Arc<Mutex<PlaybackStatus>>,
     cache_dir: PathBuf,
     initial_volume: f32,
+    initial_normalize: bool,
 ) {
     let mut session: Option<PlayerSession> = None;
     let mut volume = initial_volume;
+    let mut normalize = initial_normalize;
     set_status(&status, |s| s.volume = volume);
     log_worker_started(&cache_dir);
 
@@ -97,7 +100,7 @@ pub(super) fn worker_loop(
                     };
                     s.loading = true;
                 });
-                match load_and_play(&req, &status, &cache_dir, &http, &rx, volume) {
+                match load_and_play(&req, &status, &cache_dir, &http, &rx, volume, normalize) {
                     Ok((stream, sink, shared, sample_rate, duration)) => {
                         set_status(&status, |s| {
                             s.loading = false;
@@ -188,6 +191,14 @@ pub(super) fn worker_loop(
                 }
                 set_status(&status, |s| s.volume = v);
             }
+            Some(Command::SetNormalize(on)) => {
+                // 只影响后续播放：已经加载好的会话保持原增益（避免播到一半响度跳变）。
+                normalize = on;
+                crate::util::log::debug(
+                    "audio",
+                    &format!("响度均衡{}", if on { "已开启" } else { "已关闭" }),
+                );
+            }
             Some(Command::Shutdown) => {
                 break;
             }
@@ -228,6 +239,7 @@ fn load_and_play(
     http: &Option<reqwest::blocking::Client>,
     rx: &Receiver<Command>,
     volume: f32,
+    normalize: bool,
 ) -> Result<(rodio::OutputStream, Sink, Arc<SourceShared>, u32, f64), LoadErr> {
     // 1. 取得媒体数据（本地文件 or 下载缓存）。
     let (mut input, was_cached) = if let Some(p) = &req.local_file {
@@ -275,7 +287,8 @@ fn load_and_play(
                     return Err(LoadErr::Failed(format!("{e}；缓存重建下载也失败: {e2}")));
                 }
             }
-            match SymphoniaSource::new(input) {
+            // clone：响度均衡还需要用同一个 input 再扫一遍整曲。
+            match SymphoniaSource::new(input.clone()) {
                 Ok(s) => s,
                 Err(e2) => return Err(LoadErr::Failed(format!("{e}；缓存重建后仍解码失败: {e2}"))),
             }
@@ -296,7 +309,34 @@ fn load_and_play(
     let sample_rate = source.sample_rate;
     let (stream, sink) = open_output().map_err(LoadErr::Failed)?;
     sink.set_volume(volume);
-    sink.append(source);
+    // 5. 响度均衡：整曲预分析后应用固定增益（开关开启时才扫，否则零开销）。
+    if normalize {
+        set_status(status, |s| s.normalizing = true);
+        let abort = || poll_abort(rx);
+        let gain = match analyze(&input, &abort) {
+            Ok(loud) => loud.gain(),
+            Err(AnalyzeErr::Aborted) => {
+                set_status(status, |s| s.normalizing = false);
+                return Err(LoadErr::Aborted);
+            }
+            // 分析失败不阻断播放：降级为不加增益（正常出声优先）。
+            Err(AnalyzeErr::Failed(e)) => {
+                crate::util::log::warn("audio", &format!("响度分析失败，按原音量播放: {e}"));
+                1.0
+            }
+        };
+        set_status(status, |s| {
+            s.normalizing = false;
+            s.normalize_gain_db = if gain > 0.0 { 20.0 * gain.log10() } else { 0.0 };
+        });
+        crate::util::log::info(
+            "audio",
+            &format!("响度均衡增益: {:+.2} dB", 20.0 * gain.log10()),
+        );
+        sink.append(NormalizeSource::new(source, gain));
+    } else {
+        sink.append(source);
+    }
     Ok((stream, sink, shared, sample_rate, duration))
 }
 
