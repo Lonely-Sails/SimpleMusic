@@ -88,13 +88,14 @@ impl MusicApp {
                 ui.add_space(8.0);
 
                 // ── 当前分类的配置项（单页纵向排布）──
-                // 注意：这里不能再 set_min_height，否则内容高度恒等于限高，egui 判定
-                // 「内容超出」而永远画出竖直滚动条——即使该页根本没占满。
-                // 高度已由窗口的 fixed_size 固定，滚动区只需按需收缩。
+                // 竖直轴必须 auto_shrink(false)：让滚动区固定占满窗口剩下的高度。
+                // 非 resizable 的 egui::Window 是用「内容高度」反推自身高度的
+                // （Resize::end 里 size = last_content_size），而 auto_shrink(true)
+                // 会让滚动区的高度等于当前页内容的高度，于是窗口高度跟着每页内容
+                // 长短上下伸缩——切分类时就是那种抖动的来源。固定占满后窗口高度恒定。
                 egui::ScrollArea::vertical()
                     .id_salt("settings_page_scroll")
-                    .auto_shrink([false, true])
-                    .max_height(content_max_h)
+                    .auto_shrink([false, false])
                     .show(ui, |ui| {
                         ui.set_min_width(300.0);
                         match self.settings_page {
