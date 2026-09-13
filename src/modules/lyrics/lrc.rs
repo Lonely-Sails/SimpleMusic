@@ -149,7 +149,9 @@ fn parse_offset_tag(s: &str) -> Option<i64> {
 /// 该方括号内容是否为已知元数据标签 `key:...`。
 fn is_metadata_tag(inner: &str) -> bool {
     let low = inner.trim().to_lowercase();
-    const KEYS: &[&str] = &["ti", "ar", "al", "by", "au", "length", "re", "ve", "tool", "offset"];
+    const KEYS: &[&str] = &[
+        "ti", "ar", "al", "by", "au", "length", "re", "ve", "tool", "offset",
+    ];
     KEYS.iter()
         .any(|k| low.strip_prefix(k).map_or(false, |r| r.starts_with(':')))
 }
@@ -198,7 +200,6 @@ fn parse_lrc_line(line: &str) -> (Vec<f64>, String) {
 mod tests {
     use super::*;
 
-
     #[test]
     fn parse_multi_timestamp_one_line() {
         let lrc = "[00:10.00][00:20.00]重复的句";
@@ -226,7 +227,11 @@ mod tests {
         let lrc = "[offset:+500]\n[00:10.00]a";
         let lines = parse(lrc);
         assert_eq!(lines.len(), 1);
-        assert!((lines[0].time_secs - 10.5).abs() < 1e-9, "got {}", lines[0].time_secs);
+        assert!(
+            (lines[0].time_secs - 10.5).abs() < 1e-9,
+            "got {}",
+            lines[0].time_secs
+        );
     }
 
     #[test]
@@ -291,7 +296,10 @@ mod tests {
         let lines = parse("[00:03.00]a\n[00:05.00]b");
         // pos 早于第一句（前奏）→ 钳制为 0。
         assert_eq!(current_line_index(&lines, 0.5), Some(0));
-        assert_eq!(current_line(&lines, 0.5).map(|l| l.text.as_str()), Some("a"));
+        assert_eq!(
+            current_line(&lines, 0.5).map(|l| l.text.as_str()),
+            Some("a")
+        );
     }
 
     #[test]

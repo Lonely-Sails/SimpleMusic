@@ -4,7 +4,7 @@
 //! 全部应用逻辑在库目标 `simple_music`（见 `lib.rs` 的模块地图）。
 
 use simple_music::{app, fonts, modules, state, theme, tray, util};
-use state::{Settings, LyricsFont};
+use state::{LyricsFont, Settings};
 use util::log;
 
 /// 简易命令行/环境变量解析（保持依赖少，不引入 clap）。
@@ -147,7 +147,9 @@ fn main() -> eframe::Result<()> {
             env!("CARGO_PKG_VERSION"),
             opts.width,
             opts.height,
-            std::env::var("SIMPLEMUSIC_LOG").as_deref().unwrap_or("info"),
+            std::env::var("SIMPLEMUSIC_LOG")
+                .as_deref()
+                .unwrap_or("info"),
         ),
     );
 
@@ -187,7 +189,10 @@ fn main() -> eframe::Result<()> {
                     "font",
                     &format!("界面字体: 内嵌 Noto Sans SC + Phosphor；歌词字体: {p}（桌面歌词）"),
                 ),
-                _ => log::info("font", "界面字体: 内嵌 Noto Sans SC + Phosphor；歌词字体: 内嵌 Noto Sans SC"),
+                _ => log::info(
+                    "font",
+                    "界面字体: 内嵌 Noto Sans SC + Phosphor；歌词字体: 内嵌 Noto Sans SC",
+                ),
             }
             // 应用深色淡雅主题。
             theme::apply(&cc.egui_ctx);

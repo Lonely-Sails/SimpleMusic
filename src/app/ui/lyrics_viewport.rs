@@ -46,6 +46,8 @@
 //! 真实颜色的 galley，主体层复用同一 galley 绘制——动画期间每帧最多 2 次布局查询
 //! （当前行 + 下一行）。
 
+use super::MusicApp;
+use super::widgets::fit_text;
 use crate::text_shadow::{CachedShadow, ShadowCache, ShadowStyle, rasterize_shadow};
 use crate::{fonts, icons, theme};
 use eframe::egui::{
@@ -53,8 +55,6 @@ use eframe::egui::{
     ViewportId,
 };
 use std::time::Instant;
-use super::MusicApp;
-use super::widgets::fit_text;
 
 /// 桌面歌词悬浮窗固定尺寸。
 const LYRICS_VIEWPORT_SIZE: Vec2 = Vec2::new(800.0, 104.0);
@@ -156,7 +156,10 @@ impl MusicApp {
 
         // ── 处理浮窗回传的交互 ──
         // 关闭按钮：deferred 闭包写入 CLOSE_SLOT，这里消费并关闭开关。
-        if ctx.data(|d| d.get_temp::<bool>(Id::new(CLOSE_SLOT))).unwrap_or(false) {
+        if ctx
+            .data(|d| d.get_temp::<bool>(Id::new(CLOSE_SLOT)))
+            .unwrap_or(false)
+        {
             ctx.data_mut(|d| d.remove_temp::<bool>(Id::new(CLOSE_SLOT)));
             self.settings.desktop_lyrics_enabled = false;
         }
@@ -214,8 +217,7 @@ impl MusicApp {
                     }
                 }
 
-                let (rect, response) =
-                    ui.allocate_exact_size(ui.available_size(), Sense::drag());
+                let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::drag());
 
                 // 默认全透明：只有「解锁 + 鼠标悬浮」时才绘制背景卡片（含外圈柔光），
                 // 让歌词无边框地浮在桌面上；锁定（鼠标穿透）时不会触发 hover，永远透明。
@@ -229,7 +231,8 @@ impl MusicApp {
                             Color32::from_black_alpha(alpha),
                         );
                     }
-                    ui.painter().rect_filled(rect, theme::CORNER, theme::LYRIC_BG);
+                    ui.painter()
+                        .rect_filled(rect, theme::CORNER, theme::LYRIC_BG);
                 }
 
                 if !locked && response.drag_started() {
@@ -256,7 +259,8 @@ impl MusicApp {
                     );
                     if btn.clicked() {
                         // 回传关闭请求：主线程下帧消费。
-                        ui.ctx().data_mut(|d| d.insert_temp(Id::new(CLOSE_SLOT), true));
+                        ui.ctx()
+                            .data_mut(|d| d.insert_temp(Id::new(CLOSE_SLOT), true));
                         ui.ctx().send_viewport_cmd(ViewportCommand::Close);
                     }
                 }
@@ -469,16 +473,12 @@ fn draw_next_layer(ui: &egui::Ui, center: Pos2, text: &str, font_pt: f32, alpha:
             );
         }
     }
-    painter.galley(
-        anchor,
-        galley,
-        theme::LYRIC_NEXT.gamma_multiply(alpha),
-    );
+    painter.galley(anchor, galley, theme::LYRIC_NEXT.gamma_multiply(alpha));
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{wayland_session_from, LineFade, SWITCH_DURATION};
+    use super::{LineFade, SWITCH_DURATION, wayland_session_from};
     use std::time::{Duration, Instant};
 
     #[test]

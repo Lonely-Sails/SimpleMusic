@@ -87,12 +87,11 @@ pub fn load_session_from(path: &Path) -> std::io::Result<BiliSession> {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "session.json 不存在，未登录/无 buvid 缓存",
-            ))
+            ));
         }
         Err(e) => return Err(e),
     };
-    serde_json::from_str(&text)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    serde_json::from_str(&text).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
 /// 把序列化文本写入指定路径（目录不存在会自动创建）。
@@ -167,7 +166,7 @@ pub fn load_settings() -> std::io::Result<Settings> {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "config.json 不存在，使用默认设置",
-            ))
+            ));
         }
         Err(e) => return Err(e),
     };
@@ -416,7 +415,10 @@ mod tests {
         let back = load_session_from(&path).expect("读会话失败");
         assert_eq!(back, s);
         assert!(back.logged_in());
-        assert_eq!(back.cookie_header(), "DedeUserID=12345; SESSDATA=dummy-sessdata-value; bili_jct=csrf-token");
+        assert_eq!(
+            back.cookie_header(),
+            "DedeUserID=12345; SESSDATA=dummy-sessdata-value; bili_jct=csrf-token"
+        );
         std::fs::remove_file(&path).ok();
     }
 
@@ -500,7 +502,7 @@ mod tests {
 
     #[test]
     fn test_lyrics_cache_roundtrip_and_miss() {
-        use crate::modules::lyrics::{cache_key, cache_lookup, LyricsCacheEntry};
+        use crate::modules::lyrics::{LyricsCacheEntry, cache_key, cache_lookup};
         let path = std::env::temp_dir().join("sm-test-lyrics-cache.json");
         let _ = fs::remove_file(&path);
         // 无文件 = 空缓存。
@@ -521,7 +523,10 @@ mod tests {
         let back = load_lyrics_cache_from(&path);
         assert_eq!(back.len(), 2);
         let hit = cache_lookup(&back, "BV1GJ411x7h7").expect("按 bvid 命中");
-        assert_eq!(hit.selected.as_ref().unwrap().lrc.as_deref(), Some("[00:01.00]第一句A"));
+        assert_eq!(
+            hit.selected.as_ref().unwrap().lrc.as_deref(),
+            Some("[00:01.00]第一句A")
+        );
         // 坏文件静默降级为空缓存。
         fs::write(&path, "{not json").unwrap();
         assert!(load_lyrics_cache_from(&path).is_empty());

@@ -3,13 +3,12 @@
 
 use std::collections::BTreeMap;
 
-use super::client::{parse_query_params, BiliClient};
+use super::client::{BiliClient, parse_query_params};
 use super::error::{BiliError, BiliResult};
 use super::models::{ApiEnvelope, QrGenerateResp, QrLoginStart, QrPoll, QrPollResp};
 use super::util::parse_set_cookie;
 
 impl BiliClient {
-
     // ---- 扫码登录 ----
 
     /// 生成登录二维码。
@@ -27,10 +26,8 @@ impl BiliClient {
     /// 把二维码内容编码成 bool 矩阵（true = 深色模块），行优先，边长 = 行数 = 列数。
     /// UI 渲染时请自行留出约 4 模块的静区（quiet zone）并反色（深色前景）。
     pub fn qrcode_matrix(content: &str) -> BiliResult<Vec<Vec<bool>>> {
-        let code = qrcode::QrCode::with_error_correction_level(
-            content.as_bytes(),
-            qrcode::EcLevel::M,
-        )?;
+        let code =
+            qrcode::QrCode::with_error_correction_level(content.as_bytes(), qrcode::EcLevel::M)?;
         let width = code.width();
         let colors = code.to_colors();
         Ok(colors
@@ -60,7 +57,10 @@ impl BiliClient {
         let status = resp.status().as_u16();
         let text = resp.text()?;
         let env: ApiEnvelope<QrPollResp> = serde_json::from_str(&text).map_err(|e| {
-            BiliError::Local(format!("poll 响应解析失败: {e}; body[:200]={}", &text[..text.len().min(200)]))
+            BiliError::Local(format!(
+                "poll 响应解析失败: {e}; body[:200]={}",
+                &text[..text.len().min(200)]
+            ))
         })?;
         let data = env
             .data
@@ -113,7 +113,8 @@ mod tests {
 
     #[test]
     fn test_qrcode_matrix_shape() {
-        let m = BiliClient::qrcode_matrix("https://passport.bilibili.com/x?qrcode_key=test123").unwrap();
+        let m = BiliClient::qrcode_matrix("https://passport.bilibili.com/x?qrcode_key=test123")
+            .unwrap();
         assert!(!m.is_empty());
         assert_eq!(m.len(), m[0].len(), "矩阵应为正方形");
         let dark = m.iter().flatten().filter(|b| **b).count();

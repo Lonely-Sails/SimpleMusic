@@ -1,9 +1,8 @@
 //! vkeys.cn 聚合源（QQ 音乐 / 网易云音乐歌词，中文歌曲覆盖率高）。
 
-
-use super::model::{Lyrics, LrcSearchResult, SongHint};
 use super::lrc;
 use super::matching::best_match_if_acceptable;
+use super::model::{LrcSearchResult, Lyrics, SongHint};
 use super::{
     MIN_ACCEPT_SCORE, VKEYS_NETEASE_LYRIC, VKEYS_NETEASE_SEARCH, VKEYS_QQ_LYRIC, VKEYS_QQ_SEARCH,
 };
@@ -173,7 +172,14 @@ fn vkey_item_title(item: &serde_json::Value) -> String {
 /// 取歌手：按常见字段名依次探测（字符串或数组；QQ 返回 `singer` 字符串
 /// 且带 `singer_list` 数组，网易返回 `singer` 字符串）。
 fn vkey_item_artist(item: &serde_json::Value) -> String {
-    for k in ["singer", "singers", "singer_list", "singerList", "artist", "artists"] {
+    for k in [
+        "singer",
+        "singers",
+        "singer_list",
+        "singerList",
+        "artist",
+        "artists",
+    ] {
         if let Some(v) = item.get(k) {
             let s = flatten_names(v);
             if !s.is_empty() {
@@ -305,7 +311,11 @@ fn build_vkey_lyrics(data: VkeyLyricData) -> Option<Lyrics> {
         return None;
     }
     Some(Lyrics {
-        lrc: if merged_lrc.is_empty() { None } else { Some(merged_lrc) },
+        lrc: if merged_lrc.is_empty() {
+            None
+        } else {
+            Some(merged_lrc)
+        },
         plain,
         source: None,
     })
@@ -365,7 +375,6 @@ fn merge_lrc_translation(lrc: &str, trans: &str) -> (String, String) {
 mod tests {
     use super::*;
 
-
     #[test]
     fn vkey_lyric_text_untagged_string() {
         let v: LyricText = serde_json::from_str(r#""[00:01.00]故事的小黄花""#).unwrap();
@@ -421,7 +430,8 @@ mod tests {
 
     #[test]
     fn vkey_item_artist_string_singer() {
-        let item: serde_json::Value = serde_json::from_str(r#"{"id":1,"singer":"周杰伦"}"#).unwrap();
+        let item: serde_json::Value =
+            serde_json::from_str(r#"{"id":1,"singer":"周杰伦"}"#).unwrap();
         assert_eq!(vkey_item_artist(&item), "周杰伦");
     }
 

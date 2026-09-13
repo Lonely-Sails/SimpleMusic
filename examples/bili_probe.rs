@@ -9,14 +9,14 @@
 //! 5. 尝试带 UA/Referer 下载音频流前 1KB，报告 CDN 可达性（沙箱出口 IP 常见 403）。
 //! 6. 不打印任何 Cookie 值（凭据脱敏）。
 
-
 // 桥接模块复用主 crate 的完整实现，示例只用其中一部分，容忍 dead_code。
 #[allow(dead_code)]
-
 use simple_music::modules::bilibili::{BiliClient, BiliError};
 
 fn main() {
-    let input = std::env::args().nth(1).unwrap_or_else(|| "BV1GJ411x7h7".to_string());
+    let input = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "BV1GJ411x7h7".to_string());
     println!("=== SimpleMusic bili_probe ===");
     println!("UA: {}", simple_music::modules::bilibili::USER_AGENT);
 
@@ -32,13 +32,23 @@ fn main() {
         Ok(()) => {
             let buvid3 = client.session().get("buvid3").unwrap_or("");
             let buvid4 = client.session().get("buvid4").unwrap_or("");
-            let persisted = std::path::Path::new(&format!("{}/.config/simple-music/session.json", std::env::var("HOME").unwrap_or_default())).exists();
-            println!("[buvid] 已获取 (落盘session.json存在={persisted}; 沙箱只读环境下为内存态属正常)");
+            let persisted = std::path::Path::new(&format!(
+                "{}/.config/simple-music/session.json",
+                std::env::var("HOME").unwrap_or_default()
+            ))
+            .exists();
+            println!(
+                "[buvid] 已获取 (落盘session.json存在={persisted}; 沙箱只读环境下为内存态属正常)"
+            );
             println!("[buvid] buvid3={buvid3}");
             println!("[buvid] buvid4={buvid4}");
-            println!("[buvid] Cookie 头(脱敏): {} 项 cookie: {}",
+            println!(
+                "[buvid] Cookie 头(脱敏): {} 项 cookie: {}",
                 client.session().cookies.len(),
-                format!("{:?}", client.session()).replace("BiliSession { cookies: ", "").replace(", saved_at_unix: 0 }", ""));
+                format!("{:?}", client.session())
+                    .replace("BiliSession { cookies: ", "")
+                    .replace(", saved_at_unix: 0 }", "")
+            );
         }
         Err(e) => eprintln!("[buvid] 获取失败: {e}"),
     }
@@ -47,7 +57,10 @@ fn main() {
     // ---- 2. BV 解析自检 ----
     println!("[parse] 本地解析用例:");
     for (case, expect) in [
-        ("https://www.bilibili.com/video/BV1xx411c7mD?p=2", "BV1xx411c7mD"),
+        (
+            "https://www.bilibili.com/video/BV1xx411c7mD?p=2",
+            "BV1xx411c7mD",
+        ),
         ("BV1GJ411x7h7", "BV1GJ411x7h7"),
         ("av170001", "None"),
         ("https://example.com/nothing", "None"),
@@ -59,7 +72,8 @@ fn main() {
     }
 
     // ---- 3. video_info ----
-    let mut bvid = BiliClient::parse_bvid_direct(&input).unwrap_or_else(|| input.trim().to_string());
+    let mut bvid =
+        BiliClient::parse_bvid_direct(&input).unwrap_or_else(|| input.trim().to_string());
     println!("[view] 目标 BV: {bvid}");
     let detail = match client.video_info(&bvid) {
         Ok(d) => d,
@@ -87,7 +101,11 @@ fn main() {
     };
     println!(
         "[view] HTTP=200 code=0 title=\"{}\" owner=\"{}\" duration={}s cid={} pages={}",
-        detail.info.title, detail.info.uploader, detail.info.duration_secs, detail.cid, detail.pages
+        detail.info.title,
+        detail.info.uploader,
+        detail.info.duration_secs,
+        detail.cid,
+        detail.pages
     );
 
     // ---- 4. playurl：未签名 vs WBI 签名 ----
@@ -96,7 +114,11 @@ fn main() {
         Ok((http, raw)) => {
             println!("[playurl] HTTP={http} APIcode={}", raw.code);
             if let Some(d) = raw.data.as_ref().and_then(|d| d.dash.as_ref()) {
-                println!("[playurl] dash.audio 数量={} (video 数量={})", d.audio.len(), d.video.len());
+                println!(
+                    "[playurl] dash.audio 数量={} (video 数量={})",
+                    d.audio.len(),
+                    d.video.len()
+                );
                 if let Some(a) = d.audio.first() {
                     let mut base = a.base_url.clone();
                     base.truncate(80);
@@ -106,7 +128,10 @@ fn main() {
                 println!("[playurl] 无 dash，走 durl（老格式）");
             }
             if raw.code != 0 {
-                println!("[playurl] 未签名被拒: code={} message=\"{}\"", raw.code, raw.message);
+                println!(
+                    "[playurl] 未签名被拒: code={} message=\"{}\"",
+                    raw.code, raw.message
+                );
             }
         }
         Err(e) => println!("[playurl] 未签名失败: {e}"),
@@ -129,7 +154,12 @@ fn main() {
                     Some(a) => {
                         let mut u = a.base_url.clone();
                         u.truncate(80);
-                        (d.map(|x| x.audio.len()).unwrap_or(0), u, a.bandwidth, a.codecs.clone().unwrap_or_default())
+                        (
+                            d.map(|x| x.audio.len()).unwrap_or(0),
+                            u,
+                            a.bandwidth,
+                            a.codecs.clone().unwrap_or_default(),
+                        )
                     }
                     None => (0, "-".into(), 0, "-".into()),
                 };
@@ -145,17 +175,24 @@ fn main() {
     println!("[playurl] 选中最高码率音频 bandwidth={signed_bw}bps codec={signed_codec}");
 
     // ---- 5. resolve_stream 端到端（含备用 CDN 与必需请求头） ----
-    match client.resolve_stream_with_cid(&bvid, detail.cid, simple_music::state::AudioQuality::High) {
+    match client.resolve_stream_with_cid(&bvid, detail.cid, simple_music::state::AudioQuality::High)
+    {
         Ok(s) => {
             let mut url80 = s.audio_url.clone();
             url80.truncate(80);
-            println!("[stream] resolved signed_with_wbi={} ttl={}s id={:?} codec={:?} bandwidth={:?} size={:?}",
-                s.signed_with_wbi, s.ttl_secs, s.audio_id, s.audio_codec, s.bandwidth, s.size_bytes);
+            println!(
+                "[stream] resolved signed_with_wbi={} ttl={}s id={:?} codec={:?} bandwidth={:?} size={:?}",
+                s.signed_with_wbi, s.ttl_secs, s.audio_id, s.audio_codec, s.bandwidth, s.size_bytes
+            );
             println!("[stream] audio_url[:80]={url80}");
             println!("[stream] backup_urls={} 条", s.audio_backup_urls.len());
             println!("[stream] 音频 Worker 必需请求头:");
             for (k, v) in &s.required_headers {
-                let v = if k == "Cookie" { "<已附加会话cookie，值已脱敏>".to_string() } else { v.clone() };
+                let v = if k == "Cookie" {
+                    "<已附加会话cookie，值已脱敏>".to_string()
+                } else {
+                    v.clone()
+                };
                 println!("    {k}: {v}");
             }
 
@@ -164,7 +201,9 @@ fn main() {
                 Ok((status, n)) => {
                     println!("[cdn] GET Range 0-1023 -> HTTP {status}, body {n} bytes");
                     if status != 200 && status != 206 {
-                        println!("[cdn] 注意: 非 2xx。本沙箱出口 IP 已被 B 站 CDN 风控（换 UA/Referer/加 Cookie 均仍 403），");
+                        println!(
+                            "[cdn] 注意: 非 2xx。本沙箱出口 IP 已被 B 站 CDN 风控（换 UA/Referer/加 Cookie 均仍 403），"
+                        );
                         println!("[cdn] 属环境网络限制；宿主/正常用户网络用同样请求头即可下载。");
                     }
                 }

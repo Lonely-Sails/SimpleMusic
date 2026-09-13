@@ -49,12 +49,13 @@ mod query;
 mod text;
 mod vkeys;
 
-
-pub use cache::{cache_key, cache_lookup, cache_store_fetch, cache_update_selected, LyricsCacheEntry};
-pub use model::LrcLine;
+pub use cache::{
+    LyricsCacheEntry, cache_key, cache_lookup, cache_store_fetch, cache_update_selected,
+};
 pub use lrclib::LyricsProvider;
 pub use matching::{best_match_with_hint, match_score, match_score_with_hint};
-pub use model::{Lyrics, LrcSearchResult, SongHint};
+pub use model::LrcLine;
+pub use model::{LrcSearchResult, Lyrics, SongHint};
 pub use query::{clean_title, search_queries, search_queries_with_hint, usable_uploader};
 pub use text::{lev_similarity, sanitize_preserving_case};
 

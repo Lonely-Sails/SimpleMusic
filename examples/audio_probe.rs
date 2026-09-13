@@ -9,25 +9,24 @@
 //!    「无法打开音频输出设备」错误路径）。
 //! 5. 不打印任何 Cookie 值（凭据脱敏）。
 
-
 // 桥接模块复用主 crate 的完整实现，示例只用其中一部分，容忍 dead_code。
 #[allow(dead_code)]
-
 use std::io::Read;
 use std::time::{Duration, Instant};
 
 use simple_music::modules::audio::AudioEngine;
 use simple_music::modules::bilibili::{BiliClient, BiliError};
 
-
-use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
+use symphonia::core::codecs::{CODEC_TYPE_NULL, DecoderOptions};
 use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::{MediaSourceStream, MediaSourceStreamOptions};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 
 fn main() {
-    let input = std::env::args().nth(1).unwrap_or_else(|| "BV1xx411c7mD".to_string());
+    let input = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "BV1xx411c7mD".to_string());
     println!("=== SimpleMusic audio_probe ===");
 
     // ---- 1. 解析音频直链 ----
@@ -77,8 +76,18 @@ fn main() {
 
     // ---- 2. 下载前 2MB ----
     let partial = std::env::temp_dir().join("simple-music-audio-probe-partial.m4s");
-    match download_partial(&stream.audio_url, &stream.required_headers, 2 * 1024 * 1024, &partial) {
-        Ok(n) => println!("[download] Range 0-{} -> {} bytes -> {}", 2 * 1024 * 1024 - 1, n, partial.display()),
+    match download_partial(
+        &stream.audio_url,
+        &stream.required_headers,
+        2 * 1024 * 1024,
+        &partial,
+    ) {
+        Ok(n) => println!(
+            "[download] Range 0-{} -> {} bytes -> {}",
+            2 * 1024 * 1024 - 1,
+            n,
+            partial.display()
+        ),
         Err(e) => {
             println!("[download] 失败: {e}");
             println!("=== probe 完成（下载失败）===");
@@ -97,7 +106,13 @@ fn main() {
     );
     let ascii: String = head
         .iter()
-        .map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '.' })
+        .map(|&b| {
+            if (0x20..0x7f).contains(&b) {
+                b as char
+            } else {
+                '.'
+            }
+        })
         .collect();
     println!("[download] ASCII 视图: {ascii}");
 
@@ -106,10 +121,18 @@ fn main() {
     // 完整下载（34MB 级）后探测。沙箱里 ~/.cache 不可写（引擎会内存降级），
     // 故这里直接落到 TMPDIR 供 symphonia 打开。
     let full = std::env::temp_dir().join("simple-music-audio-probe-full.m4s");
-    if std::fs::metadata(&full).map(|m| m.len() > 1024 * 1024).unwrap_or(false) {
+    if std::fs::metadata(&full)
+        .map(|m| m.len() > 1024 * 1024)
+        .unwrap_or(false)
+    {
         println!("[download] 复用已存在的完整下载: {}", full.display());
     } else {
-        match download_partial(&stream.audio_url, &stream.required_headers, usize::MAX, &full) {
+        match download_partial(
+            &stream.audio_url,
+            &stream.required_headers,
+            usize::MAX,
+            &full,
+        ) {
             Ok(n) => println!("[download] 完整下载 -> {n} bytes -> {}", full.display()),
             Err(e) => {
                 println!("[download] 完整下载失败: {e}");
@@ -127,7 +150,10 @@ fn main() {
         }
     }
     // fMP4 无总帧数（n_frames=0），用 size/bandwidth 估算时长（与引擎回退策略一致）。
-    if let (Some(size), Some(bw)) = (std::fs::metadata(&full).ok().map(|m| m.len()), stream.bandwidth) {
+    if let (Some(size), Some(bw)) = (
+        std::fs::metadata(&full).ok().map(|m| m.len()),
+        stream.bandwidth,
+    ) {
         if bw > 0 {
             println!(
                 "[probe] 按 size/bandwidth 估算时长: {:.1}s（≈{}分{}秒）",
@@ -149,7 +175,13 @@ fn main() {
         if !st.loading && (st.error.is_some() || st.playing || st.finished) {
             println!(
                 "[engine] status: loading={} playing={} finished={} error={:?} duration={:.2}s position={:.2}s cache_hit={}",
-                st.loading, st.playing, st.finished, st.error, st.duration_secs, st.position_secs, st.cache_hit
+                st.loading,
+                st.playing,
+                st.finished,
+                st.error,
+                st.duration_secs,
+                st.position_secs,
+                st.cache_hit
             );
             break;
         }
@@ -185,16 +217,26 @@ fn download_partial(
     let mut resp = req.send().map_err(|e| format!("请求失败: {e}"))?;
     let status = resp.status().as_u16();
     if !resp.status().is_success() {
-        return Err(format!("HTTP {status}（CDN 拒绝；备用地址数见上方 resolve 输出）"));
+        return Err(format!(
+            "HTTP {status}（CDN 拒绝；备用地址数见上方 resolve 输出）"
+        ));
     }
-    println!("[download] HTTP {status} content-length={:?} content-range={:?}",
-        resp.headers().get(reqwest::header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()),
-        resp.headers().get(reqwest::header::CONTENT_RANGE).and_then(|v| v.to_str().ok()));
+    println!(
+        "[download] HTTP {status} content-length={:?} content-range={:?}",
+        resp.headers()
+            .get(reqwest::header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok()),
+        resp.headers()
+            .get(reqwest::header::CONTENT_RANGE)
+            .and_then(|v| v.to_str().ok())
+    );
     let mut file = std::fs::File::create(out).map_err(|e| format!("创建临时文件失败: {e}"))?;
     let mut buf = [0u8; 8192];
     let mut total = 0usize;
     loop {
-        let n = resp.read(&mut buf).map_err(|e| format!("读取流失败: {e}"))?;
+        let n = resp
+            .read(&mut buf)
+            .map_err(|e| format!("读取流失败: {e}"))?;
         if n == 0 {
             break;
         }
@@ -214,7 +256,12 @@ fn probe_media(path: &std::path::Path, tag: &str) -> Result<String, String> {
     let mut hint = Hint::new();
     hint.with_extension("mp4"); // m4s 本质是 fMP4
     let probed = symphonia::default::get_probe()
-        .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
+        .format(
+            &hint,
+            mss,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
         .map_err(|e| format!("格式探测失败: {e}"))?;
     let mut format = probed.format;
     // 先把需要的轨道参数拷贝出来，避免 track 借用与 next_packet 的可变借用冲突。
@@ -292,7 +339,9 @@ fn probe_media(path: &std::path::Path, tag: &str) -> Result<String, String> {
                         continue;
                     }
                     Err(e) => {
-                        report.push_str(&format!("\n[probe] 解码中止: {e}（2MB 片段在中途截断属正常）"));
+                        report.push_str(&format!(
+                            "\n[probe] 解码中止: {e}（2MB 片段在中途截断属正常）"
+                        ));
                         break;
                     }
                 }

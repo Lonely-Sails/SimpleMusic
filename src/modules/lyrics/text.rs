@@ -81,21 +81,58 @@ fn is_annotation(inner: &str) -> bool {
         return true;
     }
     const KW: &[&str] = &[
-        "mv", "music video", "official", "ost", "op", "ed", "tv", "tvsize", "tv size",
-        "size", "1080p", "4k", "高清", "官方", "现场", "完整", "翻唱", "cover", "歌词",
-        "伴奏", "preview", "预告", "teaser", "ver", "version", "live", "remix", "lyric",
-        "lyrics", "karaoke", "piano", "tvas", "pv", "sp", "fllv", "字幕", "合唱",
+        "mv",
+        "music video",
+        "official",
+        "ost",
+        "op",
+        "ed",
+        "tv",
+        "tvsize",
+        "tv size",
+        "size",
+        "1080p",
+        "4k",
+        "高清",
+        "官方",
+        "现场",
+        "完整",
+        "翻唱",
+        "cover",
+        "歌词",
+        "伴奏",
+        "preview",
+        "预告",
+        "teaser",
+        "ver",
+        "version",
+        "live",
+        "remix",
+        "lyric",
+        "lyrics",
+        "karaoke",
+        "piano",
+        "tvas",
+        "pv",
+        "sp",
+        "fllv",
+        "字幕",
+        "合唱",
     ];
     if KW.iter().any(|k| l.contains(k)) {
         return true;
     }
     // 全大写短标记如 "MV" "OST" "4K" "TV"。
-    l.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()) && l.chars().count() <= 6
+    l.chars()
+        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+        && l.chars().count() <= 6
 }
 
 /// 去掉尾部 ` - 艺术家` 之类的分隔后缀（保留左侧主体）。
 pub(super) fn strip_trailing_separator(s: &str) -> String {
-    const SEPS: &[&str] = &[" - ", " — ", " – ", " | ", " ｜ ", " : ", " / ", " · ", " ・ "];
+    const SEPS: &[&str] = &[
+        " - ", " — ", " – ", " | ", " ｜ ", " : ", " / ", " · ", " ・ ",
+    ];
     let mut best: Option<usize> = None;
     for sep in SEPS {
         if let Some(pos) = s.find(sep) {
@@ -118,7 +155,9 @@ pub fn sanitize_preserving_case(title: &str) -> String {
     t = strip_groups(&t, '[', ']');
     t = strip_annotation_parens(&t);
     t = strip_trailing_separator(&t);
-    for ch in ['《', '》', '「', '」', '『', '』', '〈', '〉', '"', '\'', '“', '”'] {
+    for ch in [
+        '《', '》', '「', '」', '『', '』', '〈', '〉', '"', '\'', '“', '”',
+    ] {
         t = t.replace(ch, "");
     }
     let t = collapse_ws(&t);
@@ -170,7 +209,6 @@ pub fn lev_similarity(a: &str, b: &str) -> f64 {
 // ===========================================================================
 // 测试
 // ===========================================================================
-
 
 #[cfg(test)]
 mod tests {

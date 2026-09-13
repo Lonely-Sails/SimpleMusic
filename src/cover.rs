@@ -82,17 +82,18 @@ impl CoverCache {
             let tx = tx.clone();
             std::thread::Builder::new()
                 .name("simple-music-cover".into())
-                .spawn(move || loop {
-                    // 队列断开（CoverCache 已销毁）→ 工作线程退出。
-                    let job = { job_rx.lock().ok().and_then(|q| q.recv().ok()) };
-                    let Some(job) = job else { break };
-                    let result = download_cover(&job.key, &job.url)
-                        .and_then(|bytes| {
+                .spawn(move || {
+                    loop {
+                        // 队列断开（CoverCache 已销毁）→ 工作线程退出。
+                        let job = { job_rx.lock().ok().and_then(|q| q.recv().ok()) };
+                        let Some(job) = job else { break };
+                        let result = download_cover(&job.key, &job.url).and_then(|bytes| {
                             decode_cover(&bytes)
                                 .map(Arc::new)
                                 .ok_or_else(|| "封面解码失败".to_string())
                         });
-                    let _ = tx.send((job.key, result));
+                        let _ = tx.send((job.key, result));
+                    }
                 })
                 .expect("启动封面工作线程失败");
         }
@@ -267,8 +268,14 @@ mod tests {
     fn prune_keeps_most_recent() {
         let mut map = HashMap::new();
         let now = Instant::now();
-        map.insert("old".to_string(), (1u8, None, now - Duration::from_secs(100)));
-        map.insert("mid".to_string(), (2u8, None, now - Duration::from_secs(50)));
+        map.insert(
+            "old".to_string(),
+            (1u8, None, now - Duration::from_secs(100)),
+        );
+        map.insert(
+            "mid".to_string(),
+            (2u8, None, now - Duration::from_secs(50)),
+        );
         map.insert("new".to_string(), (3u8, None, now));
         prune_oldest(&mut map, 3, 2);
         assert!(!map.contains_key("old"));

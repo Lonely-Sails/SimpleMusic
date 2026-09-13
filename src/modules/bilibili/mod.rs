@@ -42,11 +42,11 @@ pub use models::{
     Dash, DashStream, DurlEntry, FavFolder, FavItem, MusicHint, NavUser, PlayUrlData, PlayUrlResp,
     QrLoginStart, QrPoll, StreamUrl, VideoDetail, VideoInfo,
 };
-pub use stream_cache::{is_stream_expired_error, StreamCache, STREAM_CACHE_TTL};
+pub use stream_cache::{STREAM_CACHE_TTL, StreamCache, is_stream_expired_error};
 pub use util::pick_dash_audio;
 pub use wbi::{
-    encode_uri_component, md5_hex, mixin_key, wbi_key_from_url, wbi_sign_params,
-    wbi_sign_params_with_wts, WbiKeys,
+    WbiKeys, encode_uri_component, md5_hex, mixin_key, wbi_key_from_url, wbi_sign_params,
+    wbi_sign_params_with_wts,
 };
 
 /// B 站接口普遍校验的桌面 Chrome UA。

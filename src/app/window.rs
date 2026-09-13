@@ -22,8 +22,8 @@ impl MusicApp {
     /// 系统面板打开菜单），属平台限制。
     #[cfg(feature = "tray")]
     pub(crate) fn poll_tray_events(&mut self, ctx: &egui::Context) {
-        use tray_icon::menu::MenuEvent;
         use tray_icon::TrayIconEvent;
+        use tray_icon::menu::MenuEvent;
 
         // 图标点击：左键（松开为准，避免与按下/双击重复触发）直接显示主窗口。
         while let Ok(event) = TrayIconEvent::receiver().try_recv() {

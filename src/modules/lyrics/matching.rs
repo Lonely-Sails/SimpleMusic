@@ -124,8 +124,7 @@ pub fn best_match_with_hint<'a>(
     uploader: &str,
     hint: Option<&SongHint>,
 ) -> Option<&'a LrcSearchResult> {
-    best_match_index_with_hint(candidates, title, uploader, hint)
-        .and_then(|i| candidates.get(i))
+    best_match_index_with_hint(candidates, title, uploader, hint).and_then(|i| candidates.get(i))
 }
 
 /// [`best_match_with_hint`] 的返回索引版本：调用方需要候选在原切片中的
@@ -159,8 +158,7 @@ pub(super) fn best_match_if_acceptable<'a>(
 ) -> Option<(usize, &'a LrcSearchResult)> {
     let idx = best_match_index_with_hint(candidates, title, uploader, hint)?;
     let best = &candidates[idx];
-    (match_score_with_hint(best, title, uploader, hint) >= min_score)
-        .then_some((idx, best))
+    (match_score_with_hint(best, title, uploader, hint) >= min_score).then_some((idx, best))
 }
 
 #[cfg(test)]
@@ -195,8 +193,10 @@ mod tests {
             plain_lyrics: "故事的小黄花".to_string(),
             synced_lyrics: "[00:01.00]故事的小黄花".to_string(),
         };
-        let s_official = match_score_with_hint(&official, "【高清】晴天 周杰伦", "Music频道", Some(&hint));
-        let s_cover = match_score_with_hint(&cover, "【高清】晴天 周杰伦", "Music频道", Some(&hint));
+        let s_official =
+            match_score_with_hint(&official, "【高清】晴天 周杰伦", "Music频道", Some(&hint));
+        let s_cover =
+            match_score_with_hint(&cover, "【高清】晴天 周杰伦", "Music频道", Some(&hint));
         assert!(s_official > s_cover + 30, "{s_official} vs {s_cover}");
         // 无提示时两者平手（曲名相同、同步歌词相同）。
         let s0_official = match_score(&official, "晴天", "Music频道");
@@ -258,7 +258,8 @@ mod tests {
                 synced_lyrics: "[00:01.00]y".to_string(),
             },
         ];
-        let best = best_match_with_hint(&candidates, "碧蓝档案神曲燃剪", "搬运", Some(&hint)).unwrap();
+        let best =
+            best_match_with_hint(&candidates, "碧蓝档案神曲燃剪", "搬运", Some(&hint)).unwrap();
         assert_eq!(best.id, 1);
     }
 
@@ -299,5 +300,4 @@ mod tests {
         let best = best_match_with_hint(&candidates, "晴天", "周杰伦", None).unwrap();
         assert_eq!(best.id, 1);
     }
-
 }

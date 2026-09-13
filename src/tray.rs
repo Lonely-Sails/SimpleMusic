@@ -16,8 +16,8 @@
 
 #[cfg(feature = "tray")]
 mod inner {
-    use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem};
     use tray_icon::Icon;
+    use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem};
 
     // -----------------------------------------------------------------------
     // 托盘菜单项 ID（主线程通过 `MenuEvent::receiver()` 匹配）
@@ -139,8 +139,8 @@ mod inner {
 
     #[cfg(target_os = "linux")]
     mod platform {
-        use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
         use std::thread;
         use std::time::Duration;
 

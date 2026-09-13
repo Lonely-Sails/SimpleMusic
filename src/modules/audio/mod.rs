@@ -29,5 +29,5 @@ pub mod engine;
 pub mod player;
 
 pub use cache::{cache_path_in, default_cache_dir};
-pub use control::{PlaybackStatus, PlayRequest};
+pub use control::{PlayRequest, PlaybackStatus};
 pub use engine::AudioEngine;

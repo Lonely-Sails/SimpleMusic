@@ -1,8 +1,8 @@
 //! 导入 B 站歌曲输入栏（纯 BV 号 / 视频链接 / b23.tv 短链）。
 
+use super::MusicApp;
 use crate::theme;
 use eframe::egui::{self, RichText};
-use super::MusicApp;
 
 impl MusicApp {
     pub(crate) fn show_import(&mut self, ui: &mut egui::Ui) {

@@ -1,9 +1,9 @@
 //! 歌单选择栏 + 相关弹窗：创建歌单/同步收藏夹的 Popup、收藏夹选择窗口、歌单管理窗口。
 
-use crate::{icons, theme};
-use crate::state::{Playlist, PlaylistKind};
-use eframe::egui::{self, Align2, Color32, ComboBox, RichText, Sense, Vec2};
 use super::MusicApp;
+use crate::state::{Playlist, PlaylistKind};
+use crate::{icons, theme};
+use eframe::egui::{self, Align2, Color32, ComboBox, RichText, Sense, Vec2};
 
 impl MusicApp {
     pub(crate) fn show_playlist_selector(&mut self, ui: &mut egui::Ui) {
@@ -56,8 +56,8 @@ impl MusicApp {
                                 let mut picked = false;
                                 ui.horizontal(|ui| {
                                     if *is_online {
-                                        let (r, _) =
-                                            ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+                                        let (r, _) = ui
+                                            .allocate_exact_size(Vec2::splat(14.0), Sense::hover());
                                         icons::folder(ui.painter(), r, theme::TEXT_SECONDARY);
                                         ui.add_space(4.0);
                                     }
@@ -136,7 +136,8 @@ impl MusicApp {
                                 if ui
                                     .add(
                                         egui::Button::new(
-                                            RichText::new("同步B站收藏夹").color(theme::TEXT_PRIMARY),
+                                            RichText::new("同步B站收藏夹")
+                                                .color(theme::TEXT_PRIMARY),
                                         )
                                         .fill(theme::BG_CARD)
                                         .corner_radius(theme::CORNER),
@@ -244,7 +245,9 @@ impl MusicApp {
                 }
                 ui.add_space(6.0);
                 if ui
-                    .add(egui::Button::new(RichText::new("取消").color(theme::TEXT_SECONDARY)))
+                    .add(egui::Button::new(
+                        RichText::new("取消").color(theme::TEXT_SECONDARY),
+                    ))
                     .clicked()
                 {
                     close_after = true;
@@ -294,18 +297,22 @@ impl MusicApp {
                             icons::folder(ui.painter(), r, theme::TEXT_SECONDARY);
                             ui.add_space(2.0);
                         }
-                        ui.label(RichText::new(format!(
-                            "{} ({})",
-                            crate::fonts::sanitize_text(name),
-                            count
-                        ))
-                        .color(theme::TEXT_PRIMARY));
+                        ui.label(
+                            RichText::new(format!(
+                                "{} ({})",
+                                crate::fonts::sanitize_text(name),
+                                count
+                            ))
+                            .color(theme::TEXT_PRIMARY),
+                        );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui
                                 .add(
-                                    egui::Button::new(RichText::new("删除").color(theme::TEXT_SECONDARY))
-                                        .fill(theme::BG_CARD)
-                                        .corner_radius(theme::CORNER),
+                                    egui::Button::new(
+                                        RichText::new("删除").color(theme::TEXT_SECONDARY),
+                                    )
+                                    .fill(theme::BG_CARD)
+                                    .corner_radius(theme::CORNER),
                                 )
                                 .clicked()
                             {
@@ -314,9 +321,11 @@ impl MusicApp {
                             if !*is_online
                                 && ui
                                     .add(
-                                        egui::Button::new(RichText::new("重命名").color(theme::TEXT_SECONDARY))
-                                            .fill(theme::BG_CARD)
-                                            .corner_radius(theme::CORNER),
+                                        egui::Button::new(
+                                            RichText::new("重命名").color(theme::TEXT_SECONDARY),
+                                        )
+                                        .fill(theme::BG_CARD)
+                                        .corner_radius(theme::CORNER),
                                     )
                                     .clicked()
                             {
@@ -345,9 +354,11 @@ impl MusicApp {
                             );
                             if ui
                                 .add(
-                                    egui::Button::new(RichText::new("确定").color(theme::TEXT_ON_ACCENT))
-                                        .fill(theme::ACCENT)
-                                        .corner_radius(theme::CORNER),
+                                    egui::Button::new(
+                                        RichText::new("确定").color(theme::TEXT_ON_ACCENT),
+                                    )
+                                    .fill(theme::ACCENT)
+                                    .corner_radius(theme::CORNER),
                                 )
                                 .clicked()
                             {
@@ -356,9 +367,11 @@ impl MusicApp {
                             }
                             if ui
                                 .add(
-                                    egui::Button::new(RichText::new("取消").color(theme::TEXT_SECONDARY))
-                                        .fill(theme::BG_CARD)
-                                        .corner_radius(theme::CORNER),
+                                    egui::Button::new(
+                                        RichText::new("取消").color(theme::TEXT_SECONDARY),
+                                    )
+                                    .fill(theme::BG_CARD)
+                                    .corner_radius(theme::CORNER),
                                 )
                                 .clicked()
                             {

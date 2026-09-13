@@ -53,8 +53,7 @@ fn set_active_lyrics_font(bytes: &[u8]) {
 /// 内嵌 Noto 字节的共享 Arc（懒初始化，避免每次回退都复制整份字体数据）。
 fn noto_arc() -> Arc<Vec<u8>> {
     static NOTO: OnceLock<Arc<Vec<u8>>> = OnceLock::new();
-    NOTO
-        .get_or_init(|| Arc::new(NOTO_SC_BYTES.to_vec()))
+    NOTO.get_or_init(|| Arc::new(NOTO_SC_BYTES.to_vec()))
         .clone()
 }
 
@@ -119,7 +118,9 @@ fn resolve_lyrics_font(font: &LyricsFont) -> (Vec<u8>, LyricsFont) {
             Ok(_) => {
                 crate::util::log::warn(
                     "font",
-                    &format!("歌词字体 {path} 无法解析（egui 不支持该格式），回退内嵌 Noto Sans SC"),
+                    &format!(
+                        "歌词字体 {path} 无法解析（egui 不支持该格式），回退内嵌 Noto Sans SC"
+                    ),
                 );
                 (NOTO_SC_BYTES.to_vec(), LyricsFont::Embedded)
             }
@@ -131,7 +132,9 @@ fn resolve_lyrics_font(font: &LyricsFont) -> (Vec<u8>, LyricsFont) {
                 (NOTO_SC_BYTES.to_vec(), LyricsFont::Embedded)
             }
         },
-        LyricsFont::FollowUi | LyricsFont::Embedded => (NOTO_SC_BYTES.to_vec(), LyricsFont::Embedded),
+        LyricsFont::FollowUi | LyricsFont::Embedded => {
+            (NOTO_SC_BYTES.to_vec(), LyricsFont::Embedded)
+        }
     }
 }
 
@@ -145,9 +148,9 @@ fn build_definitions(lyrics_bytes: &[u8]) -> (egui::FontDefinitions, &'static st
     // 图标字体（Phosphor，PUA 码点）恒内嵌：图标不依赖系统字形。
     fonts.font_data.insert(
         PHOSPHOR_KEY.to_owned(),
-        std::sync::Arc::new(egui::FontData::from_static(
-            include_bytes!("../assets/Phosphor.ttf"),
-        )),
+        std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
+            "../assets/Phosphor.ttf"
+        ))),
     );
     // 内嵌 CJK：主界面文字首选，同时是歌词 family 的最终兜底。
     fonts
@@ -177,7 +180,11 @@ fn build_definitions(lyrics_bytes: &[u8]) -> (egui::FontDefinitions, &'static st
     // 顺序查字形；只进 font_data 不进列表的字体永远不会被命中）。
     fonts.families.insert(
         lyrics_family(),
-        vec![lyrics_first.to_owned(), PHOSPHOR_KEY.to_owned(), EMBEDDED_KEY.to_owned()],
+        vec![
+            lyrics_first.to_owned(),
+            PHOSPHOR_KEY.to_owned(),
+            EMBEDDED_KEY.to_owned(),
+        ],
     );
     (fonts, lyrics_first)
 }
@@ -195,8 +202,7 @@ pub fn sanitize_text(text: &str) -> String {
             Ok(f) => f,
             Err(_) => return Vec::new(),
         };
-        let mut codes: Vec<u32> =
-            font.charmap().mappings().map(|(code, _)| code).collect();
+        let mut codes: Vec<u32> = font.charmap().mappings().map(|(code, _)| code).collect();
         codes.sort_unstable();
         codes
     });
@@ -303,8 +309,7 @@ fn scan_system_fonts_in(roots: Vec<PathBuf>) -> Vec<SystemFont> {
             if !font_file_is_loadable(&bytes) || is_emoji_font_name(p) {
                 return;
             }
-            let family =
-                font_family_name(&bytes).unwrap_or_else(|| fallback_display_name(p));
+            let family = font_family_name(&bytes).unwrap_or_else(|| fallback_display_name(p));
             found.push((p.canonicalize().unwrap_or_else(|_| p.to_path_buf()), family));
         });
     }
@@ -384,7 +389,6 @@ fn fallback_display_name(path: &Path) -> String {
         .to_owned()
 }
 
-
 /// 运行时探测并加载系统文字字体。
 ///
 /// 返回 `(路径, 字体文件内容)`；探测/校验失败返回 `None`（调用方回退内嵌字体）。
@@ -404,7 +408,10 @@ pub fn load_system_font() -> Option<(PathBuf, Vec<u8>)> {
             ),
             Err(e) => crate::util::log::warn(
                 "font",
-                &format!("SIMPLEMUSIC_FONT 指定的 {} 读取失败（{e}），改用自动探测", p.display()),
+                &format!(
+                    "SIMPLEMUSIC_FONT 指定的 {} 读取失败（{e}），改用自动探测",
+                    p.display()
+                ),
             ),
         }
     }
@@ -443,10 +450,16 @@ pub fn font_file_is_suitable(bytes: &[u8]) -> bool {
 pub fn system_font_candidates() -> Vec<PathBuf> {
     #[cfg(target_os = "windows")]
     fn candidates() -> Vec<PathBuf> {
-        ["msyh.ttc", "msyh.ttf", "simhei.ttf", "segoeui.ttf", "arial.ttf"]
-            .iter()
-            .map(|n| PathBuf::from("C:/Windows/Fonts").join(n))
-            .collect()
+        [
+            "msyh.ttc",
+            "msyh.ttf",
+            "simhei.ttf",
+            "segoeui.ttf",
+            "arial.ttf",
+        ]
+        .iter()
+        .map(|n| PathBuf::from("C:/Windows/Fonts").join(n))
+        .collect()
     }
 
     #[cfg(target_os = "macos")]
@@ -573,7 +586,9 @@ mod tests {
     /// 图标字体没有文字覆盖 → 校验必须拒绝（防止它被选作文字字体）。
     #[test]
     fn icon_font_fails_validation() {
-        assert!(!font_file_is_suitable(include_bytes!("../assets/Phosphor.ttf")));
+        assert!(!font_file_is_suitable(include_bytes!(
+            "../assets/Phosphor.ttf"
+        )));
     }
 
     /// 坏文件必须被校验拒绝——egui 对解析失败的字体直接 panic，不能把坏文件塞给它。
@@ -599,7 +614,10 @@ mod tests {
         assert_eq!(lyrics.first().map(String::as_str), Some(EMBEDDED_KEY));
         assert_eq!(lyrics.get(1).map(String::as_str), Some(PHOSPHOR_KEY));
         assert_eq!(lyrics.get(2).map(String::as_str), Some(EMBEDDED_KEY));
-        assert!(!defs.font_data.contains_key(LYRICS_KEY), "内嵌模式下不应注册歌词系统字体键");
+        assert!(
+            !defs.font_data.contains_key(LYRICS_KEY),
+            "内嵌模式下不应注册歌词系统字体键"
+        );
 
         // 歌词用系统字体（这里以 Phosphor 字节代表「一份非内嵌字体」）→ 歌词
         // family 首位是 LYRICS_KEY，Phosphor/内嵌 CJK 兜底；主界面不受影响。
@@ -629,7 +647,11 @@ mod tests {
         let ctx = egui::Context::default();
         install_embedded_fonts(&ctx);
         let font_id = lyrics_font_id(26.0);
-        assert_eq!(font_id.family, lyrics_family(), "歌词 FontId 应用专用 family");
+        assert_eq!(
+            font_id.family,
+            lyrics_family(),
+            "歌词 FontId 应用专用 family"
+        );
         let mut full = ctx.run_ui(egui::RawInput::default(), |ctx| {
             ctx.fonts_mut(|f| {
                 let cjk = f.glyph_width(&font_id, '中');
@@ -652,7 +674,8 @@ mod tests {
     /// `FollowUi`/`Embedded` → 内嵌。文件写临时目录，不依赖宿主字体环境。
     #[test]
     fn resolve_lyrics_font_adopted_or_fallback() {
-        let dir = std::env::temp_dir().join(format!("simplemusic-lyricsfont-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("simplemusic-lyricsfont-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let good = dir.join("good.otf");
         let bad = dir.join("bad.ttf");
@@ -660,7 +683,8 @@ mod tests {
         std::fs::write(&bad, b"not a font").unwrap();
 
         // 有效文件 → 采用 Specific。
-        let (bytes, adopted) = resolve_lyrics_font(&LyricsFont::Specific(good.display().to_string()));
+        let (bytes, adopted) =
+            resolve_lyrics_font(&LyricsFont::Specific(good.display().to_string()));
         assert_eq!(adopted, LyricsFont::Specific(good.display().to_string()));
         assert_eq!(bytes, NOTO_SC_BYTES.to_vec());
 
@@ -669,7 +693,8 @@ mod tests {
         assert_eq!(adopted, LyricsFont::Embedded);
 
         // 路径不存在 → 回退内嵌。
-        let (_, adopted) = resolve_lyrics_font(&LyricsFont::Specific("/nonexistent/font.ttf".into()));
+        let (_, adopted) =
+            resolve_lyrics_font(&LyricsFont::Specific("/nonexistent/font.ttf".into()));
         assert_eq!(adopted, LyricsFont::Embedded);
 
         // FollowUi / Embedded → 内嵌。
@@ -780,7 +805,8 @@ mod tests {
     /// 变量（生产读取点 `load_system_font` 的调用方均未在测试中使用），并行安全。
     #[test]
     fn simplemusic_font_env_is_adopted_or_rejected() {
-        let dir = std::env::temp_dir().join(format!("simplemusic-font-test-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("simplemusic-font-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let good = dir.join("good.otf");
         let bad = dir.join("phosphor.ttf");
@@ -819,13 +845,17 @@ mod tests {
             "../assets/NotoSansSC-Regular.otf"
         )));
         // 图标字体「可加载」但不「适用作文字」——两个校验的语义分野。
-        assert!(font_file_is_loadable(include_bytes!("../assets/Phosphor.ttf")));
+        assert!(font_file_is_loadable(include_bytes!(
+            "../assets/Phosphor.ttf"
+        )));
         assert!(!font_file_is_loadable(b"garbage"));
         assert!(!font_file_is_loadable(&[]));
         assert!(font_file_is_suitable(include_bytes!(
             "../assets/NotoSansSC-Regular.otf"
         )));
-        assert!(!font_file_is_suitable(include_bytes!("../assets/Phosphor.ttf")));
+        assert!(!font_file_is_suitable(include_bytes!(
+            "../assets/Phosphor.ttf"
+        )));
     }
 
     /// 家族名解析：内嵌 Noto 能读出非空家族名（CI 容器字体不定，只用内嵌资产）。
@@ -859,8 +889,11 @@ mod tests {
             include_bytes!("../assets/NotoSansSC-Regular.otf"),
         )
         .unwrap();
-        std::fs::write(dir.join("nested/phosphor.ttf"), include_bytes!("../assets/Phosphor.ttf"))
-            .unwrap();
+        std::fs::write(
+            dir.join("nested/phosphor.ttf"),
+            include_bytes!("../assets/Phosphor.ttf"),
+        )
+        .unwrap();
         std::fs::write(dir.join("NotoColorEmoji.ttf"), b"garbage").unwrap();
         std::fs::write(dir.join("readme.txt"), b"not a font").unwrap();
 
@@ -868,8 +901,15 @@ mod tests {
         let names: Vec<&str> = fonts.iter().map(|f| f.family.as_str()).collect();
         // Phosphor 可解析 → 入列（家族名取 name 表或文件名兜底）；emoji 按名排除；
         // txt 非字体被过滤；嵌套目录被递归。
-        assert!(names.len() >= 2, "至少应有 Noto + Phosphor 两个 family: {names:?}");
-        assert!(names.windows(2).all(|w| w[0].to_lowercase() <= w[1].to_lowercase()));
+        assert!(
+            names.len() >= 2,
+            "至少应有 Noto + Phosphor 两个 family: {names:?}"
+        );
+        assert!(
+            names
+                .windows(2)
+                .all(|w| w[0].to_lowercase() <= w[1].to_lowercase())
+        );
         assert!(
             !names.iter().any(|n| n.to_lowercase().contains("emoji")),
             "emoji 字体不应入列: {names:?}"
@@ -879,7 +919,10 @@ mod tests {
             "Noto 家族名应解析自 name 表: {names:?}"
         );
         assert!(
-            fonts.iter().all(|f| f.path.extension().and_then(|e| e.to_str())
+            fonts.iter().all(|f| f
+                .path
+                .extension()
+                .and_then(|e| e.to_str())
                 .map(|e| ["ttf", "otf", "ttc", "otc"].contains(&e.to_lowercase().as_str()))
                 .unwrap_or(false)),
             "只应包含字体文件: {fonts:?}"
@@ -890,7 +933,8 @@ mod tests {
     /// 空根目录 → 空列表不 panic（无字体容器的真实情形）。
     #[test]
     fn scan_system_fonts_in_empty_roots() {
-        let dir = std::env::temp_dir().join(format!("simplemusic-fontscan-empty-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("simplemusic-fontscan-empty-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         assert!(scan_system_fonts_in(vec![dir]).is_empty());
         assert!(scan_system_fonts_in(vec![]).is_empty());
@@ -912,4 +956,3 @@ mod tests {
         }
     }
 }
-

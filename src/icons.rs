@@ -43,7 +43,13 @@ mod glyph {
 fn paint(painter: &Painter, rect: Rect, ch: char, scale: f32, color: Color32) {
     let size = rect.height().min(rect.width()) * scale;
     let font_id = FontId::proportional(size.max(1.0));
-    painter.text(rect.center(), Align2::CENTER_CENTER, ch.to_string(), font_id, color);
+    painter.text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        ch.to_string(),
+        font_id,
+        color,
+    );
 }
 
 /// 播放：实心右三角。

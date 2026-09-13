@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::path::{Path, PathBuf};
 
 use super::cache::{cache_path_in, default_cache_dir};
-use super::control::{Command, PlaybackStatus, PlayRequest};
+use super::control::{Command, PlayRequest, PlaybackStatus};
 use super::player::worker_loop;
 use crate::modules::bilibili::StreamUrl;
 
@@ -152,17 +152,20 @@ impl Drop for AudioEngine {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::decode::tests::{synth_wav, test_dir, wav_bytes};
+    use super::*;
+    use std::fs;
     use std::path::Path;
     use std::time::Duration;
-    use std::fs;
     use std::time::Instant;
 
-    fn wait_for<F: Fn(&PlaybackStatus) -> bool>(engine: &AudioEngine, timeout: Duration, f: F) -> PlaybackStatus {
+    fn wait_for<F: Fn(&PlaybackStatus) -> bool>(
+        engine: &AudioEngine,
+        timeout: Duration,
+        f: F,
+    ) -> PlaybackStatus {
         let start = Instant::now();
         loop {
             let st = engine.status();
@@ -221,12 +224,16 @@ mod tests {
         std::thread::sleep(Duration::from_millis(100));
         assert_eq!(engine.status().position_secs, 0.0, "负值钳到 0");
         engine.seek(100.0);
-        let st = wait_for(&engine, Duration::from_secs(2), |s| s.position_secs == 100.0);
+        let st = wait_for(&engine, Duration::from_secs(2), |s| {
+            s.position_secs == 100.0
+        });
         assert_eq!(st.position_secs, 100.0, "无时长时只钳下界");
         engine.pause();
         engine.resume();
         engine.stop();
-        let st = wait_for(&engine, Duration::from_secs(2), |s| s.position_secs == 0.0 && !s.playing);
+        let st = wait_for(&engine, Duration::from_secs(2), |s| {
+            s.position_secs == 0.0 && !s.playing
+        });
         assert_eq!(st.position_secs, 0.0, "stop 后归零");
         drop(engine);
         let _ = fs::remove_dir_all(&dir);
@@ -237,7 +244,9 @@ mod tests {
         let dir = test_dir("engine-vol");
         let mut engine = AudioEngine::with_cache_dir(dir.clone());
         engine.set_volume(0.5);
-        let st = wait_for(&engine, Duration::from_secs(2), |s| (s.volume - 0.5).abs() < 1e-6);
+        let st = wait_for(&engine, Duration::from_secs(2), |s| {
+            (s.volume - 0.5).abs() < 1e-6
+        });
         assert_eq!(st.volume, 0.5);
         engine.set_volume(7.0);
         let st = wait_for(&engine, Duration::from_secs(2), |s| s.volume == 1.0);
@@ -268,7 +277,9 @@ mod tests {
         let server_body = body.clone();
         let port = listener.local_addr().unwrap().port();
         let server = std::thread::spawn(move || {
-            let Ok((mut sock, _)) = listener.accept() else { return };
+            let Ok((mut sock, _)) = listener.accept() else {
+                return;
+            };
             let mut buf = [0u8; 1024];
             let _ = std::io::Read::read(&mut sock, &mut buf); // 读掉请求头
             let resp = format!(
@@ -309,5 +320,4 @@ mod tests {
         server.join().unwrap();
         let _ = fs::remove_dir_all(&dir);
     }
-
 }

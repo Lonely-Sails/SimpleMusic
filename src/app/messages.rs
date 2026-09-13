@@ -4,10 +4,10 @@
 //! - `spawn_*`：在后台 `std::thread` 执行阻塞网络/IO，结果经 `mpsc` 发回主线程。
 //! - [`handle_msg`](MusicApp::handle_msg)：主线程每帧排空通道后的消息处理。
 
+use crate::app::player::enqueue_dedup;
 use crate::modules::bilibili::{BiliClient, FavFolder, FavItem, MusicHint, QrPoll, StreamUrl};
 use crate::modules::lyrics::{self, Lyrics, SongHint};
 use crate::state::{AudioQuality, QueueItem};
-use crate::app::player::enqueue_dedup;
 use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -133,10 +133,13 @@ impl MusicApp {
                             let _ = tx.send(AsyncMsg::LoginPollStatus("请用手机扫描二维码".into()));
                         }
                         Ok(QrPoll::WaitingConfirm) => {
-                            let _ = tx.send(AsyncMsg::LoginPollStatus("已扫码，请在手机上确认".into()));
+                            let _ =
+                                tx.send(AsyncMsg::LoginPollStatus("已扫码，请在手机上确认".into()));
                         }
                         Ok(QrPoll::Expired) => {
-                            let _ = tx.send(AsyncMsg::LoginPollStatus("二维码已过期，正在重新生成…".into()));
+                            let _ = tx.send(AsyncMsg::LoginPollStatus(
+                                "二维码已过期，正在重新生成…".into(),
+                            ));
                             break;
                         }
                         Ok(QrPoll::Success { mid, .. }) => {
@@ -220,7 +223,9 @@ impl MusicApp {
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let result = match bili.lock() {
-                Ok(b) => b.list_favorite_resources(media_id, pn).map_err(|e| e.to_string()),
+                Ok(b) => b
+                    .list_favorite_resources(media_id, pn)
+                    .map_err(|e| e.to_string()),
                 Err(e) => Err(format!("客户端锁中毒: {e}")),
             };
             let _ = tx.send(AsyncMsg::FavResources {
@@ -288,10 +293,7 @@ impl MusicApp {
                         ),
                     );
                 }
-                Err(e) => crate::util::log::error(
-                    "app",
-                    &format!("解析失败: {bvid}（{e}）"),
-                ),
+                Err(e) => crate::util::log::error("app", &format!("解析失败: {bvid}（{e}）")),
             }
             let _ = tx.send(AsyncMsg::PlayReady { seq, result });
         });
@@ -366,9 +368,10 @@ impl MusicApp {
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             // 1) 缓存命中：selected 或 candidates 任一存在即直接回放（零网络）。
-            let cached = cache.lock().ok().and_then(|m| {
-                lyrics::cache_lookup(&m, &key).cloned()
-            });
+            let cached = cache
+                .lock()
+                .ok()
+                .and_then(|m| lyrics::cache_lookup(&m, &key).cloned());
             if let Some(entry) = cached {
                 if entry.selected.is_some() || !entry.candidates.is_empty() {
                     crate::util::log::debug("lyrics", &format!("歌词缓存命中: {key}"));
@@ -398,7 +401,9 @@ impl MusicApp {
                     // 落盘就在本线程做（本就是后台线程）；失败静默，只丢缓存不丢功能。
                     match crate::modules::storage::save_lyrics_cache(&m) {
                         Ok(_) => crate::util::log::debug("lyrics", "歌词缓存已落盘"),
-                        Err(e) => crate::util::log::warn("lyrics", &format!("歌词缓存落盘失败: {e}")),
+                        Err(e) => {
+                            crate::util::log::warn("lyrics", &format!("歌词缓存落盘失败: {e}"))
+                        }
                     }
                 }
             }
@@ -486,8 +491,8 @@ impl MusicApp {
                         // 之前已选中且该收藏夹仍存在：保留用户选择；若资源还没加载
                         // （例如刚从本地歌单切过来）则补拉一次，但绝不清空当前列表。
                         // 无选中或选中已失效：回退到列表中的第一个收藏夹。
-                        let keep = prev_selected
-                            .filter(|id| self.fav_folders.iter().any(|f| f.id == *id));
+                        let keep =
+                            prev_selected.filter(|id| self.fav_folders.iter().any(|f| f.id == *id));
                         match keep {
                             Some(id) => {
                                 if self.fav_items.is_empty() && !self.fav_loading {

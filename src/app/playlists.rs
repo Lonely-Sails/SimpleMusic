@@ -76,8 +76,7 @@ impl MusicApp {
         let name = self.playlists[idx].name.clone();
         // 正在播放的歌如果属于被删的歌单，先停止播放。
         let playing_from_deleted = was_active
-            && self
-                .playlists[idx]
+            && self.playlists[idx]
                 .songs
                 .iter()
                 .any(|s| self.current_bvid.as_deref() == Some(s.bvid.as_str()));
@@ -87,7 +86,9 @@ impl MusicApp {
                 self.stop_current();
             }
             self.search_text.clear();
-            self.active_playlist = self.active_playlist.min(self.playlists.len().saturating_sub(1));
+            self.active_playlist = self
+                .active_playlist
+                .min(self.playlists.len().saturating_sub(1));
             if is_online {
                 self.fav_selected = None;
                 self.fav_items.clear();
@@ -123,9 +124,7 @@ impl MusicApp {
     /// 按 media_id 查找在线歌单的下标。
     pub(crate) fn online_playlist_index(&self, media_id: i64) -> Option<usize> {
         self.playlists.iter().position(|p| match &p.kind {
-            PlaylistKind::Online {
-                media_id: m, ..
-            } => *m == media_id,
+            PlaylistKind::Online { media_id: m, .. } => *m == media_id,
             _ => false,
         })
     }

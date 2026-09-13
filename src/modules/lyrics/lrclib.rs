@@ -5,11 +5,11 @@
 
 use std::time::Duration;
 
-use super::model::{Lyrics, LrcSearchResult, SongHint};
 use super::matching::best_match_if_acceptable;
+use super::model::{LrcSearchResult, Lyrics, SongHint};
 use super::query::clean_title;
 use super::query::{search_queries_with_hint, usable_uploader};
-use super::vkeys::{vkeys_source_fetch, VkSource};
+use super::vkeys::{VkSource, vkeys_source_fetch};
 use super::{LRCLIB_GET, LRCLIB_SEARCH, LRCLIB_UA, MIN_ACCEPT_SCORE};
 
 // ===========================================================================
@@ -62,7 +62,8 @@ impl LyricsProvider {
             if let Some(ly) = vkeys_source_fetch(&client, VkSource::Qq, q, title, uploader, hint) {
                 push_unique_lyrics(&mut out, ly);
             }
-            if let Some(ly) = vkeys_source_fetch(&client, VkSource::Netease, q, title, uploader, hint)
+            if let Some(ly) =
+                vkeys_source_fetch(&client, VkSource::Netease, q, title, uploader, hint)
             {
                 push_unique_lyrics(&mut out, ly);
             }
@@ -164,10 +165,7 @@ fn search(client: &reqwest::blocking::Client, query: &str) -> Option<Vec<LrcSear
         }
     };
     if !resp.status().is_success() {
-        crate::util::log::debug(
-            "lyrics",
-            &format!("LRCLIB 搜索 HTTP {}", resp.status()),
-        );
+        crate::util::log::debug("lyrics", &format!("LRCLIB 搜索 HTTP {}", resp.status()));
         return None;
     }
     resp.json::<Vec<LrcSearchResult>>().ok()

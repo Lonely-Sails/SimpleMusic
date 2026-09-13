@@ -321,7 +321,10 @@ impl From<DashStreamRaw> for DashStream {
             .filter(|s| !s.is_empty())
             .or(r.base_url_snake.filter(|s| !s.is_empty()))
             .unwrap_or_default();
-        let backup_url = match (r.backup_url.filter(|v| !v.is_empty()), r.backup_url_snake.filter(|v| !v.is_empty())) {
+        let backup_url = match (
+            r.backup_url.filter(|v| !v.is_empty()),
+            r.backup_url_snake.filter(|v| !v.is_empty()),
+        ) {
             (Some(a), Some(b)) => {
                 let mut v = a;
                 v.extend(b);
@@ -479,7 +482,6 @@ mod tests {
     use crate::modules::bilibili::client::BiliClient;
     use crate::modules::bilibili::client::parse_query_params;
 
-
     #[test]
     fn player_info_resp_parses_bgm_info() {
         let json = r#"{"code":0,"message":"OK","data":{
@@ -609,9 +611,12 @@ mod tests {
         assert_eq!(best.codecs.as_deref(), Some("mp4a.40.2"));
         assert_eq!(best.backup_url, vec!["https://backup.example.com/a128.m4s"]);
         // base_url 别名兼容（老字段名）。
-        let lower: ApiEnvelope<PlayUrlData> =
-            serde_json::from_str(body.replace("baseUrl", "base_url").replace("backupUrl", "backup_url").as_str())
-                .expect("snake_case 字段应可解析");
+        let lower: ApiEnvelope<PlayUrlData> = serde_json::from_str(
+            body.replace("baseUrl", "base_url")
+                .replace("backupUrl", "backup_url")
+                .as_str(),
+        )
+        .expect("snake_case 字段应可解析");
         assert_eq!(
             lower.data.unwrap().dash.unwrap().audio[0].base_url,
             "https://upos.example.com/a64.m4s?e=abc"
@@ -630,7 +635,10 @@ mod tests {
         let env: ApiEnvelope<PlayUrlData> = serde_json::from_str(body).unwrap();
         let data = env.data.unwrap();
         assert!(data.dash.is_none());
-        assert_eq!(data.durl.unwrap()[0].url, "https://upos.example.com/mixed.flv");
+        assert_eq!(
+            data.durl.unwrap()[0].url,
+            "https://upos.example.com/mixed.flv"
+        );
     }
 
     #[test]
@@ -646,7 +654,11 @@ mod tests {
         let d = env.data.unwrap();
         assert_eq!(d.code, 86101);
         let params = parse_query_params(&d.url);
-        assert!(params.iter().any(|(k, v)| k == "SESSDATA" && v == "sessdata%2Cenc"));
+        assert!(
+            params
+                .iter()
+                .any(|(k, v)| k == "SESSDATA" && v == "sessdata%2Cenc")
+        );
 
         let fav = r#"{"code":0,"message":"0","ttl":1,"data":{"count":2,"list":[
             {"id":555,"pid":0,"title":"喜欢的歌","media_count":42,"intro":"","attr":0},
@@ -716,7 +728,12 @@ mod tests {
         assert_eq!(d.mid, 9469746);
         assert_eq!(d.uname, "碧诗");
         assert_eq!(d.face, "https://i0.hdslb.com/bfs/face/x.jpg");
-        assert_eq!(d.wbi_img.img_url.contains("7cd084941338484aae1ad9425b84077c"), true);
+        assert_eq!(
+            d.wbi_img
+                .img_url
+                .contains("7cd084941338484aae1ad9425b84077c"),
+            true
+        );
         // mid/uname 齐全 → nav_user 判定为已登录。
         assert!(d.mid != 0 && !d.uname.is_empty());
 
@@ -738,7 +755,6 @@ mod tests {
         // mid/uname 缺失 → nav_user 判定为未登录。
         assert!(d.mid == 0 || d.uname.is_empty());
     }
-
 
     #[test]
     fn test_required_headers_content() {

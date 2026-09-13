@@ -3,18 +3,16 @@
 //! 两者共用行绘制（封面 + 标题 + 副标题 + 删除/右键菜单），区别在于数据源
 //! （`QueueItem` vs `FavItem`）与删除权限（在线列表只读）。
 
+use super::MusicApp;
+use super::widgets::{
+    paint_cover_image, paint_placeholder_cover, song_search_field, truncate_label,
+};
 use crate::modules::bilibili::FavItem;
 use crate::state::QueueItem;
 use crate::util::filter::song_matches_query;
 use crate::util::fmt::format_secs;
 use crate::{icons, theme};
-use eframe::egui::{
-    self, Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Vec2,
-};
-use super::MusicApp;
-use super::widgets::{
-    paint_cover_image, paint_placeholder_cover, song_search_field, truncate_label,
-};
+use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Vec2};
 
 /// 歌曲列表内容相对滚动区/窗口两边的水平留白（滚动条贴右，内容左右留白）。
 const LIST_PAD_X: f32 = 14.0;
@@ -24,12 +22,8 @@ impl MusicApp {
 
     pub(crate) fn show_local_songs(&mut self, ui: &mut egui::Ui) {
         // 克隆条目，避免闭包内 self 借冲突。
-        let rows: Vec<(usize, QueueItem)> = self
-            .active_songs()
-            .iter()
-            .cloned()
-            .enumerate()
-            .collect();
+        let rows: Vec<(usize, QueueItem)> =
+            self.active_songs().iter().cloned().enumerate().collect();
         let total = rows.len();
         let query = self.search_text.trim().to_lowercase();
         let visible: Vec<(usize, QueueItem)> = if query.is_empty() {
@@ -76,9 +70,7 @@ impl MusicApp {
                                     .color(theme::TEXT_WEAK),
                             );
                         } else {
-                            ui.label(
-                                RichText::new("没有匹配的歌曲").color(theme::TEXT_WEAK),
-                            );
+                            ui.label(RichText::new("没有匹配的歌曲").color(theme::TEXT_WEAK));
                             ui.add_space(6.0);
                             if ui.add(theme::small_button("清空搜索")).clicked() {
                                 self.search_text.clear();
@@ -142,11 +134,7 @@ impl MusicApp {
                             theme::TEXT_PRIMARY
                         },
                     );
-                    let sub = format!(
-                        "{} · {}",
-                        item.uploader,
-                        format_secs(item.duration_secs)
-                    );
+                    let sub = format!("{} · {}", item.uploader, format_secs(item.duration_secs));
                     let sub = truncate_label(ui, &sub, max_w);
                     painter.text(
                         Pos2::new(text_x, row.top() + 32.0),
@@ -160,13 +148,11 @@ impl MusicApp {
                         Pos2::new(row.right() - 20.0, row.center().y),
                         Vec2::splat(24.0),
                     );
-                    let btn_resp = ui.interact(
-                        btn_rect,
-                        ui.id().with(("song_remove", i)),
-                        Sense::click(),
-                    );
+                    let btn_resp =
+                        ui.interact(btn_rect, ui.id().with(("song_remove", i)), Sense::click());
                     if btn_resp.hovered() {
-                        ui.painter().rect_filled(btn_rect, theme::CORNER, theme::BG_ACTIVE);
+                        ui.painter()
+                            .rect_filled(btn_rect, theme::CORNER, theme::BG_ACTIVE);
                     }
                     icons::cross(
                         &ui.painter(),
@@ -251,9 +237,7 @@ impl MusicApp {
             ui.vertical_centered(|ui| {
                 let (r, _) = ui.allocate_exact_size(Vec2::splat(24.0), Sense::hover());
                 icons::note_double(ui.painter(), r, theme::TEXT_WEAK);
-                ui.label(
-                    RichText::new("登录后可查看 B 站收藏夹").color(theme::TEXT_WEAK),
-                );
+                ui.label(RichText::new("登录后可查看 B 站收藏夹").color(theme::TEXT_WEAK));
             });
             return;
         }
@@ -310,9 +294,7 @@ impl MusicApp {
                 if fav_items.is_empty() && count > 0 {
                     // 有歌曲但搜索无匹配
                     ui.vertical_centered(|ui| {
-                        ui.label(
-                            RichText::new("没有匹配的歌曲").color(theme::TEXT_WEAK),
-                        );
+                        ui.label(RichText::new("没有匹配的歌曲").color(theme::TEXT_WEAK));
                         ui.add_space(6.0);
                         if ui.add(theme::small_button("清空搜索")).clicked() {
                             self.search_text.clear();
@@ -446,7 +428,13 @@ impl MusicApp {
     }
 
     /// 绘制封面缩略图行（有纹理画图，否则画占位符）。
-    pub(crate) fn draw_cover_row(&mut self, ui: &mut egui::Ui, cover_rect: Rect, key: &str, url: &str) {
+    pub(crate) fn draw_cover_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        cover_rect: Rect,
+        key: &str,
+        url: &str,
+    ) {
         if !url.is_empty() {
             if let Some(tex) = self.covers.texture(key) {
                 // 纯绘制圆角图片：不创建 widget，避免改变行间距导致封面加载后整列跳位。

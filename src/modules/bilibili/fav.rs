@@ -2,7 +2,7 @@
 
 use super::client::BiliClient;
 use super::error::{BiliError, BiliResult};
-use super::models::{FolderListResp, FavFolder, FavItem, ResourceListResp};
+use super::models::{FavFolder, FavItem, FolderListResp, ResourceListResp};
 use super::util::dedup_folders;
 
 impl BiliClient {
@@ -55,7 +55,11 @@ impl BiliClient {
     }
 
     /// 列出收藏夹资源（type=2 仅视频），返回 `(条目, 收藏夹总数)`。
-    pub fn list_favorite_resources(&self, media_id: i64, pn: u32) -> BiliResult<(Vec<FavItem>, i64)> {
+    pub fn list_favorite_resources(
+        &self,
+        media_id: i64,
+        pn: u32,
+    ) -> BiliResult<(Vec<FavItem>, i64)> {
         // platform=web 为官方文档标注参数（影响内容列表类型），与 web 前端一致。
         let url = format!(
             "https://api.bilibili.com/x/v3/fav/resource/list?media_id={media_id}&pn={pn}&ps=20&order=mtime&type=2&platform=web"

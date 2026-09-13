@@ -233,11 +233,13 @@ impl MusicApp {
         const SEEK_STEP: f64 = 5.0;
         if left {
             let dur = self.state.duration_secs;
-            self.audio.seek(clamp_seek(self.state.position_secs - SEEK_STEP, dur));
+            self.audio
+                .seek(clamp_seek(self.state.position_secs - SEEK_STEP, dur));
         }
         if right {
             let dur = self.state.duration_secs;
-            self.audio.seek(clamp_seek(self.state.position_secs + SEEK_STEP, dur));
+            self.audio
+                .seek(clamp_seek(self.state.position_secs + SEEK_STEP, dur));
         }
         const VOL_STEP: f32 = 0.05;
         if up {

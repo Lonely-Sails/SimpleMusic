@@ -126,7 +126,10 @@ mod tests {
     fn bare_emoji_removed_by_coverage() {
         let p = noto_like_renderable;
         assert_eq!(sanitize_ui_text("好听的\u{1F680}歌", p), "好听的歌");
-        assert_eq!(sanitize_ui_text("\u{1F3B5}\u{266A}\u{1F31F}", p), "\u{266A}");
+        assert_eq!(
+            sanitize_ui_text("\u{1F3B5}\u{266A}\u{1F31F}", p),
+            "\u{266A}"
+        );
         assert_eq!(sanitize_ui_text("【A】\u{1F3B5}", p), "【A】");
         assert_eq!(sanitize_ui_text("\u{1F680}\u{1F680}", p), "");
     }
@@ -134,10 +137,19 @@ mod tests {
     /// 变体选择符被剔除后 emoji 降级为基础字符（❤ 基元 Noto 有覆盖 → 保留）。
     #[test]
     fn variation_selector_emoji_degrades() {
-        assert_eq!(sanitize_ui_text("\u{2764}\u{FE0F}", noto_like_renderable), "\u{2764}");
-        assert_eq!(sanitize_ui_text("赞\u{2764}\u{FE0F}", noto_like_renderable), "赞\u{2764}");
+        assert_eq!(
+            sanitize_ui_text("\u{2764}\u{FE0F}", noto_like_renderable),
+            "\u{2764}"
+        );
+        assert_eq!(
+            sanitize_ui_text("赞\u{2764}\u{FE0F}", noto_like_renderable),
+            "赞\u{2764}"
+        );
         // 宽松判定同样剔除 VS16。
-        assert_eq!(sanitize_ui_text("\u{2764}\u{FE0F}", permissive_renderable), "\u{2764}");
+        assert_eq!(
+            sanitize_ui_text("\u{2764}\u{FE0F}", permissive_renderable),
+            "\u{2764}"
+        );
     }
 
     /// 零宽字符 / 方向控制 / BOM 被剔除，相邻可渲染字符直接拼接。

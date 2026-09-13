@@ -42,11 +42,10 @@ pub(super) fn cache_usable(path: &Path, expected_size: Option<u64>) -> bool {
 // 共享播放状态
 // ---------------------------------------------------------------------------
 
-
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::decode::tests::test_dir;
+    use super::*;
 
     #[test]
     fn test_cache_path_deterministic_and_distinct() {
@@ -73,7 +72,10 @@ mod tests {
         fs::write(&p, vec![0u8; 2048]).unwrap();
         assert!(cache_usable(&p, Some(2048)), "大小匹配 → 可用");
         assert!(cache_usable(&p, None), "无期望大小且 >1KB → 可用");
-        assert!(!cache_usable(&dir.join("missing.m4s"), None), "不存在 → 不可用");
+        assert!(
+            !cache_usable(&dir.join("missing.m4s"), None),
+            "不存在 → 不可用"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }

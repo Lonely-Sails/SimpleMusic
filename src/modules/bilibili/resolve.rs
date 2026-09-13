@@ -5,7 +5,7 @@ use super::client::BiliClient;
 use super::error::{BiliError, BiliResult};
 use super::models::*;
 use super::util::{pick_dash_audio, scan_bv_token};
-use super::wbi::{wbi_sign_params, WbiKeys};
+use super::wbi::{WbiKeys, wbi_sign_params};
 use std::time::{Duration, Instant};
 
 use crate::state::AudioQuality;
@@ -79,11 +79,7 @@ impl BiliClient {
             .music_id_from_player(bvid, cid)
             .or_else(|| self.music_id_from_bgm_tag(bvid))?;
         let hint = self.music_detail(&music_id).ok()?;
-        if hint.is_usable() {
-            Some(hint)
-        } else {
-            None
-        }
+        if hint.is_usable() { Some(hint) } else { None }
     }
 
     /// 从 `/x/player/v2` 拿 `bgm_info.music_id`（UP 主挂载的 BGM 音乐卡）。
@@ -100,9 +96,7 @@ impl BiliClient {
 
     /// 从 `view/detail/tag` 拿 `tag_type == "bgm"` 的 TAG music_id。
     fn music_id_from_bgm_tag(&self, bvid: &str) -> Option<String> {
-        let url = format!(
-            "https://api.bilibili.com/x/web-interface/view/detail/tag?bvid={bvid}"
-        );
+        let url = format!("https://api.bilibili.com/x/web-interface/view/detail/tag?bvid={bvid}");
         let env: ApiEnvelope<Vec<BgmTagItem>> = self.get_json(&url, &[]).ok()?.1;
         let data = env.data?;
         data.into_iter()
@@ -126,9 +120,9 @@ impl BiliClient {
             "https://api.bilibili.com/x/copyright-music-publicity/bgm/detail?music_id={music_id}"
         );
         let env: ApiEnvelope<CopyrightMusicDetail> = self.get_json(&url, &[])?.1;
-        let data = env.data.ok_or_else(|| {
-            BiliError::Local(format!("bgm/detail {music_id} 缺少 data"))
-        })?;
+        let data = env
+            .data
+            .ok_or_else(|| BiliError::Local(format!("bgm/detail {music_id} 缺少 data")))?;
         Ok(MusicHint {
             title: data.music_title.trim().to_string(),
             artist: data.artist_display(),
@@ -154,7 +148,10 @@ impl BiliClient {
             && raw
                 .data
                 .as_ref()
-                .map(|d| d.dash.as_ref().map_or(true, |dash| !dash.audio.is_empty()) || d.durl.as_ref().map_or(false, |d| !d.is_empty()))
+                .map(|d| {
+                    d.dash.as_ref().map_or(true, |dash| !dash.audio.is_empty())
+                        || d.durl.as_ref().map_or(false, |d| !d.is_empty())
+                })
                 .unwrap_or(false);
         if usable {
             return self.build_stream_url(http, raw, false, bvid, quality);
@@ -215,10 +212,16 @@ impl BiliClient {
         }
         // 注意：游客访问 nav 返回 code=-101（账号未登录）但 data.wbi_img 照常下发，
         // 所以这里不能走 unwrap_api 的严格 code==0 校验。
-        let (_http, env) = self.get_json::<NavResp>("https://api.bilibili.com/x/web-interface/nav", &[])?;
+        let (_http, env) =
+            self.get_json::<NavResp>("https://api.bilibili.com/x/web-interface/nav", &[])?;
         let data = match env.data {
             Some(d) => d,
-            None => return Err(BiliError::Api { code: env.code, message: env.message }),
+            None => {
+                return Err(BiliError::Api {
+                    code: env.code,
+                    message: env.message,
+                });
+            }
         };
         if data.wbi_img.img_url.is_empty() || data.wbi_img.sub_url.is_empty() {
             return Err(BiliError::Local("nav 缺少 wbi_img".into()));
@@ -231,7 +234,12 @@ impl BiliClient {
     // ---- 内部 ----
 
     /// 诊断用：按给定头做一次 Range 下载探测，返回 `(HTTP 状态码, 实际收到字节数)`。
-    pub fn probe_download(&self, url: &str, headers: &[(String, String)], range: &str) -> BiliResult<(u16, usize)> {
+    pub fn probe_download(
+        &self,
+        url: &str,
+        headers: &[(String, String)],
+        range: &str,
+    ) -> BiliResult<(u16, usize)> {
         let mut req = self.http.get(url).header(reqwest::header::RANGE, range);
         for (k, v) in headers {
             req = req.header(k.as_str(), v.as_str());
@@ -262,7 +270,9 @@ impl BiliClient {
                 message: raw.message,
             });
         }
-        let data = raw.data.ok_or_else(|| BiliError::Local("playurl 缺少 data".into()))?;
+        let data = raw
+            .data
+            .ok_or_else(|| BiliError::Local("playurl 缺少 data".into()))?;
         let ttl_secs = (data.timelength.max(0) as u64) / 1000;
         let cookie_header = self.cookie_header();
 
@@ -303,8 +313,18 @@ impl BiliClient {
         // 老格式 / 降级：durl（音视频混合流，通常为 flv/mp4）。
         let first = data
             .durl
-            .and_then(|mut d| if d.is_empty() { None } else { Some(d.remove(0)) })
-            .ok_or_else(|| BiliError::Local("playurl 既无 dash.audio 也无 durl（可能被风控，请登录或稍后重试）".into()))?;
+            .and_then(|mut d| {
+                if d.is_empty() {
+                    None
+                } else {
+                    Some(d.remove(0))
+                }
+            })
+            .ok_or_else(|| {
+                BiliError::Local(
+                    "playurl 既无 dash.audio 也无 durl（可能被风控，请登录或稍后重试）".into(),
+                )
+            })?;
         Ok(StreamUrl {
             audio_url: first.url,
             video_url: None,
@@ -374,26 +394,48 @@ mod tests {
     #[test]
     fn test_pick_dash_audio_prefers_exact_id() {
         let audio = vec![dash(30216, 64_000), dash(30280, 320_000)];
-        assert_eq!(pick_dash_audio(&audio, AudioQuality::Low).unwrap().id, 30216);
-        assert_eq!(pick_dash_audio(&audio, AudioQuality::High).unwrap().id, 30280);
+        assert_eq!(
+            pick_dash_audio(&audio, AudioQuality::Low).unwrap().id,
+            30216
+        );
+        assert_eq!(
+            pick_dash_audio(&audio, AudioQuality::High).unwrap().id,
+            30280
+        );
     }
 
     #[test]
     fn test_pick_dash_audio_falls_back_to_closest_bandwidth() {
         // 无 30280 时，High 回退到最高码率。
         let audio = vec![dash(30216, 64_000), dash(30232, 128_000)];
-        assert_eq!(pick_dash_audio(&audio, AudioQuality::High).unwrap().id, 30232);
+        assert_eq!(
+            pick_dash_audio(&audio, AudioQuality::High).unwrap().id,
+            30232
+        );
         // Low 偏好接近 64kbps 的流。
         let audio2 = vec![dash(30232, 128_000), dash(30280, 320_000)];
-        assert_eq!(pick_dash_audio(&audio2, AudioQuality::Low).unwrap().id, 30232);
+        assert_eq!(
+            pick_dash_audio(&audio2, AudioQuality::Low).unwrap().id,
+            30232
+        );
     }
 
     #[test]
     fn test_pick_dash_audio_lossless_prefers_flac_then_dolby() {
-        let audio = vec![dash(30280, 320_000), dash(30250, 512_000), dash(30255, 1_000_000)];
-        assert_eq!(pick_dash_audio(&audio, AudioQuality::Lossless).unwrap().id, 30255);
+        let audio = vec![
+            dash(30280, 320_000),
+            dash(30250, 512_000),
+            dash(30255, 1_000_000),
+        ];
+        assert_eq!(
+            pick_dash_audio(&audio, AudioQuality::Lossless).unwrap().id,
+            30255
+        );
         let audio2 = vec![dash(30280, 320_000), dash(30251, 512_000)];
-        assert_eq!(pick_dash_audio(&audio2, AudioQuality::Lossless).unwrap().id, 30251);
+        assert_eq!(
+            pick_dash_audio(&audio2, AudioQuality::Lossless).unwrap().id,
+            30251
+        );
     }
 
     #[test]
@@ -412,11 +454,15 @@ mod tests {
             Some(bv.into())
         );
         assert_eq!(
-            BiliClient::parse_bvid_direct("https://www.bilibili.com/video/BV1xx411c7mD?p=2&spm_id_from=x"),
+            BiliClient::parse_bvid_direct(
+                "https://www.bilibili.com/video/BV1xx411c7mD?p=2&spm_id_from=x"
+            ),
             Some(bv.into())
         );
         assert_eq!(
-            BiliClient::parse_bvid_direct("https://www.bilibili.com/video/BV1xx411c7mD/?vd_source=abc"),
+            BiliClient::parse_bvid_direct(
+                "https://www.bilibili.com/video/BV1xx411c7mD/?vd_source=abc"
+            ),
             Some(bv.into())
         );
         assert_eq!(
@@ -437,9 +483,15 @@ mod tests {
     #[test]
     fn test_parse_bvid_direct_rejects_av_and_garbage() {
         assert_eq!(BiliClient::parse_bvid_direct("av170001"), None);
-        assert_eq!(BiliClient::parse_bvid_direct("https://www.bilibili.com/video/av170001"), None);
+        assert_eq!(
+            BiliClient::parse_bvid_direct("https://www.bilibili.com/video/av170001"),
+            None
+        );
         assert_eq!(BiliClient::parse_bvid_direct(""), None);
-        assert_eq!(BiliClient::parse_bvid_direct("https://example.com/BV_not_here"), None);
+        assert_eq!(
+            BiliClient::parse_bvid_direct("https://example.com/BV_not_here"),
+            None
+        );
         // 不足 10 位 token
         assert_eq!(BiliClient::parse_bvid_direct("BV1xx411c7"), None);
         // 第 3 位不是 1-7 的长词不应误判

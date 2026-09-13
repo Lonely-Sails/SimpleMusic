@@ -1,9 +1,6 @@
 //! 数据模型：[`SongHint`]（识别音乐提示）、[`LrcLine`]、[`LrcSearchResult`]、[`Lyrics`]。
 
-
-
 use super::lrc;
-
 
 /// ① 生成比视频标题更准的查询词；② 校准候选打分（标题/歌手/时长匹配度）。
 ///
@@ -121,5 +118,4 @@ mod tests {
         assert_eq!(v.synced_lyrics, "");
         assert_eq!(v.plain_lyrics, "纯文本歌词");
     }
-
 }

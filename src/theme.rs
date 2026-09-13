@@ -4,9 +4,9 @@
 //! 避免魔法颜色散落各处。
 
 use eframe::egui::{
-    self,
+    self, Color32, CornerRadius, FontFamily, FontId, Margin, RichText, Stroke, Style, TextStyle,
+    Vec2,
     style::{HandleShape, ScrollStyle, Selection, TextCursorStyle},
-    Color32, CornerRadius, FontFamily, FontId, Margin, RichText, Stroke, Style, TextStyle, Vec2,
 };
 
 // ===========================================================================
@@ -252,10 +252,22 @@ fn style_build() -> Style {
     let mut text_styles = std::collections::BTreeMap::new();
     let body = FontId::new(13.0, FontFamily::Proportional);
     text_styles.insert(TextStyle::Body, body.clone());
-    text_styles.insert(TextStyle::Button, FontId::new(13.0, FontFamily::Proportional));
-    text_styles.insert(TextStyle::Heading, FontId::new(16.0, FontFamily::Proportional));
-    text_styles.insert(TextStyle::Small, FontId::new(11.0, FontFamily::Proportional));
-    text_styles.insert(TextStyle::Monospace, FontId::new(12.0, FontFamily::Monospace));
+    text_styles.insert(
+        TextStyle::Button,
+        FontId::new(13.0, FontFamily::Proportional),
+    );
+    text_styles.insert(
+        TextStyle::Heading,
+        FontId::new(16.0, FontFamily::Proportional),
+    );
+    text_styles.insert(
+        TextStyle::Small,
+        FontId::new(11.0, FontFamily::Proportional),
+    );
+    text_styles.insert(
+        TextStyle::Monospace,
+        FontId::new(12.0, FontFamily::Monospace),
+    );
     style.text_styles = text_styles;
 
     style.spacing = spacing();

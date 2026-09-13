@@ -2,12 +2,12 @@
 //! 点击即切换当前分类；每页只显示该分类的配置项（纵向排布），单页内容短，
 //! 窗口整体不超出屏幕，也便于快速跳转。
 
+use super::MusicApp;
 use crate::fonts::SystemFont;
 use crate::state::{AudioQuality, LyricsFont};
 use crate::theme;
 use eframe::egui::{self, Align2, RichText};
 use std::path::Path;
-use super::MusicApp;
 
 /// 设置窗口的分类页。
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -47,12 +47,7 @@ impl MusicApp {
         // open 标志提为局部变量：内容方法走 &mut self 调用，闭包需要整个 *self
         // 的独占借用，与 Window 持有的 &mut self.settings_window_open 冲突。
         let mut open = self.settings_window_open;
-        let screen_h = ctx.input(|i| {
-            i.viewport()
-                .outer_rect
-                .map(|r| r.height())
-                .unwrap_or(800.0)
-        });
+        let screen_h = ctx.input(|i| i.viewport().outer_rect.map(|r| r.height()).unwrap_or(800.0));
         // 内容区限高：单页内容本身不长，仍按可用屏高缩放并设上限，防极端情况溢出。
         let content_max_h = (screen_h * 0.8).clamp(300.0, 620.0);
         // 窗口高度固定 = 内容区 + 标题栏/导航/分隔线的开销。固定尺寸让切换分类时
@@ -178,14 +173,8 @@ impl MusicApp {
                 .color(theme::TEXT_SECONDARY)
                 .strong(),
         );
-        ui.checkbox(
-            &mut self.settings.desktop_lyrics_enabled,
-            "启用桌面歌词",
-        );
-        ui.checkbox(
-            &mut self.settings.lyrics_locked,
-            "歌词锁定（鼠标穿透）",
-        );
+        ui.checkbox(&mut self.settings.desktop_lyrics_enabled, "启用桌面歌词");
+        ui.checkbox(&mut self.settings.lyrics_locked, "歌词锁定（鼠标穿透）");
         ui.horizontal(|ui| {
             ui.label(RichText::new("歌词字号").color(theme::TEXT_SECONDARY));
             ui.add(
@@ -199,11 +188,7 @@ impl MusicApp {
 
     /// 「播放」页。
     fn playback_picker(&mut self, ui: &mut egui::Ui) {
-        ui.label(
-            RichText::new("播放")
-                .color(theme::TEXT_SECONDARY)
-                .strong(),
-        );
+        ui.label(RichText::new("播放").color(theme::TEXT_SECONDARY).strong());
         ui.horizontal(|ui| {
             ui.label(RichText::new("音量").color(theme::TEXT_SECONDARY));
             ui.add(
@@ -313,10 +298,7 @@ impl MusicApp {
                             .small(),
                     );
                 } else if self.font_list.is_empty() && self.font_scan_started {
-                    if ui
-                        .button(RichText::new("重新扫描").small())
-                        .clicked()
-                    {
+                    if ui.button(RichText::new("重新扫描").small()).clicked() {
                         self.font_scan_started = false;
                         self.spawn_font_scan();
                     }
@@ -350,8 +332,7 @@ impl MusicApp {
                                 theme::TEXT_PRIMARY
                             });
                             if ui.radio(selected, label).clicked() {
-                                let new_font =
-                                    LyricsFont::Specific(f.path.display().to_string());
+                                let new_font = LyricsFont::Specific(f.path.display().to_string());
                                 // 即时生效；失败（文件刚被删等）时复位成内嵌。
                                 if self.apply_font_setting(ctx, &new_font) {
                                     self.settings.lyrics_font = new_font;

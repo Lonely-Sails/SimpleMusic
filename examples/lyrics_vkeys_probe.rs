@@ -5,17 +5,22 @@
 //! 流程：`LyricsProvider::fetch` 先查 vkeys（QQ 音乐 → 网易云），再回退 LRCLIB，
 //! 命中后打印同步歌词行数与前 5 行。
 
-
 #[allow(dead_code)]
-
 use simple_music::modules::lyrics::LyricsProvider;
 
 fn main() {
-    let title = std::env::args().nth(1).unwrap_or_else(|| "晴天".to_string());
-    let uploader = std::env::args().nth(2).unwrap_or_else(|| "周杰伦".to_string());
+    let title = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "晴天".to_string());
+    let uploader = std::env::args()
+        .nth(2)
+        .unwrap_or_else(|| "周杰伦".to_string());
 
     println!("=== SimpleMusic lyrics_vkeys_probe ===");
-    println!("[query] 候选查询: {:?}", simple_music::modules::lyrics::search_queries(&title, &uploader));
+    println!(
+        "[query] 候选查询: {:?}",
+        simple_music::modules::lyrics::search_queries(&title, &uploader)
+    );
 
     match LyricsProvider::fetch(&title, &uploader) {
         Some(lyrics) => {

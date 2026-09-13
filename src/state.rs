@@ -137,7 +137,11 @@ pub enum PlayMode {
 
 impl PlayMode {
     /// 所有模式名（popup menu 用）。
-    pub const ALL: &'static [PlayMode] = &[PlayMode::Sequence, PlayMode::SingleRepeat, PlayMode::Shuffle];
+    pub const ALL: &'static [PlayMode] = &[
+        PlayMode::Sequence,
+        PlayMode::SingleRepeat,
+        PlayMode::Shuffle,
+    ];
 
     pub fn label(&self) -> &'static str {
         match self {
@@ -494,10 +498,7 @@ mod tests {
 
     #[test]
     fn lyrics_font_path_accessors() {
-        assert_eq!(
-            LyricsFont::Specific("/y.ttf".into()).path(),
-            Some("/y.ttf")
-        );
+        assert_eq!(LyricsFont::Specific("/y.ttf".into()).path(), Some("/y.ttf"));
         assert_eq!(LyricsFont::FollowUi.path(), None);
         assert_eq!(LyricsFont::Embedded.path(), None);
     }

@@ -25,14 +25,14 @@ pub mod playlists;
 pub mod ui;
 pub mod window;
 
+use crate::app::ui::toast::{Toast, ToastKind, show_toasts};
 use crate::cover::CoverCache;
 use crate::modules::audio::{AudioEngine, PlaybackStatus};
 use crate::modules::bilibili::{BiliClient, FavFolder, FavItem, StreamCache};
 use crate::modules::lyrics::{LrcLine, Lyrics, LyricsCacheEntry};
 use crate::modules::storage;
-use crate::state::{PlaybackState, Playlist, QueueItem, Settings, LyricsFont};
+use crate::state::{LyricsFont, PlaybackState, Playlist, QueueItem, Settings};
 use crate::tray;
-use crate::app::ui::toast::{show_toasts, Toast, ToastKind};
 use eframe::egui;
 use messages::AsyncMsg;
 use std::collections::BTreeMap;
@@ -167,17 +167,12 @@ pub struct MusicApp {
 }
 
 impl MusicApp {
-    pub fn new(
-        cc: &eframe::CreationContext<'_>,
-        settings: Settings,
-        mut tray: tray::Tray,
-    ) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, settings: Settings, mut tray: tray::Tray) -> Self {
         // macOS/Windows：在主线程（事件循环已运行）创建原生托盘图标；Linux 上是 no-op。
         tray.init_on_main_thread();
         let _ = cc;
-        let bili = BiliClient::with_session().unwrap_or_else(|_| {
-            BiliClient::new().expect("初始化 BiliClient 失败")
-        });
+        let bili = BiliClient::with_session()
+            .unwrap_or_else(|_| BiliClient::new().expect("初始化 BiliClient 失败"));
         let mid = bili.mid();
         // 缓存登录态（每帧渲染读取的字段，避免渲染时锁 bili；网络解析持锁时不再卡 UI）。
         let login_state = bili.logged_in();
@@ -292,41 +287,41 @@ impl MusicApp {
             force_quit: false,
         };
 
-    // 恢复过登录态时拉一次用户昵称（后台线程，避免阻塞 UI）。
-    if app.logged_in() {
-        app.spawn_user_info_fetch();
-    }
-    // 重启后若上次停留在在线歌单（B 站收藏夹），恢复 fav_selected 指向该收藏夹，
-    // 避免收藏夹视图跳回列表中的第一个。
-    app.restore_favorites_selection();
+        // 恢复过登录态时拉一次用户昵称（后台线程，避免阻塞 UI）。
+        if app.logged_in() {
+            app.spawn_user_info_fetch();
+        }
+        // 重启后若上次停留在在线歌单（B 站收藏夹），恢复 fav_selected 指向该收藏夹，
+        // 避免收藏夹视图跳回列表中的第一个。
+        app.restore_favorites_selection();
 
-    // 重绘保活线程：规避 eframe/winit 最小化后事件循环「饿死」的已知缺陷
-    // （egui #8246：最小化再恢复后 UI 永久冻结；egui #5136 / PR #8414：合成器对
-    // 不可见/最小化窗口扣留重绘回调，`logic` 从此不再执行）。
-    //
-    // 原理：`Context::request_repaint` 会经 eframe 的 event-loop proxy 唤醒事件循环，
-    // 即使窗口处于最小化/不可见状态也能到达（Windows 上隐藏窗口收不到系统
-    // `RedrawRequested`，eframe 0.34+ 对这类窗口会在收到重绘请求时直接跑一遍
-    // `run_ui_and_paint`，viewport 命令因此得以处理）。线程独立于 egui 存活期间，
-    // 无论 UI 线程是否已被平台「饿死」，恢复窗口后最多 200ms 内必有一次真帧。
-    //
-    // 开销：每秒 5 次 proxy 唤醒，空闲功耗可忽略；应用退出时置位停止。
-    {
-        let ctx = cc.egui_ctx.clone();
-        let stop = Arc::clone(&app.keepalive_stop);
-        std::thread::Builder::new()
-            .name("render-keepalive".into())
-            .spawn(move || {
-                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                    std::thread::sleep(std::time::Duration::from_millis(200));
-                    ctx.request_repaint();
-                }
-            })
-            .expect("启动渲染保活线程失败");
-    }
+        // 重绘保活线程：规避 eframe/winit 最小化后事件循环「饿死」的已知缺陷
+        // （egui #8246：最小化再恢复后 UI 永久冻结；egui #5136 / PR #8414：合成器对
+        // 不可见/最小化窗口扣留重绘回调，`logic` 从此不再执行）。
+        //
+        // 原理：`Context::request_repaint` 会经 eframe 的 event-loop proxy 唤醒事件循环，
+        // 即使窗口处于最小化/不可见状态也能到达（Windows 上隐藏窗口收不到系统
+        // `RedrawRequested`，eframe 0.34+ 对这类窗口会在收到重绘请求时直接跑一遍
+        // `run_ui_and_paint`，viewport 命令因此得以处理）。线程独立于 egui 存活期间，
+        // 无论 UI 线程是否已被平台「饿死」，恢复窗口后最多 200ms 内必有一次真帧。
+        //
+        // 开销：每秒 5 次 proxy 唤醒，空闲功耗可忽略；应用退出时置位停止。
+        {
+            let ctx = cc.egui_ctx.clone();
+            let stop = Arc::clone(&app.keepalive_stop);
+            std::thread::Builder::new()
+                .name("render-keepalive".into())
+                .spawn(move || {
+                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                        ctx.request_repaint();
+                    }
+                })
+                .expect("启动渲染保活线程失败");
+        }
 
-    app
-}
+        app
+    }
 
     // ---- 跨模块小工具 ----
 
@@ -399,14 +394,18 @@ impl MusicApp {
     /// 轻提示：顶部弹金色 toast（成功/信息类）。
     pub(crate) fn notice(&mut self, msg: impl Into<String>) {
         // toast 文本同样净化：消息里常拼歌单/曲目名（可能带 emoji）。
-        self.toasts
-            .push(Toast::new(crate::fonts::sanitize_text(&msg.into()), ToastKind::Notice));
+        self.toasts.push(Toast::new(
+            crate::fonts::sanitize_text(&msg.into()),
+            ToastKind::Notice,
+        ));
     }
 
     /// 错误提示：顶部弹暖红色 toast。
     pub(crate) fn error(&mut self, msg: impl Into<String>) {
-        self.toasts
-            .push(Toast::new(crate::fonts::sanitize_text(&msg.into()), ToastKind::Error));
+        self.toasts.push(Toast::new(
+            crate::fonts::sanitize_text(&msg.into()),
+            ToastKind::Error,
+        ));
     }
 
     // ---- 每帧同步 ----

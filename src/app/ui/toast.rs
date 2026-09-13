@@ -124,7 +124,10 @@ mod tests {
         // 构造一个已过期的 toast：把 at 前移。
         t.at = Instant::now() - NOTICE_MS - Duration::from_secs(1);
         assert!(t.expired());
-        assert!(!t.alpha().is_normal() || t.alpha() <= 0.0, "过期后透明度应趋于 0");
+        assert!(
+            !t.alpha().is_normal() || t.alpha() <= 0.0,
+            "过期后透明度应趋于 0"
+        );
     }
 
     #[test]

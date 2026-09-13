@@ -20,8 +20,8 @@
 pub mod import;
 pub mod login;
 pub mod lyrics_viewport;
-pub mod playlist_bar;
 pub mod player_bar;
+pub mod playlist_bar;
 pub mod settings;
 pub mod song_list;
 pub mod status_bar;
@@ -29,9 +29,9 @@ pub mod title_bar;
 pub mod toast;
 pub mod widgets;
 
+use super::MusicApp;
 use crate::theme;
 use eframe::egui::{self, Color32, Stroke, StrokeKind};
-use super::MusicApp;
 
 impl MusicApp {
     pub(crate) fn show_main(&mut self, ui: &mut egui::Ui) {
@@ -40,7 +40,8 @@ impl MusicApp {
 
         // ── 悬浮卡片背景（透明窗口 + 圆角） ──
         let card = ui.max_rect();
-        ui.painter().rect_filled(card, theme::CORNER_XL, theme::BG_WINDOW);
+        ui.painter()
+            .rect_filled(card, theme::CORNER_XL, theme::BG_WINDOW);
         ui.painter().rect_stroke(
             card,
             theme::CORNER_XL,
@@ -87,4 +88,3 @@ impl MusicApp {
         self.show_resize_grip(ui);
     }
 }
-

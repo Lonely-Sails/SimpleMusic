@@ -57,11 +57,7 @@ impl MusicApp {
             let progress = if dur > 0.0 { pos / dur } else { 0.0 };
             let idx = pick_plain_line_index(&self.lyrics_plain, progress);
             let cur = self.lyrics_plain.get(idx).cloned().unwrap_or_default();
-            let next = self
-                .lyrics_plain
-                .get(idx + 1)
-                .cloned()
-                .unwrap_or_default();
+            let next = self.lyrics_plain.get(idx + 1).cloned().unwrap_or_default();
             (cur, next)
         } else {
             (self.state.title.clone(), String::new())
@@ -136,7 +132,10 @@ mod tests {
         times
             .iter()
             .enumerate()
-            .map(|(i, t)| LrcLine { time_secs: *t, text: format!("line{i}") })
+            .map(|(i, t)| LrcLine {
+                time_secs: *t,
+                text: format!("line{i}"),
+            })
             .collect()
     }
 
@@ -158,9 +157,18 @@ mod tests {
     fn next_switch_delay_plain() {
         let plain_len = 4;
         // 4 行均分：切换点在 25/50/75/100%。
-        assert_eq!(next_switch_delay_secs(&[], plain_len, 5.0, 100.0), Some(20.0));
-        assert_eq!(next_switch_delay_secs(&[], plain_len, 30.0, 100.0), Some(20.0));
-        assert_eq!(next_switch_delay_secs(&[], plain_len, 100.0, 100.0), Some(0.0));
+        assert_eq!(
+            next_switch_delay_secs(&[], plain_len, 5.0, 100.0),
+            Some(20.0)
+        );
+        assert_eq!(
+            next_switch_delay_secs(&[], plain_len, 30.0, 100.0),
+            Some(20.0)
+        );
+        assert_eq!(
+            next_switch_delay_secs(&[], plain_len, 100.0, 100.0),
+            Some(0.0)
+        );
         assert_eq!(next_switch_delay_secs(&[], 0, 5.0, 100.0), None);
         assert_eq!(next_switch_delay_secs(&[], plain_len, 5.0, 0.0), None);
     }

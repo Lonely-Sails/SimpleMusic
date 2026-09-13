@@ -39,8 +39,18 @@ pub fn encode_uri_component(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for &b in s.as_bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'!' | b'*'
-            | b'\'' | b'(' | b')' => out.push(b as char),
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'_'
+            | b'.'
+            | b'~'
+            | b'!'
+            | b'*'
+            | b'\''
+            | b'('
+            | b')' => out.push(b as char),
             other => out.push_str(&format!("%{other:02X}")),
         }
     }
@@ -69,7 +79,12 @@ pub fn wbi_sign_params_with_wts(
     // 按 key 的 ASCII 升序排序；value 过滤 WBI 特殊字符（!'()*）。
     let mut pairs: Vec<(String, String)> = params
         .iter()
-        .map(|(k, v)| (k.clone(), v.chars().filter(|c| !"!'()*".contains(*c)).collect()))
+        .map(|(k, v)| {
+            (
+                k.clone(),
+                v.chars().filter(|c| !"!'()*".contains(*c)).collect(),
+            )
+        })
         .collect();
     pairs.sort_by(|a, b| a.0.cmp(&b.0));
     let query = pairs
@@ -140,7 +155,10 @@ mod tests {
             wbi_key_from_url("https://i0.hdslb.com/bfs/wbi/7cd084941338484aae1ad9425b84077c.png"),
             WBI_TEST_IMG
         );
-        assert_eq!(wbi_key_from_url("4932caff0ff746eab6f01bf08b70ac45.webp"), WBI_TEST_SUB);
+        assert_eq!(
+            wbi_key_from_url("4932caff0ff746eab6f01bf08b70ac45.webp"),
+            WBI_TEST_SUB
+        );
     }
 
     #[test]
@@ -175,6 +193,9 @@ mod tests {
         // 同输入同输出（不含 wts 时值里的特殊字符被过滤）。
         let mut params2 = params.clone();
         params2.pop(); // 去掉 wts
-        assert_eq!(wbi_sign_params_with_wts(&mut params2, &key, 1_700_000_000), w_rid);
+        assert_eq!(
+            wbi_sign_params_with_wts(&mut params2, &key, 1_700_000_000),
+            w_rid
+        );
     }
 }

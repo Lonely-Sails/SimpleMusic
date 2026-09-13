@@ -1,9 +1,9 @@
 //! 扫码登录弹窗：显示二维码矩阵 + 阶段状态 + 取消。
 
-use crate::theme;
-use eframe::egui::{self, Align2, RichText};
 use super::MusicApp;
 use super::widgets::draw_qr;
+use crate::theme;
+use eframe::egui::{self, Align2, RichText};
 
 /// 二维码渲染的边长（含留白边框）。
 const QR_SIZE: f32 = 260.0;
@@ -39,7 +39,9 @@ impl MusicApp {
                     ui.label(RichText::new(status).color(color));
                     ui.add_space(10.0);
                     if ui
-                        .add(egui::Button::new(RichText::new("取消").color(theme::TEXT_SECONDARY)))
+                        .add(egui::Button::new(
+                            RichText::new("取消").color(theme::TEXT_SECONDARY),
+                        ))
                         .clicked()
                     {
                         self.cancel_login();

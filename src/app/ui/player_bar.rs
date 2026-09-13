@@ -52,8 +52,7 @@ fn seek_slider(
     ui.scope(|ui| {
         ui.set_height(old_thickness);
         // 以行高为准垂直居中放一条薄滑块带（egui 默认贴顶，会偏下）。
-        let row =
-            egui::Rect::from_min_size(ui.cursor().min, egui::vec2(slider_w, old_thickness));
+        let row = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(slider_w, old_thickness));
         let band =
             egui::Align2::LEFT_CENTER.align_size_within_rect(egui::vec2(slider_w, text_h), row);
         ui.scope_builder(egui::UiBuilder::new().max_rect(band), |ui| {
@@ -122,7 +121,9 @@ impl MusicApp {
                     let time_font = egui::FontId::monospace(12.0);
                     let width_of = |s: &str| {
                         ui.ctx()
-                            .fonts_mut(|f| f.layout_no_wrap(s.to_owned(), time_font.clone(), Color32::WHITE))
+                            .fonts_mut(|f| {
+                                f.layout_no_wrap(s.to_owned(), time_font.clone(), Color32::WHITE)
+                            })
                             .size()
                             .x
                     };
@@ -130,8 +131,9 @@ impl MusicApp {
                     let left_w = width_of(&left);
                     let right_w = width_of(&right);
                     // 先量出左右标签宽度 + 左右留白，进度条精确填充剩余空间。
-                    let slider_w = (ui.available_width() - left_w - right_w - 2.0 * 6.0 - PROGRESS_PAD)
-                        .max(40.0);
+                    let slider_w =
+                        (ui.available_width() - left_w - right_w - 2.0 * 6.0 - PROGRESS_PAD)
+                            .max(40.0);
                     // egui::Slider 会忽略 add_sized 的尺寸提示（只认 spacing().slider_width），
                     // 必须显式设置 slider_width 才能让进度条真正占满整行，否则只画 ~100px、
                     // 整行无法铺满（宽度不对、进度条也不居中）。
@@ -150,9 +152,13 @@ impl MusicApp {
                         let rect = resp.rect;
                         let radius = rect.height() / 2.5;
                         let center = egui::Pos2::new(rect.left() + radius, rect.center().y);
-                        ui.painter().circle_filled(center, radius, theme::TEXT_SECONDARY);
                         ui.painter()
-                            .circle_stroke(center, radius, Stroke::new(1.0, theme::TEXT_WEAK));
+                            .circle_filled(center, radius, theme::TEXT_SECONDARY);
+                        ui.painter().circle_stroke(
+                            center,
+                            radius,
+                            Stroke::new(1.0, theme::TEXT_WEAK),
+                        );
                     }
                     ui.add_space(6.0);
                     ui.label(
@@ -170,7 +176,8 @@ impl MusicApp {
                         self.seek_preview = val.clamp(0.0, max);
                         if resp.drag_stopped() {
                             self.seek_dragging = false;
-                            self.audio.seek(crate::app::player::clamp_seek(self.seek_preview, dur));
+                            self.audio
+                                .seek(crate::app::player::clamp_seek(self.seek_preview, dur));
                         }
                     }
                 });
@@ -188,16 +195,25 @@ impl MusicApp {
 
                     // 1. 桌面歌词开关
                     let on = self.settings.desktop_lyrics_enabled;
-                    let color = if on { theme::ACCENT } else { theme::TEXT_SECONDARY };
+                    let color = if on {
+                        theme::ACCENT
+                    } else {
+                        theme::TEXT_SECONDARY
+                    };
                     let resp = self.icon_btn(
                         ui,
                         ICON_BTN_SIZE,
                         icons::monitor,
                         color,
-                        if on { "关闭桌面歌词" } else { "开启桌面歌词" },
+                        if on {
+                            "关闭桌面歌词"
+                        } else {
+                            "开启桌面歌词"
+                        },
                     );
                     if resp.clicked() {
-                        self.settings.desktop_lyrics_enabled = !self.settings.desktop_lyrics_enabled;
+                        self.settings.desktop_lyrics_enabled =
+                            !self.settings.desktop_lyrics_enabled;
                     }
                     ui.add_space(ICON_ROW_GAP);
 
@@ -227,7 +243,11 @@ impl MusicApp {
                                         .color(theme::TEXT_PRIMARY)
                                 };
                                 if ui
-                                    .add(egui::Button::new(text).fill(theme::BG_CARD).corner_radius(theme::CORNER))
+                                    .add(
+                                        egui::Button::new(text)
+                                            .fill(theme::BG_CARD)
+                                            .corner_radius(theme::CORNER),
+                                    )
                                     .clicked()
                                 {
                                     self.apply_lyrics(li);
@@ -245,10 +265,8 @@ impl MusicApp {
                     ui.add_space(ICON_ROW_GAP);
 
                     // 4. 播放 / 暂停（loading 时显示转圈）
-                    let (rect, resp) = ui.allocate_exact_size(
-                        Vec2::splat(PLAY_BTN_SIZE),
-                        Sense::click(),
-                    );
+                    let (rect, resp) =
+                        ui.allocate_exact_size(Vec2::splat(PLAY_BTN_SIZE), Sense::click());
                     let painter = ui.painter();
                     let bg = if resp.is_pointer_button_down_on() {
                         theme::BG_ACTIVE
@@ -260,7 +278,12 @@ impl MusicApp {
                     painter.circle_filled(rect.center(), PLAY_BTN_SIZE * 0.5, bg);
                     let icon_rect = rect.shrink(PLAY_BTN_SIZE * 0.30);
                     if st.loading {
-                        spinner_arc(&painter, rect.center(), PLAY_BTN_SIZE * 0.22, theme::TEXT_SECONDARY);
+                        spinner_arc(
+                            &painter,
+                            rect.center(),
+                            PLAY_BTN_SIZE * 0.22,
+                            theme::TEXT_SECONDARY,
+                        );
                     } else if st.playing {
                         icons::pause(&painter, icon_rect, theme::TEXT_PRIMARY);
                     } else {
@@ -355,10 +378,7 @@ fn play_mode_icon(mode: PlayMode) -> fn(&egui::Painter, egui::Rect, Color32) {
 
 /// 循环切换到下一个播放模式。
 fn next_play_mode(mode: PlayMode) -> PlayMode {
-    let idx = PlayMode::ALL
-        .iter()
-        .position(|m| *m == mode)
-        .unwrap_or(0);
+    let idx = PlayMode::ALL.iter().position(|m| *m == mode).unwrap_or(0);
     PlayMode::ALL[(idx + 1) % PlayMode::ALL.len()]
 }
 
@@ -500,13 +520,16 @@ mod tests {
                 let time_font = egui::FontId::monospace(12.0);
                 let width_of = |s: &str| {
                     ui.ctx()
-                        .fonts_mut(|f| f.layout_no_wrap(s.to_owned(), time_font.clone(), Color32::WHITE))
+                        .fonts_mut(|f| {
+                            f.layout_no_wrap(s.to_owned(), time_font.clone(), Color32::WHITE)
+                        })
                         .size()
                         .x
                 };
                 let left_w = width_of(left);
                 let right_w = width_of(right);
-                want_w = (ui.available_width() - left_w - right_w - 2.0 * 6.0 - PROGRESS_PAD).max(40.0);
+                want_w =
+                    (ui.available_width() - left_w - right_w - 2.0 * 6.0 - PROGRESS_PAD).max(40.0);
                 ui.spacing_mut().slider_width = want_w;
                 ui.label(RichText::new(left).monospace().size(12.0));
                 ui.add_space(6.0);
@@ -619,10 +642,6 @@ mod tests {
             row_center
         );
         // 球径应明显小于原来的 ~22px（厚度=正文字号行高 → 球径≈0.8×行高≈15px）。
-        assert!(
-            handle_d < 18.0,
-            "球径 {handle_d:.1} 应明显小于原来的 ~22px"
-        );
+        assert!(handle_d < 18.0, "球径 {handle_d:.1} 应明显小于原来的 ~22px");
     }
 }
-

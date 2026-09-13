@@ -1,4 +1,3 @@
-
 /// B 站模块错误。
 #[derive(Debug)]
 pub enum BiliError {

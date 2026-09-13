@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::{Decoder, DecoderOptions, CODEC_TYPE_NULL};
+use symphonia::core::codecs::{CODEC_TYPE_NULL, Decoder, DecoderOptions};
 use symphonia::core::errors::Error as SymphError;
 use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo};
 use symphonia::core::io::{MediaSource, MediaSourceStream, MediaSourceStreamOptions};
@@ -123,7 +123,12 @@ pub(super) fn open_media(
         hint.with_extension("mp4");
     }
     let probed = symphonia::default::get_probe()
-        .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
+        .format(
+            &hint,
+            mss,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
         .map_err(|e| format!("音频格式探测失败({}): {e}", input.describe()))?;
     let format = probed.format;
     let track = format
@@ -133,11 +138,7 @@ pub(super) fn open_media(
         .ok_or_else(|| format!("媒体文件中没有可解码的音频轨道: {}", input.describe()))?;
     let track_id = track.id;
     let rate = track.codec_params.sample_rate.unwrap_or(0);
-    let channels = track
-        .codec_params
-        .channels
-        .map(|c| c.count())
-        .unwrap_or(0);
+    let channels = track.codec_params.channels.map(|c| c.count()).unwrap_or(0);
     let duration_secs = track
         .codec_params
         .n_frames
@@ -151,7 +152,15 @@ pub(super) fn open_media(
         .make(&track.codec_params, &DecoderOptions::default())
         .map_err(|e| format!("创建音频解码器失败: {e}"))?;
     let time_base = track.codec_params.time_base;
-    Ok((format, decoder, track_id, time_base, rate, channels, duration_secs))
+    Ok((
+        format,
+        decoder,
+        track_id,
+        time_base,
+        rate,
+        channels,
+        duration_secs,
+    ))
 }
 
 impl SymphoniaSource {
@@ -230,7 +239,8 @@ impl SymphoniaSource {
             if self.channels == 0 {
                 self.channels = spec.channels.count();
             }
-            let capacity = decoded.capacity();            let mut sbuf = SampleBuffer::<i16>::new(capacity as u64, spec);
+            let capacity = decoded.capacity();
+            let mut sbuf = SampleBuffer::<i16>::new(capacity as u64, spec);
             sbuf.copy_interleaved_ref(decoded);
             let samples = sbuf.samples();
             if samples.is_empty() {
@@ -257,12 +267,7 @@ impl SymphoniaSource {
 
     /// 处理播放线程下发的 seek 请求。
     fn maybe_seek(&mut self) {
-        let request = self
-            .shared
-            .seek
-            .lock()
-            .ok()
-            .and_then(|mut g| g.take());
+        let request = self.shared.seek.lock().ok().and_then(|mut g| g.take());
         if let Some(t) = request {
             if self.perform_seek(t).is_err() {
                 // 彻底失败的兜底：回到起点（保持不 panic，进度同步归零）。
@@ -379,7 +384,9 @@ impl Iterator for SymphoniaSource {
             // 按帧计数（位置以帧为单位，channel 数恒定）。
             if self.pos % self.channels == 0 {
                 self.out_frames += 1;
-                self.shared.emitted.store(self.out_frames, Ordering::Relaxed);
+                self.shared
+                    .emitted
+                    .store(self.out_frames, Ordering::Relaxed);
             }
             return Some(s);
         }
@@ -411,8 +418,8 @@ impl rodio::Source for SymphoniaSource {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use std::path::Path;
     use rodio::Source as _;
+    use std::path::Path;
 
     // ---- 工具：手写 PCM WAV（不引入第三方依赖） ----
 
@@ -440,12 +447,17 @@ pub(crate) mod tests {
     }
 
     /// 生成立体声正弦波 WAV 文件，返回 (路径, 帧数, 采样率, 声道)。
-    pub(crate) fn synth_wav(dir: &Path, name: &str, secs: f64, rate: u32) -> (PathBuf, u64, u32, u16) {
+    pub(crate) fn synth_wav(
+        dir: &Path,
+        name: &str,
+        secs: f64,
+        rate: u32,
+    ) -> (PathBuf, u64, u32, u16) {
         let frames = (secs * rate as f64).round() as usize;
         let mut samples = Vec::with_capacity(frames * 2);
         for i in 0..frames {
-            let s = ((2.0 * std::f64::consts::PI * 440.0 * i as f64 / rate as f64).sin()
-                * 12000.0) as i16;
+            let s = ((2.0 * std::f64::consts::PI * 440.0 * i as f64 / rate as f64).sin() * 12000.0)
+                as i16;
             samples.push(s);
             samples.push(s);
         }
@@ -478,7 +490,11 @@ pub(crate) mod tests {
         assert_eq!(src.sample_rate(), rate);
 
         let total_samples = src.count();
-        assert_eq!(total_samples, (frames * ch as u64) as usize, "样本数应与合成数据一致");
+        assert_eq!(
+            total_samples,
+            (frames * ch as u64) as usize,
+            "样本数应与合成数据一致"
+        );
         // 时长 = 样本帧数 / 采样率 ≈ 1.0s。
         let dur = total_samples as f64 / ch as f64 / rate as f64;
         assert!((dur - 1.0).abs() < 0.01, "实测时长 {dur}s");
@@ -540,5 +556,4 @@ pub(crate) mod tests {
         assert_eq!(src.channels(), 1);
         assert_eq!(src.count(), 4000);
     }
-
 }

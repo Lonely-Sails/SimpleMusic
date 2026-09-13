@@ -184,7 +184,10 @@ fn shadow_bitmap(
                 glyph
                     .draw(
                         skrifa::outline::DrawSettings::unhinted(size, LocationRef::default()),
-                        &mut FlipPen { path: &mut path, dx: pen_x },
+                        &mut FlipPen {
+                            path: &mut path,
+                            dx: pen_x,
+                        },
                     )
                     .ok();
                 if !path.is_empty() {
@@ -218,10 +221,7 @@ fn shadow_bitmap(
     // ── 3. vello_cpu 离屏渲染白色字形 → 取 alpha 通道。
     let (w, h) = (width as u16, height as u16);
     let mut rc = vello_cpu::RenderContext::new(w, h);
-    rc.set_transform(kurbo::Affine::translate((
-        pad - bounds.x0,
-        pad - bounds.y0,
-    )));
+    rc.set_transform(kurbo::Affine::translate((pad - bounds.x0, pad - bounds.y0)));
     rc.set_paint(vello_cpu::color::palette::css::WHITE);
     for path in &paths {
         rc.fill_path(path);
@@ -243,7 +243,11 @@ fn shadow_bitmap(
         let a = (a * strength * 255.0).round().clamp(0.0, 255.0) as u8;
         rgba.extend_from_slice(&[0, 0, 0, a]);
     }
-    Some(ShadowBitmap { rgba, width, height })
+    Some(ShadowBitmap {
+        rgba,
+        width,
+        height,
+    })
 }
 
 /// skrifa OutlinePen 适配：y 翻转（y-up → y-down）+ x 平移到字形步进位。
@@ -360,7 +364,11 @@ mod tests {
         box_filter_1d(&src, &mut dst, 3);
         let total: f32 = dst[32 - 3..=32 + 3].iter().sum();
         assert!((total - 63.0).abs() < 1e-3, "盒滤波总能量守恒: {total}");
-        assert!((dst[32] - 63.0 / 7.0).abs() < 1e-3, "峰值应摊薄 1/7: {}", dst[32]);
+        assert!(
+            (dst[32] - 63.0 / 7.0).abs() < 1e-3,
+            "峰值应摊薄 1/7: {}",
+            dst[32]
+        );
     }
 
     #[test]
@@ -378,14 +386,20 @@ mod tests {
         gaussian_blur(&mut a, 64, 64, 3.0);
         let total: f32 = a.iter().sum();
         assert!((total - 1.0).abs() < 0.05, "模糊后总能量近似守恒: {total}");
-        assert!(a[32 * 64 + 32] < 0.2, "冲激峰值应显著摊薄: {}", a[32 * 64 + 32]);
+        assert!(
+            a[32 * 64 + 32] < 0.2,
+            "冲激峰值应显著摊薄: {}",
+            a[32 * 64 + 32]
+        );
     }
 
     /// 内嵌 Noto Sans SC 端到端：产出非空预乘黑位图，中心 alpha 高于角落（晕开），
     /// 位置贴图由调用方完成——这里只验证位图本身。
     #[test]
     fn box_filter_matches_bruteforce_reference() {
-        let src: Vec<f32> = (0..24).map(|i| (i as f32 * 0.37).sin().abs() * 0.8 + 0.1).collect();
+        let src: Vec<f32> = (0..24)
+            .map(|i| (i as f32 * 0.37).sin().abs() * 0.8 + 0.1)
+            .collect();
         let r = 3;
         let mut fast = vec![0.0_f32; src.len()];
         box_filter_1d(&src, &mut fast, r);
@@ -407,7 +421,10 @@ mod tests {
     /// 笔画处 alpha 显著高于空白角落，角落仍有非零光晕。
     #[test]
     fn shadow_bitmap_end_to_end() {
-        let style = ShadowStyle { sigma: 5.0, strength: 0.6 };
+        let style = ShadowStyle {
+            sigma: 5.0,
+            strength: 0.6,
+        };
         let Some(bmp) = shadow_bitmap(
             crate::fonts::NOTO_SC_BYTES_FOR_TEST,
             0,
@@ -430,21 +447,33 @@ mod tests {
             "中心 alpha({center_a}) 应明显高于角落({corner_a})——晕开效果"
         );
         // 预乘黑：rgb 恒 0。
-        assert!(bmp.rgba.chunks_exact(4).all(|p| p[0] == 0 && p[1] == 0 && p[2] == 0));
+        assert!(
+            bmp.rgba
+                .chunks_exact(4)
+                .all(|p| p[0] == 0 && p[1] == 0 && p[2] == 0)
+        );
     }
 
     /// 空白文本：无字形 → None（不生成全黑矩形纹理）。
     #[test]
     fn shadow_bitmap_blank_text_is_none() {
-        let style = ShadowStyle { sigma: 5.0, strength: 0.6 };
-        assert!(shadow_bitmap(crate::fonts::NOTO_SC_BYTES_FOR_TEST, 0, "  ", 26.0, style).is_none());
+        let style = ShadowStyle {
+            sigma: 5.0,
+            strength: 0.6,
+        };
+        assert!(
+            shadow_bitmap(crate::fonts::NOTO_SC_BYTES_FOR_TEST, 0, "  ", 26.0, style).is_none()
+        );
         assert!(shadow_bitmap(crate::fonts::NOTO_SC_BYTES_FOR_TEST, 0, "", 26.0, style).is_none());
     }
 
     /// 垃圾字体字节：安全返回 None（不 panic）。
     #[test]
     fn shadow_bitmap_bad_font_is_none() {
-        let style = ShadowStyle { sigma: 5.0, strength: 0.6 };
+        let style = ShadowStyle {
+            sigma: 5.0,
+            strength: 0.6,
+        };
         assert!(shadow_bitmap(b"not a font", 0, "测试", 26.0, style).is_none());
     }
 
@@ -453,7 +482,10 @@ mod tests {
     /// 真实纹理（无头 Context 上传 2x2）验证两条路径。
     #[test]
     fn shadow_cache_get_insert_semantics() {
-        let style = ShadowStyle { sigma: 5.0, strength: 0.6 };
+        let style = ShadowStyle {
+            sigma: 5.0,
+            strength: 0.6,
+        };
         let mut cache = ShadowCache::default();
 
         // 未缓存 → Miss（携带键）。
@@ -464,17 +496,26 @@ mod tests {
 
         // 失败也缓存：insert(None) → Failed（避免每帧重试光栅化）。
         cache.insert(key.clone(), None);
-        assert!(matches!(cache.get("测试", 26.0, style), CachedShadow::Failed));
+        assert!(matches!(
+            cache.get("测试", 26.0, style),
+            CachedShadow::Failed
+        ));
 
         // 同键重复 insert 不覆盖（保旧）。
         cache.insert(key, None);
-        assert!(matches!(cache.get("测试", 26.0, style), CachedShadow::Failed));
+        assert!(matches!(
+            cache.get("测试", 26.0, style),
+            CachedShadow::Failed
+        ));
 
         // 命中路径：无头 Context 上传一张 2x2 纹理。
         let ctx = egui::Context::default();
         let tex = ctx.load_texture(
             "shadow-cache-test",
-            egui::ColorImage::from_rgba_premultiplied([2, 2], &[0, 0, 0, 128, 0, 0, 0, 128, 0, 0, 0, 128, 0, 0, 0, 128]),
+            egui::ColorImage::from_rgba_premultiplied(
+                [2, 2],
+                &[0, 0, 0, 128, 0, 0, 0, 128, 0, 0, 0, 128, 0, 0, 0, 128],
+            ),
             egui::TextureOptions::LINEAR,
         );
         cache.insert(ShadowKey::new("命中", 26.0, style), Some(tex.clone()));
@@ -488,6 +529,9 @@ mod tests {
             let k = ShadowKey::new(&format!("fill{i}"), 26.0, style);
             cache.insert(k, None);
         }
-        assert!(matches!(cache.get("测试", 26.0, style), CachedShadow::Miss(_)));
+        assert!(matches!(
+            cache.get("测试", 26.0, style),
+            CachedShadow::Miss(_)
+        ));
     }
 }

@@ -9,9 +9,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::Deserialize;
 
 use super::error::{BiliError, BiliResult};
-use super::{ORIGIN, REFERER, USER_AGENT};
 use super::models::*;
-use super::wbi::{encode_uri_component, WbiKeys};
+use super::wbi::{WbiKeys, encode_uri_component};
+use super::{ORIGIN, REFERER, USER_AGENT};
 use crate::modules::storage::{self, BiliSession};
 
 // ---------------------------------------------------------------------------
@@ -103,9 +103,13 @@ impl BiliClient {
     pub fn nav_user(&self) -> BiliResult<Option<NavUser>> {
         // 游客访问 nav 返回 code=-101 但 data.wbi_img 照常下发（见 wbi_keys 注释），
         // 所以这里同样不能走 get_data 的严格 code==0 校验，直接看 data 字段。
-        let (_http, env) = self.get_json::<NavResp>("https://api.bilibili.com/x/web-interface/nav", &[])?;
+        let (_http, env) =
+            self.get_json::<NavResp>("https://api.bilibili.com/x/web-interface/nav", &[])?;
         let Some(data) = env.data else {
-            return Err(BiliError::Api { code: env.code, message: env.message });
+            return Err(BiliError::Api {
+                code: env.code,
+                message: env.message,
+            });
         };
         // 未登录：mid=0 / uname 为空串。
         if data.mid == 0 || data.uname.is_empty() {
@@ -140,11 +144,7 @@ impl BiliClient {
 
     /// 未登录也需要 buvid3/buvid4：从 finger/spi 获取并持久化（已有时跳过）。
     pub fn ensure_buvid(&mut self) -> BiliResult<()> {
-        if self
-            .session
-            .get("buvid3")
-            .map_or(false, |v| !v.is_empty())
-        {
+        if self.session.get("buvid3").map_or(false, |v| !v.is_empty()) {
             return Ok(());
         }
         #[derive(Deserialize)]
@@ -154,8 +154,10 @@ impl BiliClient {
             #[serde(rename = "b_4")]
             buvid4: String,
         }
-        let data: SpiData = self
-            .get_data("https://api.bilibili.com/x/frontend/finger/spi", "finger/spi")?;
+        let data: SpiData = self.get_data(
+            "https://api.bilibili.com/x/frontend/finger/spi",
+            "finger/spi",
+        )?;
         self.session.set("buvid3", data.buvid3);
         self.session.set("buvid4", data.buvid4);
         // 落盘尽力而为：沙箱/只读文件系统下失败不应阻断取流（会话仍在内存）。
@@ -206,7 +208,10 @@ impl BiliClient {
             ),
         );
         let env: ApiEnvelope<T> = serde_json::from_str(&text).map_err(|e| {
-            BiliError::Local(format!("响应解析失败({url}): {e}; body[:200]={}", &text[..text.len().min(200)]))
+            BiliError::Local(format!(
+                "响应解析失败({url}): {e}; body[:200]={}",
+                &text[..text.len().min(200)]
+            ))
         })?;
         Ok((status, env))
     }
@@ -236,7 +241,8 @@ impl BiliClient {
                 message: env.message,
             });
         }
-        env.data.ok_or_else(|| BiliError::Local(format!("{api} 缺少 data")))
+        env.data
+            .ok_or_else(|| BiliError::Local(format!("{api} 缺少 data")))
     }
 }
 
@@ -260,8 +266,6 @@ pub(super) fn parse_query_params(url: &str) -> Vec<(String, String)> {
 /// 取 URL 的「域名 + 路径」片段（日志用：不带 query/fragment）。
 fn url_path(url: &str) -> &str {
     let no_scheme = url.split("://").nth(1).unwrap_or(url);
-    let end = no_scheme
-        .find(['?', '#'])
-        .unwrap_or(no_scheme.len());
+    let end = no_scheme.find(['?', '#']).unwrap_or(no_scheme.len());
     no_scheme[..end].trim_end_matches('/')
 }

@@ -10,9 +10,9 @@ use std::time::Duration;
 use rodio::Sink;
 
 use super::cache::cache_path_in;
-use super::control::{Command, PlaybackStatus, PlayRequest};
+use super::control::{Command, PlayRequest, PlaybackStatus};
 use super::decode::{MediaInput, SourceShared, SymphoniaSource};
-use super::download::{fetch_to_cache, FetchErr};
+use super::download::{FetchErr, fetch_to_cache};
 
 /// load_and_play 的失败类型。
 pub(super) enum LoadErr {
@@ -36,8 +36,8 @@ pub(super) fn set_status(status: &Mutex<PlaybackStatus>, f: impl FnOnce(&mut Pla
 }
 
 fn open_output() -> Result<(rodio::OutputStream, Sink), String> {
-    let (stream, handle) = rodio::OutputStream::try_default()
-        .map_err(|e| format!("无法打开音频输出设备: {e}"))?;
+    let (stream, handle) =
+        rodio::OutputStream::try_default().map_err(|e| format!("无法打开音频输出设备: {e}"))?;
     let sink = Sink::try_new(&handle).map_err(|e| format!("无法打开音频输出设备: {e}"))?;
     Ok((stream, sink))
 }
@@ -108,7 +108,10 @@ pub(super) fn worker_loop(
                         });
                         crate::util::log::info(
                             "audio",
-                            &format!("播放开始: {} 采样率={sample_rate} 时长={duration:.1}s", req.cache_key),
+                            &format!(
+                                "播放开始: {} 采样率={sample_rate} 时长={duration:.1}s",
+                                req.cache_key
+                            ),
                         );
                         session = Some(PlayerSession {
                             _stream: stream,
@@ -157,10 +160,16 @@ pub(super) fn worker_loop(
             Some(Command::Seek(t)) => {
                 let loading = status.lock().map(|s| s.loading).unwrap_or(true);
                 let dur = status.lock().map(|s| s.duration_secs).unwrap_or(0.0);
-                let target = if dur > 0.0 { t.clamp(0.0, dur) } else { t.max(0.0) };
+                let target = if dur > 0.0 {
+                    t.clamp(0.0, dur)
+                } else {
+                    t.max(0.0)
+                };
                 if let Some(sess) = &session {
                     if !loading {
-                        sess.shared.base_ms.store((target * 1000.0) as u64, Ordering::Relaxed);
+                        sess.shared
+                            .base_ms
+                            .store((target * 1000.0) as u64, Ordering::Relaxed);
                         if let Ok(mut g) = sess.shared.seek.lock() {
                             *g = Some(target);
                         }
@@ -184,7 +193,9 @@ pub(super) fn worker_loop(
             }
             None => {
                 // 轮询：更新进度 + 曲终检测。
-                let Some(sess) = session.as_ref() else { continue };
+                let Some(sess) = session.as_ref() else {
+                    continue;
+                };
                 let base_ms = sess.shared.base_ms.load(Ordering::Relaxed);
                 let frames = sess.shared.emitted.load(Ordering::Relaxed);
                 let pos = base_ms as f64 / 1000.0 + frames as f64 / sess.sample_rate as f64;
@@ -230,7 +241,15 @@ fn load_and_play(
     };
     crate::util::log::debug(
         "audio",
-        &format!("媒体就绪: {}（{}）", input.describe(), if was_cached { "缓存命中" } else { "新下载" }),
+        &format!(
+            "媒体就绪: {}（{}）",
+            input.describe(),
+            if was_cached {
+                "缓存命中"
+            } else {
+                "新下载"
+            }
+        ),
     );
 
     // 2. 解码器。缓存命中的文件若解码失败，可能是缓存损坏：删除后重下载一次。
@@ -253,7 +272,7 @@ fn load_and_play(
                 }
                 Err(FetchErr::Aborted) => return Err(LoadErr::Aborted),
                 Err(FetchErr::Failed(e2)) => {
-                    return Err(LoadErr::Failed(format!("{e}；缓存重建下载也失败: {e2}")))
+                    return Err(LoadErr::Failed(format!("{e}；缓存重建下载也失败: {e2}")));
                 }
             }
             match SymphoniaSource::new(input) {

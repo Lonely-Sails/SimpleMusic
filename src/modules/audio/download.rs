@@ -5,12 +5,12 @@ use std::fs;
 use std::io::Read;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::Receiver;
 use std::sync::Mutex;
+use std::sync::mpsc::Receiver;
 
 use super::cache::{cache_path_in, cache_usable};
-use super::control::{PlayRequest, PlaybackStatus};
 use super::control::Command;
+use super::control::{PlayRequest, PlaybackStatus};
 use super::decode::MediaInput;
 use super::player::set_status;
 
@@ -50,13 +50,17 @@ pub(super) fn fetch_to_cache(
     rx: &Receiver<Command>,
 ) -> Result<(MediaInput, bool), FetchErr> {
     if req.local_file.is_some() {
-        return Err(FetchErr::Failed("内部错误：本地文件不应进入下载路径".into()));
+        return Err(FetchErr::Failed(
+            "内部错误：本地文件不应进入下载路径".into(),
+        ));
     }
     if req.urls.is_empty() {
         return Err(FetchErr::Failed("没有可用的音频流地址".into()));
     }
     let Some(http) = http.as_ref() else {
-        return Err(FetchErr::Failed("HTTP 客户端初始化失败，无法下载音频".into()));
+        return Err(FetchErr::Failed(
+            "HTTP 客户端初始化失败，无法下载音频".into(),
+        ));
     };
     let path = cache_path_in(cache_dir, &req.cache_key);
 
@@ -171,7 +175,11 @@ pub(super) fn fetch_to_cache(
                         "下载完成: {} 字节，用时 {:.2}s（{}）",
                         d,
                         started.elapsed().as_secs_f32(),
-                        if mem_only { "内存缓冲" } else { "已写缓存" },
+                        if mem_only {
+                            "内存缓冲"
+                        } else {
+                            "已写缓存"
+                        },
                     ),
                 );
                 return Ok((m, false));

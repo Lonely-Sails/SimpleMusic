@@ -11,11 +11,7 @@ use eframe::egui::{
 // 播放条圆形按钮
 // ---------------------------------------------------------------------------
 
-pub fn transport_button(
-    ui: &mut egui::Ui,
-    size: f32,
-    icon: fn(&Painter, Rect, Color32),
-) -> bool {
+pub fn transport_button(ui: &mut egui::Ui, size: f32, icon: fn(&Painter, Rect, Color32)) -> bool {
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
     let bg = if resp.is_pointer_button_down_on() {
         theme::BG_ACTIVE
@@ -252,12 +248,12 @@ pub fn paint_placeholder_cover(painter: &Painter, rect: Rect) {
     let stroke = eframe::egui::Stroke::new((r * 0.30).max(1.5), theme::TEXT_WEAK);
     let stem_x = dot.x + r;
     let stem_top = Pos2::new(stem_x, c.y - r * 1.2);
+    painter.line_segment([Pos2::new(stem_x, dot.y), stem_top], stroke);
     painter.line_segment(
-        [Pos2::new(stem_x, dot.y), stem_top],
-        stroke,
-    );
-    painter.line_segment(
-        [stem_top, Pos2::new(stem_top.x + r * 1.5, stem_top.y + r * 0.8)],
+        [
+            stem_top,
+            Pos2::new(stem_top.x + r * 1.5, stem_top.y + r * 0.8),
+        ],
         stroke,
     );
 }
@@ -395,7 +391,9 @@ pub fn truncate_label(ui: &egui::Ui, text: &str, max_width: f32) -> String {
     let text = crate::fonts::sanitize_text(text);
     if ui
         .ctx()
-        .fonts_mut(|f| f.layout_no_wrap(text.to_owned(), FontId::proportional(13.0), Color32::WHITE))
+        .fonts_mut(|f| {
+            f.layout_no_wrap(text.to_owned(), FontId::proportional(13.0), Color32::WHITE)
+        })
         .size()
         .x
         <= max_width
@@ -435,10 +433,7 @@ mod vol_popup_tests {
 
         fn frame(&mut self, events: Vec<Event>) -> Option<Rect> {
             let mut input = egui::RawInput::default();
-            input.screen_rect = Some(Rect::from_min_size(
-                Pos2::ZERO,
-                egui::vec2(1000.0, 400.0),
-            ));
+            input.screen_rect = Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(1000.0, 400.0)));
             self.t += 0.016;
             input.time = Some(self.t);
             input.events = events;
@@ -507,9 +502,7 @@ mod vol_popup_tests {
 
         // 2) 鼠标从按钮移到弹层上 → 弹层保持打开（不能中途关闭）。
         let center = rect.center();
-        let rect2 = sim
-            .hover(center)
-            .expect("鼠标移到弹层上时弹层应保持打开");
+        let rect2 = sim.hover(center).expect("鼠标移到弹层上时弹层应保持打开");
         assert!(
             rect2.contains(center),
             "稳定后的弹层矩形应覆盖其自身中心，实际 {rect2:?} / {center:?}"
@@ -626,8 +619,7 @@ mod tests {
         }
 
         assert_eq!(
-            placeholder_tops,
-            image_tops,
+            placeholder_tops, image_tops,
             "封面加载后不应改变歌曲行布局（防止整列内容跳位抖动）"
         );
     }
@@ -666,10 +658,7 @@ mod search_field_tests {
         /// 跑一帧，处理输入事件。
         fn frame(&mut self, events: Vec<Event>) {
             let mut input = egui::RawInput::default();
-            input.screen_rect = Some(Rect::from_min_size(
-                Pos2::ZERO,
-                egui::vec2(600.0, 400.0),
-            ));
+            input.screen_rect = Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(600.0, 400.0)));
             self.t += 0.016;
             input.time = Some(self.t);
             input.events = events;
@@ -782,7 +771,10 @@ mod search_field_tests {
 
         // 输入 "n"（此前清空按钮不存在，此帧它出现）→ 焦点不能丢。
         sim.type_text("n");
-        assert!(sim.focused(), "输入第一个字后焦点必须保持（自动 id 漂移回归）");
+        assert!(
+            sim.focused(),
+            "输入第一个字后焦点必须保持（自动 id 漂移回归）"
+        );
         assert_eq!(sim.text, "n");
 
         // 继续输入仍聚焦。
@@ -873,4 +865,3 @@ mod search_field_tests {
         );
     }
 }
-

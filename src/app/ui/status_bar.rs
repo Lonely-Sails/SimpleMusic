@@ -1,19 +1,23 @@
 //! 状态栏：左侧用户头像 + 昵称，右侧登录态 + 设置按钮。
 
-use crate::{icons, theme};
-use eframe::egui::{self, RichText, Sense, Vec2};
 use super::MusicApp;
 use super::widgets::{icon_button, paint_avatar, truncate_label};
+use crate::{icons, theme};
+use eframe::egui::{self, RichText, Sense, Vec2};
 
 impl MusicApp {
     pub(crate) fn show_status_bar(&mut self, ui: &mut egui::Ui) {
         egui::Panel::top(egui::Id::new("status_bar"))
-            .frame(egui::Frame::new().fill(egui::Color32::TRANSPARENT).inner_margin(egui::Margin {
-                left: 18,
-                right: 16,
-                top: 10,
-                bottom: 8,
-            }))
+            .frame(
+                egui::Frame::new()
+                    .fill(egui::Color32::TRANSPARENT)
+                    .inner_margin(egui::Margin {
+                        left: 18,
+                        right: 16,
+                        top: 10,
+                        bottom: 8,
+                    }),
+            )
             .show(ui, |ui| {
                 // 用文字按钮的实际高度计算，让「设置」图标与「登录/退出」文字按钮高度一致。
                 let ctrl_h = ui.text_style_height(&egui::TextStyle::Button)

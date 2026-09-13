@@ -4,12 +4,14 @@
 use super::models::{DashStream, FavFolder};
 use crate::state::AudioQuality;
 
-
 /// 按音质偏好从 DASH 音频流中选择。
 ///
 /// 优先精确匹配偏好 id；未命中时低/中档取最接近目标码率的流，高档取最高码率。
 /// 无损偏好（Lossless）依次尝试 FLAC (30255) → Dolby (30250/30251) → 最高码率。
-pub fn pick_dash_audio<'a>(audio: &'a [DashStream], quality: AudioQuality) -> Option<&'a DashStream> {
+pub fn pick_dash_audio<'a>(
+    audio: &'a [DashStream],
+    quality: AudioQuality,
+) -> Option<&'a DashStream> {
     if audio.is_empty() {
         return None;
     }
@@ -30,7 +32,9 @@ pub fn pick_dash_audio<'a>(audio: &'a [DashStream], quality: AudioQuality) -> Op
         AudioQuality::Medium => 128_000,
         _ => i64::MAX,
     };
-    audio.iter().min_by_key(|s| (s.bandwidth - target_bandwidth).abs())
+    audio
+        .iter()
+        .min_by_key(|s| (s.bandwidth - target_bandwidth).abs())
 }
 
 /// 在文本里扫描 `BV + 10 位 [0-9A-Za-z]`，返回第一个匹配。
@@ -41,10 +45,7 @@ pub(super) fn scan_bv_token(s: &str) -> Option<String> {
     while i + 12 <= n {
         if bytes[i] == b'B' && bytes[i + 1] == b'V' {
             let candidate = &s[i + 2..i + 12];
-            if candidate
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric())
-            {
+            if candidate.bytes().all(|b| b.is_ascii_alphanumeric()) {
                 // BV 号第 1 位（总第 3 位）按现行规范是 1~7 之间的数字，用于排除
                 // 恰好拼成 "BVxxx" 的普通单词（如 "BVDIRECTORY" 这类长词截断误判）。
                 let c = candidate.as_bytes()[0];
@@ -72,10 +73,7 @@ pub(super) fn parse_set_cookie(set_cookie: &str) -> Option<(String, String)> {
 /// 按 id 去重收藏夹（保留首个出现者）：created/collected 两路合并时的防御性去重。
 pub(super) fn dedup_folders(folders: Vec<FavFolder>) -> Vec<FavFolder> {
     let mut seen = std::collections::HashSet::new();
-    folders
-        .into_iter()
-        .filter(|f| seen.insert(f.id))
-        .collect()
+    folders.into_iter().filter(|f| seen.insert(f.id)).collect()
 }
 
 #[cfg(test)]
@@ -85,9 +83,21 @@ mod tests {
     #[test]
     fn test_dedup_folders_keeps_first() {
         let folders = vec![
-            FavFolder { id: 555, title: "a".into(), media_count: 1 },
-            FavFolder { id: 666, title: "b".into(), media_count: 2 },
-            FavFolder { id: 555, title: "a2".into(), media_count: 9 },
+            FavFolder {
+                id: 555,
+                title: "a".into(),
+                media_count: 1,
+            },
+            FavFolder {
+                id: 666,
+                title: "b".into(),
+                media_count: 2,
+            },
+            FavFolder {
+                id: 555,
+                title: "a2".into(),
+                media_count: 9,
+            },
         ];
         let out = dedup_folders(folders);
         assert_eq!(out.len(), 2);

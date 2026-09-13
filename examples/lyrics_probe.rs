@@ -8,27 +8,37 @@
 //! 3. 命中后打印来源元信息、同步歌词前 5 行、纯文本歌词前 2 行。
 //! 失败（网络/无命中）也如实打印错误信息。
 
-
 // 桥接模块复用主 crate 的完整实现，示例只用其中一部分，容忍 dead_code。
 #[allow(dead_code)]
-
 use simple_music::modules::lyrics::LyricsProvider;
 
 fn main() {
-    let title = std::env::args().nth(1).unwrap_or_else(|| "晴天".to_string());
-    let uploader = std::env::args().nth(2).unwrap_or_else(|| "周杰伦".to_string());
+    let title = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "晴天".to_string());
+    let uploader = std::env::args()
+        .nth(2)
+        .unwrap_or_else(|| "周杰伦".to_string());
 
     println!("=== SimpleMusic lyrics_probe ===");
     println!("UA: {}", simple_music::modules::lyrics::LRCLIB_UA);
     println!("[fetch] title={title:?} uploader={uploader:?}");
-    println!("[query] 候选查询(按尝试顺序): {:?}", simple_music::modules::lyrics::search_queries(&title, &uploader));
+    println!(
+        "[query] 候选查询(按尝试顺序): {:?}",
+        simple_music::modules::lyrics::search_queries(&title, &uploader)
+    );
 
     match LyricsProvider::fetch(&title, &uploader) {
         Some(lyrics) => {
             if let Some(src) = &lyrics.source {
                 println!(
                     "[fetch] 来源: id={} artist=\"{}\" track=\"{}\" album=\"{}\" duration={}s instrumental={}",
-                    src.id, src.artist_name, src.track_name, src.album_name, src.duration, src.instrumental
+                    src.id,
+                    src.artist_name,
+                    src.track_name,
+                    src.album_name,
+                    src.duration,
+                    src.instrumental
                 );
             }
             println!("[fetch] 有同步歌词: {}", lyrics.has_synced());

@@ -4,7 +4,6 @@ use std::collections::BTreeMap;
 
 use super::model::Lyrics;
 
-
 // ===========================================================================
 // 本地歌词缓存（条目语义；磁盘读写见 modules/storage.rs）
 // ===========================================================================
@@ -79,11 +78,10 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::lyrics::model::{Lyrics, LrcSearchResult};
+    use crate::modules::lyrics::model::{LrcSearchResult, Lyrics};
 
     fn sample_lyrics(tag: &str) -> Lyrics {
         Lyrics {

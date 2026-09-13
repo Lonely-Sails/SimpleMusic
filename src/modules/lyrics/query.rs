@@ -1,11 +1,11 @@
 //! 标题清洗与查询词生成（纯函数）：把 B 站视频标题/UP 主名转成歌词站查询词。
 
 use super::model::SongHint;
-use super::text::{
-    collapse_ws, extract_book_core, sanitize_preserving_case, strip_annotation_parens, strip_groups,
-    strip_trailing_separator,
-};
 use super::text::strip_punctuation;
+use super::text::{
+    collapse_ws, extract_book_core, sanitize_preserving_case, strip_annotation_parens,
+    strip_groups, strip_trailing_separator,
+};
 /// 去掉 B 站标题常见噪音并统一为规范化形式（去括号注释、去书名号、去多余空白、
 /// 统一小写），**用于查询生成与相似度比较**。
 ///
@@ -25,7 +25,9 @@ pub fn clean_title(title: &str) -> String {
     t = strip_groups(&t, '[', ']');
     t = strip_annotation_parens(&t);
     t = strip_trailing_separator(&t);
-    for ch in ['《', '》', '「', '」', '『', '』', '〈', '〉', '"', '\'', '“', '”'] {
+    for ch in [
+        '《', '》', '「', '」', '『', '』', '〈', '〉', '"', '\'', '“', '”',
+    ] {
         t = t.replace(ch, "");
     }
     let t = collapse_ws(&t);
@@ -128,9 +130,27 @@ pub fn usable_uploader(uploader: &str) -> Option<&str> {
     }
     let lower = u.to_lowercase();
     const MARKERS: &[&str] = &[
-        "官方", "官方频道", "频道", "official", "电视台", "字幕组", "搬运", "资源",
-        "music zone", "music", "studio", "records", "center", "group", "video", "live",
-        "歌迷会", "后援会", "粉丝", "musicclub", "音乐台",
+        "官方",
+        "官方频道",
+        "频道",
+        "official",
+        "电视台",
+        "字幕组",
+        "搬运",
+        "资源",
+        "music zone",
+        "music",
+        "studio",
+        "records",
+        "center",
+        "group",
+        "video",
+        "live",
+        "歌迷会",
+        "后援会",
+        "粉丝",
+        "musicclub",
+        "音乐台",
     ];
     if MARKERS.iter().any(|m| lower.contains(m)) {
         return None;
@@ -217,5 +237,4 @@ mod tests {
         let uniq: std::collections::HashSet<_> = qs.iter().map(|s| s.to_lowercase()).collect();
         assert_eq!(uniq.len(), qs.len(), "查询有重复: {qs:?}");
     }
-
 }

@@ -99,8 +99,8 @@ pub(super) enum Command {
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::cache::cache_path_in;
+    use super::*;
     use crate::modules::bilibili::md5_hex;
     use std::path::Path;
 
