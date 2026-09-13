@@ -1,8 +1,6 @@
-//! 设置窗口：左侧分类导航 + 右侧滚动内容。
-//!
-//! 分类（[`SettingsTab`]）：外观（界面字体）/ 桌面歌词（开关/字号/歌词字体）/
-//! 播放（音质/音量）/ 快捷键。导航切换 + 滚动查看，避免单页过长；
-//! 内容区块的方法拆分见各 `*_page`。
+//! 设置窗口：顶部一排横向分类导航（界面字体 / 歌词字体 / 音质 / 桌面歌词 / 播放），
+//! 点击即切换当前分类；每页只显示该分类的配置项（纵向排布），单页内容短，
+//! 窗口整体不超出屏幕，也便于快速跳转。
 
 use crate::fonts::SystemFont;
 use crate::state::{AudioQuality, LyricsFont};
@@ -11,104 +9,169 @@ use eframe::egui::{self, Align2, RichText};
 use std::path::Path;
 use super::MusicApp;
 
-/// 设置窗口的导航页。会话内记住当前页（不持久化，每次打开回到上次停留页）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum SettingsTab {
-    /// 外观：界面字体。
+/// 设置窗口的分类页。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) enum SettingsPage {
     #[default]
-    Appearance,
-    /// 桌面歌词：启用/锁定/字号/歌词字体。
+    UiFont,
+    LyricsFont,
+    Quality,
     DesktopLyrics,
-    /// 播放：音质/音量。
     Playback,
-    /// 快捷键清单。
-    Shortcuts,
 }
 
-impl SettingsTab {
-    /// 导航顺序与标签。
-    const ALL: [Self; 4] = [
-        Self::Appearance,
-        Self::DesktopLyrics,
-        Self::Playback,
-        Self::Shortcuts,
-    ];
-
+impl SettingsPage {
+    /// 顶栏导航上显示的标签。
     fn label(self) -> &'static str {
         match self {
-            Self::Appearance => "外观",
-            Self::DesktopLyrics => "桌面歌词",
-            Self::Playback => "播放",
-            Self::Shortcuts => "快捷键",
+            SettingsPage::UiFont => "界面字体",
+            SettingsPage::LyricsFont => "歌词字体",
+            SettingsPage::Quality => "音质",
+            SettingsPage::DesktopLyrics => "桌面歌词",
+            SettingsPage::Playback => "播放",
         }
     }
+
+    /// 全部页面，用于绘制导航。
+    const ALL: [SettingsPage; 5] = [
+        SettingsPage::UiFont,
+        SettingsPage::LyricsFont,
+        SettingsPage::Quality,
+        SettingsPage::DesktopLyrics,
+        SettingsPage::Playback,
+    ];
 }
 
 impl MusicApp {
     pub(crate) fn show_settings_window(&mut self, ctx: &egui::Context) {
-        // open 标志提为局部变量：页面方法走 &mut self 方法调用，闭包需要
-        // 整个 *self 的独占借用，与 Window 持有的 &mut self.settings_window_open 冲突。
+        // open 标志提为局部变量：内容方法走 &mut self 调用，闭包需要整个 *self
+        // 的独占借用，与 Window 持有的 &mut self.settings_window_open 冲突。
         let mut open = self.settings_window_open;
+        let screen_h = ctx.input(|i| {
+            i.viewport()
+                .outer_rect
+                .map(|r| r.height())
+                .unwrap_or(800.0)
+        });
+        // 内容区限高：单页内容本身不长，仍按可用屏高缩放并设上限，防极端情况溢出。
+        let content_max_h = (screen_h * 0.8).clamp(300.0, 620.0);
+        // 窗口高度固定 = 内容区 + 标题栏/导航/分隔线的开销。固定尺寸让切换分类时
+        // 窗口不再随各页内容长短变化而上下抖动。
+        const CHROME_H: f32 = 120.0;
+        let window_h = (content_max_h + CHROME_H).min(screen_h - 40.0);
         egui::Window::new("设置")
             .id(egui::Id::new("settings_window"))
             .collapsible(false)
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+            .fixed_size(egui::vec2(340.0, window_h))
             .open(&mut open)
             .show(ctx, |ui| {
-                // 必须用 `horizontal_top`（顶部对齐）而非 `horizontal`（垂直居中）：
-                // 居中版本会让 egui 把这一行的高度撑满父 Ui 的可用高度，右侧
-                // ScrollArea 因此只能拿到「窗口高度」这么多空间，内容略长就溢出
-                // 并画出竖直滚动条，与内容是否真的超高无关。
-                ui.horizontal_top(|ui| {
-                    // ── 左侧：分类导航 ──
-                    ui.vertical(|ui| {
-                        ui.set_min_width(104.0);
-                        ui.add_space(2.0);
-                        for tab in SettingsTab::ALL {
-                            let selected = self.settings_tab == tab;
-                            let label = RichText::new(tab.label()).color(if selected {
-                                theme::ACCENT
-                            } else {
-                                theme::TEXT_PRIMARY
-                            });
-                            if ui.selectable_label(selected, label).clicked() {
-                                self.settings_tab = tab;
-                            }
+                ui.add_space(4.0);
+
+                // ── 顶部横向分类导航：可横向滚动、隐藏滚动条，点击切换当前页 ──
+                // auto_shrink 竖直轴必须收缩(true)：否则横向滚动区会把整块可用高度
+                // 都占满，把下方设置内容挤出窗口可视区。
+                egui::ScrollArea::horizontal()
+                    .id_salt("settings_nav_scroll")
+                    .scroll_bar_visibility(
+                        egui::containers::scroll_area::ScrollBarVisibility::AlwaysHidden,
+                    )
+                    .auto_shrink([false, true])
+                    .max_width(320.0)
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        self.settings_nav(ui);
+                    });
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                // ── 当前分类的配置项（单页纵向排布）──
+                // 注意：这里不能再 set_min_height，否则内容高度恒等于限高，egui 判定
+                // 「内容超出」而永远画出竖直滚动条——即使该页根本没占满。
+                // 高度已由窗口的 fixed_size 固定，滚动区只需按需收缩。
+                egui::ScrollArea::vertical()
+                    .id_salt("settings_page_scroll")
+                    .auto_shrink([false, true])
+                    .max_height(content_max_h)
+                    .show(ui, |ui| {
+                        ui.set_min_width(300.0);
+                        match self.settings_page {
+                            SettingsPage::UiFont => self.ui_font_picker(ui),
+                            SettingsPage::LyricsFont => self.lyrics_font_picker(ui, ctx),
+                            SettingsPage::Quality => self.quality_picker(ui),
+                            SettingsPage::DesktopLyrics => self.desktop_lyrics_picker(ui),
+                            SettingsPage::Playback => self.playback_picker(ui),
                         }
                     });
-                    ui.separator();
-                    // ── 右侧：当前分类内容（滚动区，窗口高度被内容上限收住） ──
-                    egui::ScrollArea::vertical()
-                        .id_salt("settings_content_scroll")
-                        .auto_shrink([false, false])
-                        .max_height(360.0)
-                        .show(ui, |ui| {
-                            // ScrollArea 的子 Ui 会继承父级布局，这里显式切回纵向，
-                            // 否则页面内容会按横向布局铺开。
-                            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                                ui.set_min_width(440.0);
-                                match self.settings_tab {
-                                    SettingsTab::Appearance => self.appearance_page(ui),
-                                    SettingsTab::DesktopLyrics => self.desktop_lyrics_page(ui, ctx),
-                                    SettingsTab::Playback => self.playback_page(ui),
-                                    SettingsTab::Shortcuts => self.shortcuts_page(ui),
-                                }
-                            });
-                        });
-                });
             });
         // 用户点关闭按钮时 open 变 false —— 写回。
         self.settings_window_open = open;
     }
 
-    /// 「外观」页：界面字体（恒内嵌展示项）。
-    fn appearance_page(&mut self, ui: &mut egui::Ui) {
-        self.ui_font_section(ui);
+    /// 顶部横向分类导航（SelectableLabel 一排，当前分类高亮）。
+    fn settings_nav(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            let mut clicked = None;
+            for page in SettingsPage::ALL {
+                let is_active = page == self.settings_page;
+                let text = RichText::new(page.label()).color(if is_active {
+                    theme::TEXT_ON_ACCENT
+                } else {
+                    theme::TEXT_PRIMARY
+                });
+                let btn = if is_active {
+                    egui::Button::new(text)
+                        .fill(theme::ACCENT)
+                        .corner_radius(theme::CORNER)
+                        .min_size(egui::vec2(64.0, 26.0))
+                } else {
+                    egui::Button::new(text)
+                        .fill(theme::BG_PANEL)
+                        .stroke(egui::Stroke::new(1.0, theme::BORDER_SOFT))
+                        .corner_radius(theme::CORNER)
+                        .min_size(egui::vec2(64.0, 26.0))
+                };
+                if ui.add(btn).clicked() {
+                    clicked = Some(page);
+                }
+            }
+            if let Some(page) = clicked {
+                self.settings_page = page;
+            }
+        });
     }
 
-    /// 「桌面歌词」页：启用/锁定/字号 + 歌词字体选择器。
-    fn desktop_lyrics_page(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    /// 「音质偏好」页。
+    fn quality_picker(&mut self, ui: &mut egui::Ui) {
+        ui.label(
+            RichText::new("音质偏好")
+                .color(theme::TEXT_SECONDARY)
+                .strong(),
+        );
+        for q in AudioQuality::ALL {
+            let label = q.label();
+            if ui
+                .radio(
+                    self.settings.audio_quality == *q,
+                    RichText::new(label).color(theme::TEXT_PRIMARY),
+                )
+                .clicked()
+            {
+                self.settings.audio_quality = *q;
+            }
+        }
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new("音质切换后，需要重新播放歌曲才能生效")
+                .color(theme::TEXT_WEAK)
+                .small(),
+        );
+    }
+
+    /// 「桌面歌词」页。
+    fn desktop_lyrics_picker(&mut self, ui: &mut egui::Ui) {
         ui.label(
             RichText::new("桌面歌词")
                 .color(theme::TEXT_SECONDARY)
@@ -131,36 +194,10 @@ impl MusicApp {
                     .trailing_fill(true),
             );
         });
-        ui.add_space(8.0);
-        ui.separator();
-        ui.add_space(4.0);
-
-        self.lyrics_font_picker(ui, ctx);
     }
 
-    /// 「播放」页：音质偏好 + 音量。
-    fn playback_page(&mut self, ui: &mut egui::Ui) {
-        ui.label(
-            RichText::new("音质偏好")
-                .color(theme::TEXT_SECONDARY)
-                .strong(),
-        );
-        for q in AudioQuality::ALL {
-            let label = q.label();
-            if ui
-                .radio(
-                    self.settings.audio_quality == *q,
-                    RichText::new(label).color(theme::TEXT_PRIMARY),
-                )
-                .clicked()
-            {
-                self.settings.audio_quality = *q;
-            }
-        }
-        ui.add_space(8.0);
-        ui.separator();
-        ui.add_space(4.0);
-
+    /// 「播放」页。
+    fn playback_picker(&mut self, ui: &mut egui::Ui) {
         ui.label(
             RichText::new("播放")
                 .color(theme::TEXT_SECONDARY)
@@ -177,53 +214,14 @@ impl MusicApp {
         // 音量同步到 state
         self.state.volume = self.settings.volume;
         self.audio.set_volume(self.settings.volume);
-
-        ui.add_space(4.0);
-        ui.label(
-            RichText::new("音质切换后，需要重新播放歌曲才能生效")
-                .color(theme::TEXT_WEAK)
-                .small(),
-        );
-    }
-
-    /// 「快捷键」页：全局键盘快捷键清单（纯展示，与 `player.rs::handle_shortcuts` 对应）。
-    fn shortcuts_page(&mut self, ui: &mut egui::Ui) {
-        ui.label(
-            RichText::new("键盘快捷键")
-                .color(theme::TEXT_SECONDARY)
-                .strong(),
-        );
-        ui.add_space(2.0);
-        for (key, desc) in [
-            ("空格", "播放 / 暂停"),
-            ("← / →", "快退 / 快进 5 秒"),
-            ("↑ / ↓", "音量 ±5%"),
-            ("N / P", "下一首 / 上一首"),
-        ] {
-            ui.horizontal(|ui| {
-                // 键位用等宽字体更醒目。
-                ui.label(
-                    RichText::new(key)
-                        .font(egui::FontId::monospace(13.0))
-                        .color(theme::ACCENT),
-                );
-                ui.label(RichText::new(desc).color(theme::TEXT_PRIMARY));
-            });
-        }
-        ui.add_space(4.0);
-        ui.label(
-            RichText::new("主窗口聚焦时有效；后台播放可使用系统托盘菜单控制")
-                .color(theme::TEXT_WEAK)
-                .small(),
-        );
     }
 
     /// 「界面字体」展示项：主界面恒用内嵌字体（不再提供选择）。
     ///
     /// 说明：旧版允许把系统字体装进主界面字体链，但内嵌 Noto Sans SC 覆盖稳定
     /// （缺字还有净化兜底），系统字体反而引入跨机器观感漂移——主界面收敛为恒内嵌；
-    /// 系统字体的选择入口在「桌面歌词」页（大字号歌词观感收益更明显）。
-    fn ui_font_section(&mut self, ui: &mut egui::Ui) {
+    /// 系统字体的选择入口移到下方「桌面歌词字体」（大字号歌词观感收益更明显）。
+    fn ui_font_picker(&mut self, ui: &mut egui::Ui) {
         ui.label(
             RichText::new("界面字体")
                 .color(theme::TEXT_SECONDARY)
@@ -232,7 +230,7 @@ impl MusicApp {
         ui.label(
             RichText::new("内嵌 Noto Sans SC（恒定）").color(theme::TEXT_PRIMARY),
         )
-        .on_hover_text("编译期内嵌字体，跨机器观感一致；旧版「系统字体」选项已移除，系统字体可在「桌面歌词」页单独选");
+        .on_hover_text("编译期内嵌字体，跨机器观感一致；旧版「系统字体」选项已移除，系统字体可在下方给桌面歌词单独选");
     }
 
     /// 「桌面歌词字体」选择器：跟随界面 / 内嵌 Noto / 系统字体列表（带过滤），
@@ -240,7 +238,7 @@ impl MusicApp {
     ///
     /// 字体候选列表由后台线程扫描（首次展开时触发，回填 `font_list`）；
     /// `Specific` 选中项持久化绝对路径，重启自动恢复；文件失效时启动/选择
-    /// 均回退内嵌并提示。
+    /// 均回退内嵌并提示。点「自定义…」进入浏览模式立即展开候选列表并触发扫描。
     fn lyrics_font_picker(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.label(
             RichText::new("桌面歌词字体")

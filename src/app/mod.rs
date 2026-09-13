@@ -32,7 +32,6 @@ use crate::modules::lyrics::{LrcLine, Lyrics, LyricsCacheEntry};
 use crate::modules::storage;
 use crate::state::{PlaybackState, Playlist, QueueItem, Settings, LyricsFont};
 use crate::tray;
-use crate::app::ui::settings::SettingsTab;
 use crate::app::ui::toast::{show_toasts, Toast, ToastKind};
 use eframe::egui;
 use messages::AsyncMsg;
@@ -101,6 +100,7 @@ pub struct MusicApp {
     syncing_online: bool,
     // 设置窗口
     settings_window_open: bool,
+    settings_page: crate::app::ui::settings::SettingsPage,
     // 歌词
     current_lyrics: Option<Lyrics>,
     lyrics_candidates: Vec<Lyrics>,
@@ -132,13 +132,11 @@ pub struct MusicApp {
     keepalive_stop: Arc<AtomicBool>,
     // 搜索过滤
     search_text: String,
-    // 字体选择（设置页）：候选列表（后台扫描回填）/ 扫描状态 / 选择框过滤词 /
-    // 当前选中的导航页。
+    // 字体选择（设置页）：候选列表（后台扫描回填）/ 扫描状态 / 选择框过滤词。
     font_list: Vec<crate::fonts::SystemFont>,
     font_scan_started: bool,
     font_scanning: bool,
     font_filter: String,
-    settings_tab: SettingsTab,
     /// 「桌面歌词字体 → 自定义…」浏览模式：点了自定义但还没选中具体文件时
     /// 也必须展开候选列表（列表展开条件不能只看 `LyricsFont::Specific`，
     /// 否则首次点击毫无反应）。
@@ -249,6 +247,7 @@ impl MusicApp {
             play_seq: 0,
             syncing_online: false,
             settings_window_open: false,
+            settings_page: crate::app::ui::settings::SettingsPage::default(),
             current_lyrics: None,
             lyrics_candidates: Vec::new(),
             lyrics_lines: Vec::new(),
@@ -270,7 +269,6 @@ impl MusicApp {
             font_scan_started: false,
             font_scanning: false,
             font_filter: String::new(),
-            settings_tab: SettingsTab::default(),
             lyrics_font_browsing: false,
             playlist_mgmt_open: false,
             renaming_idx: None,
